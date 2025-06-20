@@ -13,3 +13,5 @@ path = "src/client.rs"
 
 
 [dependencies]
+thiserror = "2.0.12"
+tokio = { version = "1.45.1", features = ["full"] }
