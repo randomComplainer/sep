@@ -13,7 +13,7 @@ async fn main() {
     let agent = listener.accept().await.unwrap();
 
     let (method_selection_message, method_sent) =
-        agent.receive_method_selection_message().await.unwrap();
+        agent.receive_greeting_message().await.unwrap();
 
     println!("method selection message: {:?}", method_selection_message);
 }

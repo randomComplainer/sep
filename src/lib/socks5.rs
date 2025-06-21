@@ -1,13 +1,46 @@
 use std::net::SocketAddr;
 
+use bytes::{Buf, BytesMut};
+use futures::StreamExt;
 use thiserror::Error;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio_util::codec::{Decoder, FramedRead};
 
-#[derive(Debug)]
-pub struct ClientMethodSelectionMessage {
-    pub ver: u8,
-    pub methods: Vec<u8>,
+pub mod msg {
+    use super::*;
+    #[derive(Debug)]
+    pub struct ClientGreeding {
+        pub ver: u8,
+        pub methods: Vec<u8>,
+    }
+
+    pub struct ClientGreedingDecoder;
+
+    impl Decoder for ClientGreedingDecoder {
+        type Item = ClientGreeding;
+        type Error = Socks5Error;
+
+        fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+            if src.len() < 2 {
+                return Ok(None); // not enough data yet
+            }
+
+            let mut buf = &src[..];
+            let ver = buf.get_u8();
+            let nmethods = buf.get_u8() as usize;
+
+            if src.len() < 2 + nmethods {
+                return Ok(None); // wait for more data
+            }
+
+            let methods = src[2..2 + nmethods].to_vec();
+
+            // Advance the buffer
+            src.advance(2 + nmethods);
+
+            Ok(Some(ClientGreeding { ver, methods }))
+        }
+    }
 }
 
 #[derive(Error, Debug)]
@@ -15,12 +48,21 @@ pub enum Socks5Error {
     #[error("io error")]
     Io(#[from] std::io::Error),
 
-    #[error("Step '{step}' failed: {source}")]
-    StepError {
-        step: &'static str,
+    #[error("Error at '{context}': {source}")]
+    Contextualized {
+        context: &'static str,
         #[source]
         source: Box<Socks5Error>,
     },
+}
+
+impl Socks5Error {
+    pub fn contextualize(context: &'static str) -> impl Fn(Self) -> Self {
+        move |source| Self::Contextualized {
+            context,
+            source: Box::new(source),
+        }
+    }
 }
 
 pub mod agent {
@@ -35,18 +77,20 @@ pub mod agent {
             Self { stream }
         }
 
-        pub async fn receive_method_selection_message(
+        pub async fn receive_greeting_message(
             mut self,
-        ) -> Result<(ClientMethodSelectionMessage, ClientMethodSent), Socks5Error> {
-            let ver = self.stream.read_u8().await?;
-            let n_methods = self.stream.read_u8().await?;
-            let mut methods = Vec::with_capacity(n_methods as usize);
-            self.stream.read_exact(&mut methods).await?;
+        ) -> Result<(msg::ClientGreeding, ClientMethodSent), Socks5Error> {
+            let mut framed = FramedRead::new(&mut self.stream, msg::ClientGreedingDecoder);
 
-            Ok((
-                ClientMethodSelectionMessage { ver, methods },
-                ClientMethodSent {},
-            ))
+            let greeting_msg = framed
+                .next()
+                .await
+                .ok_or(std::io::Error::other("unexpected eof"))?
+                .map_err(Socks5Error::contextualize(
+                    "receving client greeting message",
+                ))?;
+
+            Ok((greeting_msg, ClientMethodSent {}))
         }
     }
 
