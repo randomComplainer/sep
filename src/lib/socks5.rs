@@ -4,7 +4,6 @@ use bytes::{Buf, BufMut, BytesMut};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio_util::codec::Encoder;
 
 #[macro_use]
 pub mod try_decode {
@@ -210,17 +209,11 @@ pub mod msg {
         pub method: u8,
     }
 
-    pub struct MethodSelectionEncoder;
-
-    impl Encoder<MethodSelection> for MethodSelectionEncoder {
-        type Error = Socks5Error;
-
-        fn encode(&mut self, item: MethodSelection, dst: &mut BytesMut) -> Result<(), Self::Error> {
-            dst.put_u8(item.ver);
-            dst.put_u8(item.method);
-
-            return Ok(());
-        }
+    pub fn encode_method_selection(item: MethodSelection) -> Result<BytesMut, Socks5Error> {
+        let mut buf = BytesMut::with_capacity(2);
+        buf.put_u8(item.ver);
+        buf.put_u8(item.method);
+        return Ok(buf);
     }
 
     pub struct PeekIpv4Addr {
@@ -417,10 +410,11 @@ pub mod agent {
             mut self,
             method: u8,
         ) -> Result<(msg::PeekRequest, BytesMut, Requested<Stream>), Socks5Error> {
-            let mut buf = BytesMut::new();
-            msg::MethodSelectionEncoder
-                .encode(msg::MethodSelection { ver: 5, method }, &mut buf)
-                .contextualize_err("encoding method selection message")?;
+            let buf = msg::encode_method_selection(msg::MethodSelection { ver: 5, method })?;
+            self.stream_write
+                .write_all(buf.as_ref())
+                .await
+                .contextualize_err("sending method selection message")?;
 
             self.stream_write
                 .write_all(&buf)
