@@ -11,6 +11,9 @@ path = "src/lib/lib.rs"
 name = "client"
 path = "src/client.rs"
 
+[[bin]]
+name = "quick_test"
+path = "src/quick_test.rs"
 
 [dependencies]
 bytes = "1.10.1"
