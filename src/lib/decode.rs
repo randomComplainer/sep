@@ -103,6 +103,7 @@ pub enum DecodeError {
 pub trait Peek {
     fn peek_u8(&mut self) -> Option<PeekU8>;
     fn peek_u16(&mut self) -> Option<PeekU16>;
+    fn peek_u64(&mut self) -> Option<PeekU64>;
     fn peek_slice(&mut self, len: usize) -> Option<PeekSlice>;
     fn peek_oct_len_slice(&mut self) -> Option<PeekSlice>;
 }
@@ -128,6 +129,18 @@ impl Peek for Cursor<&[u8]> {
                 offset: self.position().try_into().unwrap(),
             });
             self.advance(2);
+            result
+        }
+    }
+
+    fn peek_u64(&mut self) -> Option<PeekU64> {
+        if self.remaining() < 8 {
+            None
+        } else {
+            let result = Some(PeekU64 {
+                offset: self.position().try_into().unwrap(),
+            });
+            self.advance(8);
             result
         }
     }
@@ -162,6 +175,21 @@ impl PeekU8 {
 
 pub struct PeekU16 {
     pub offset: usize,
+}
+impl PeekU16 {
+    pub fn read(&self, bytes: &[u8]) -> u16 {
+        u16::from_be_bytes([bytes[self.offset], bytes[self.offset + 1]])
+    }
+}
+
+pub struct PeekU64 {
+    pub offset: usize,
+}
+
+impl PeekU64 {
+    pub fn read(&self, bytes: &[u8]) -> u64 {
+        u64::from_be_bytes(bytes[self.offset..self.offset + 8].try_into().unwrap())
+    }
 }
 
 pub struct PeekSlice {

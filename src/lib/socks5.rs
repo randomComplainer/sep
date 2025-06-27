@@ -191,7 +191,7 @@ pub mod agent {
                 .await
                 .and_then(|msg_opt| match msg_opt {
                     Some(msg) => Ok(msg),
-                    None => Err(std::io::Error::other("unexpected eof").into()),
+                    None => Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into()),
                 })
                 .contextualize_err("receving client greeting message")?;
 

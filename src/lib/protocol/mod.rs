@@ -36,10 +36,12 @@ fn cal_rand_byte_len(key: &[u8; 32], nonce: &[u8; 12], timestamp: u64) -> usize 
 }
 
 pub mod client_agent {
-    use bytes::{Buf, BufMut, BytesMut};
+    use bytes::{BufMut, BytesMut};
     use chacha20::ChaCha20;
-    use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
+    use chacha20::cipher::KeyIvInit;
     use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+
+    use crate::prelude::*;
 
     pub struct Init<Stream>
     where
@@ -58,9 +60,15 @@ pub mod client_agent {
             Self { key, nonce, stream }
         }
 
-        pub async fn send_greeting(mut self, timestamp: u64) -> Result<(), std::io::Error> {
-            let mut cipher =
-                ChaCha20::new(self.key.as_slice().into(), self.nonce.as_slice().into());
+        pub async fn send_greeting(self, timestamp: u64) -> Result<(), std::io::Error> {
+            let cipher = ChaCha20::new(self.key.as_slice().into(), self.nonce.as_slice().into());
+
+            let (stream_read, mut stream_write) = tokio::io::split(self.stream);
+
+            // send nonce in plaintext
+            stream_write.write_all(self.nonce.as_slice()).await?;
+
+            let mut stream_write = EncryptedWrite::new(stream_write, cipher);
 
             let rand_byte_len = super::cal_rand_byte_len(&self.key, &self.nonce, timestamp);
 
@@ -69,19 +77,14 @@ pub mod client_agent {
             // TODO: actually random generating
             let rand_bytes = vec![0; rand_byte_len];
 
-            let buf_size = 12 // nonce
-                + 8 // timestamp
+            let buf_size = 8 // timestamp
                 + rand_byte_len;
 
             let mut buf = BytesMut::with_capacity(buf_size);
-            buf.put_slice(self.nonce.as_slice());
-
             buf.put_u64(timestamp);
             buf.put_slice(&rand_bytes);
 
-            cipher.apply_keystream(&mut buf.as_mut()[12..]);
-
-            self.stream.write_all(buf.as_ref()).await?;
+            stream_write.write_all(buf.as_mut()).await?;
 
             Ok(())
         }
@@ -89,10 +92,11 @@ pub mod client_agent {
 }
 
 pub mod server_agent {
-    use bytes::{Buf, BufMut, BytesMut};
     use chacha20::ChaCha20;
-    use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
-    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+    use chacha20::cipher::KeyIvInit;
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+
+    use crate::prelude::*;
 
     pub struct Init<Stream>
     where
@@ -115,17 +119,22 @@ pub mod server_agent {
 
             self.stream.read_exact(nonce.as_mut()).await?;
 
-            let mut cipher = ChaCha20::new(self.key.as_slice().into(), nonce.as_slice().into());
+            let cipher = ChaCha20::new(self.key.as_slice().into(), nonce.as_slice().into());
 
             dbg!(nonce.as_slice());
 
-            let mut timestamp_buf = vec![0u8; 8];
+            let (stream_read, stream_write) = tokio::io::split(self.stream);
+            let stream_read = EncryptedRead::new(stream_read, cipher);
+            let mut stream_read = crate::decode::BufDecoder::new(stream_read);
 
-            self.stream.read_exact(&mut timestamp_buf).await?;
+            let (peek_timestamp, timestamp_buf) = stream_read
+                .try_decode(|cursor| Ok::<_, std::io::Error>(cursor.peek_u64()))
+                .await
+                .and_then(|opt| {
+                    opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, ""))
+                })?;
 
-            cipher.apply_keystream(&mut timestamp_buf);
-
-            let timestamp = u64::from_be_bytes(timestamp_buf.try_into().unwrap());
+            let timestamp = peek_timestamp.read(&timestamp_buf);
             dbg!(timestamp);
 
             let rand_byte_len = super::cal_rand_byte_len(&self.key, &nonce, timestamp);
