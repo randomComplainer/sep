@@ -18,7 +18,9 @@ async fn main() {
     let client_agent = protocol::client_agent::Init::new(key.clone(), nonce, client_steam);
     let server_agent = protocol::server_agent::Init::new(key, server_stream);
 
+    tokio::time::pause();
     client_agent.send_greeting(12).await.unwrap();
 
-    server_agent.recv_greeting().await.unwrap();
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    server_agent.recv_greeting(12).await.unwrap();
 }

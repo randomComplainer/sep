@@ -8,6 +8,8 @@
 // Client <-> Server: Data
 // Client <-> Server: EOF (for proxied connection)
 
+const RAND_BYTE_LEN_MAX: usize = 1024;
+
 pub mod msg {
     pub struct Greeting {
         // plaintext
@@ -16,20 +18,21 @@ pub mod msg {
         pub timestamp: u64,
         // and some random bytes, size is derived from key, nonce and timestamp
     }
+}
 
-    pub fn test() {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-    }
+fn get_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 fn cal_rand_byte_len(key: &[u8; 32], nonce: &[u8; 12], timestamp: u64) -> usize {
     let key_head = u64::from_be_bytes(key[0..8].try_into().unwrap());
     let nonce_head = u64::from_be_bytes(nonce[0..8].try_into().unwrap());
+    let len_max: u64 = RAND_BYTE_LEN_MAX.try_into().unwrap();
 
-    let len: usize = ((key_head ^ nonce_head ^ timestamp) % 1024)
+    let len: usize = ((key_head ^ nonce_head ^ timestamp) % len_max)
         .try_into()
         .unwrap();
     len
@@ -72,8 +75,6 @@ pub mod client_agent {
 
             let rand_byte_len = super::cal_rand_byte_len(&self.key, &self.nonce, timestamp);
 
-            dbg!(rand_byte_len);
-
             // TODO: actually random generating
             let rand_bytes = vec![0; rand_byte_len];
 
@@ -94,9 +95,18 @@ pub mod client_agent {
 pub mod server_agent {
     use chacha20::ChaCha20;
     use chacha20::cipher::KeyIvInit;
+    use thiserror::Error;
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
     use crate::prelude::*;
+
+    #[derive(Error, Debug)]
+    pub enum InitError {
+        #[error("io error")]
+        Io(#[from] std::io::Error),
+        #[error("greeting invalid, {0}")]
+        InvalidGreeting(&'static str),
+    }
 
     pub struct Init<Stream>
     where
@@ -114,31 +124,46 @@ pub mod server_agent {
             Self { key, stream }
         }
 
-        pub async fn recv_greeting(mut self) -> Result<(), std::io::Error> {
+        pub async fn recv_greeting(self, server_timestamp: u64) -> Result<(), InitError> {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                self.recv_greeting_inner(server_timestamp),
+            )
+            .await
+            .map_err(|_| InitError::InvalidGreeting("timeout"))?
+        }
+
+        async fn recv_greeting_inner(mut self, server_timestamp: u64) -> Result<(), InitError> {
             let mut nonce: Box<[u8; 12]> = vec![0u8; 12].try_into().unwrap();
 
             self.stream.read_exact(nonce.as_mut()).await?;
 
             let cipher = ChaCha20::new(self.key.as_slice().into(), nonce.as_slice().into());
 
-            dbg!(nonce.as_slice());
-
             let (stream_read, stream_write) = tokio::io::split(self.stream);
             let stream_read = EncryptedRead::new(stream_read, cipher);
             let mut stream_read = crate::decode::BufDecoder::new(stream_read);
 
-            let (peek_timestamp, timestamp_buf) = stream_read
+            let (peek_client_timestamp, timestamp_buf) = stream_read
                 .try_decode(|cursor| Ok::<_, std::io::Error>(cursor.peek_u64()))
                 .await
                 .and_then(|opt| {
                     opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, ""))
                 })?;
 
-            let timestamp = peek_timestamp.read(&timestamp_buf);
-            dbg!(timestamp);
+            let client_timestamp = peek_client_timestamp.read(&timestamp_buf);
 
-            let rand_byte_len = super::cal_rand_byte_len(&self.key, &nonce, timestamp);
-            dbg!(rand_byte_len);
+            if u64::abs_diff(client_timestamp, server_timestamp) > 30 {
+                return Err(InitError::InvalidGreeting("invalid timestamp"));
+            }
+
+            let rand_byte_len = super::cal_rand_byte_len(&self.key, &nonce, client_timestamp);
+
+            if rand_byte_len > super::RAND_BYTE_LEN_MAX {
+                return Err(InitError::InvalidGreeting(
+                    "rand_byte_len > RAND_BYTE_LEN_MAX",
+                ));
+            }
 
             Ok(())
         }
