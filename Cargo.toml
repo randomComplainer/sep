@@ -17,6 +17,8 @@ path = "src/quick_test.rs"
 
 [dependencies]
 bytes = "1.10.1"
+chacha20 = "0.9.1"
 futures = "0.3.31"
 thiserror = "2.0.12"
 tokio = { version = "1.45.1", features = ["full"] }
+

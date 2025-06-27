@@ -1,22 +1,24 @@
-#[allow(unused_variables)] 
+#[allow(unused_variables)]
 #[allow(dead_code)]
 #[allow(unused_imports)]
 use bytes::{BufMut, Bytes, BytesMut};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, DuplexStream, duplex};
 
-fn main() {
+use sep_lib::*;
+
+#[tokio::main]
+async fn main() {
     println!("Hello, world!");
-    let arr = [0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-    let mut buf: BytesMut = BytesMut::from(arr.as_slice());
 
-    // println!("buf: {:?}", buf);
-    // println!("arr: {:?}", arr);
+    let key: Box<[u8; 32]> = vec![0u8; 32].try_into().unwrap();
+    let nonce: Box<[u8; 12]> = vec![1u8; 12].try_into().unwrap();
 
-    test(&mut buf);
-    dbg!(buf);
-}
+    let (client_steam, server_stream) = duplex(8 * 1024);
 
-fn test(src: &mut BytesMut) {
-    let splited = src.split_to(14);
-    println!("splited: {:?}", splited);
-    println!("src: {:?}", src);
+    let client_agent = protocol::client_agent::Init::new(key.clone(), nonce, client_steam);
+    let server_agent = protocol::server_agent::Init::new(key, server_stream);
+
+    client_agent.send_greeting(12).await.unwrap();
+
+    server_agent.recv_greeting().await.unwrap();
 }
