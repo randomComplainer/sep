@@ -1,31 +1,20 @@
-// Client -> Server: Greeting
+// Client -> Server: Greeting (nounce, timestamp, random bytes)
 //
 // Server dose not send anything back,
 // close connection after random delay if Greeting is invalid
 //
-// Client -> Server: Request
+// Client -> Server: Request (addr, port)
 // Server -> Client: Response
 // Client <-> Server: Data
 // Client <-> Server: EOF (for proxied connection)
 
 const RAND_BYTE_LEN_MAX: usize = 1024;
 
-pub mod msg {
-    pub struct Greeting {
-        // plaintext
-        pub nonce: Box<[u8; 12]>,
-        // encrypted
-        pub timestamp: u64,
-        // and some random bytes, size is derived from key, nonce and timestamp
-    }
-}
-
-fn get_timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-}
+// pub enum AddrRef<'a> {
+//     Ipv4(std::net::Ipv4Addr),
+//     Ipv6(std::net::Ipv6Addr),
+//     Domain(&'a [u8]),
+// }
 
 fn cal_rand_byte_len(key: &[u8; 32], nonce: &[u8; 12], timestamp: u64) -> usize {
     let key_head = u64::from_be_bytes(key[0..8].try_into().unwrap());
@@ -41,9 +30,12 @@ fn cal_rand_byte_len(key: &[u8; 32], nonce: &[u8; 12], timestamp: u64) -> usize 
 pub mod client_agent {
     use bytes::{BufMut, BytesMut};
     use chacha20::ChaCha20;
-    use chacha20::cipher::KeyIvInit;
+    use chacha20::cipher::{KeyIvInit, StreamCipher};
     use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+    use tokio::io::{ReadHalf, WriteHalf};
 
+    // use super::AddrRef;
+    use crate::decode::*;
     use crate::prelude::*;
 
     pub struct Init<Stream>
@@ -63,7 +55,10 @@ pub mod client_agent {
             Self { key, nonce, stream }
         }
 
-        pub async fn send_greeting(self, timestamp: u64) -> Result<(), std::io::Error> {
+        pub async fn send_greeting(
+            self,
+            timestamp: u64,
+        ) -> Result<Greeted<Stream, ChaCha20>, std::io::Error> {
             let cipher = ChaCha20::new(self.key.as_slice().into(), self.nonce.as_slice().into());
 
             let (stream_read, mut stream_write) = tokio::io::split(self.stream);
@@ -87,17 +82,58 @@ pub mod client_agent {
 
             stream_write.write_all(buf.as_mut()).await?;
 
+            Ok(Greeted::new(
+                stream_write,
+                BufDecoder::new(EncryptedRead::new(
+                    stream_read,
+                    ChaCha20::new(self.key.as_slice().into(), self.nonce.as_slice().into()),
+                )),
+            ))
+        }
+    }
+
+    pub struct Greeted<Stream, Cipher>
+    where
+        Cipher: StreamCipher + Unpin + 'static,
+        Stream: AsyncRead + AsyncWrite + 'static + Unpin,
+    {
+        stream_write: EncryptedWrite<WriteHalf<Stream>, Cipher>,
+        stream_read: BufDecoder<EncryptedRead<ReadHalf<Stream>, Cipher>>,
+    }
+
+    impl<Stream, Cipher> Greeted<Stream, Cipher>
+    where
+        Cipher: StreamCipher + Unpin + 'static,
+        Stream: AsyncRead + AsyncWrite + 'static + Unpin,
+    {
+        pub fn new(
+            stream_write: EncryptedWrite<WriteHalf<Stream>, Cipher>,
+            stream_read: BufDecoder<EncryptedRead<ReadHalf<Stream>, Cipher>>,
+        ) -> Self {
+            Self {
+                stream_write,
+                stream_read,
+            }
+        }
+
+        pub async fn send_request(
+            mut self,
+            addr_bytes: &mut [u8], // Addr + Port, in Socks5 format
+        ) -> Result<(), std::io::Error> {
+            self.stream_write.write_all(addr_bytes).await?;
             Ok(())
         }
     }
 }
 
 pub mod server_agent {
-    use chacha20::ChaCha20;
+    use bytes::BytesMut;
     use chacha20::cipher::KeyIvInit;
+    use chacha20::{ChaCha20, cipher::StreamCipher};
     use thiserror::Error;
-    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadHalf, WriteHalf};
 
+    use crate::decode::{BufDecoder, PeekU16};
     use crate::prelude::*;
 
     #[derive(Error, Debug)]
@@ -124,7 +160,10 @@ pub mod server_agent {
             Self { key, stream }
         }
 
-        pub async fn recv_greeting(self, server_timestamp: u64) -> Result<(), InitError> {
+        pub async fn recv_greeting(
+            self,
+            server_timestamp: u64,
+        ) -> Result<Greeted<Stream, ChaCha20>, InitError> {
             tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 self.recv_greeting_inner(server_timestamp),
@@ -133,7 +172,10 @@ pub mod server_agent {
             .map_err(|_| InitError::InvalidGreeting("timeout"))?
         }
 
-        async fn recv_greeting_inner(mut self, server_timestamp: u64) -> Result<(), InitError> {
+        async fn recv_greeting_inner(
+            mut self,
+            server_timestamp: u64,
+        ) -> Result<Greeted<Stream, ChaCha20>, InitError> {
             let mut nonce: Box<[u8; 12]> = vec![0u8; 12].try_into().unwrap();
 
             self.stream.read_exact(nonce.as_mut()).await?;
@@ -165,7 +207,68 @@ pub mod server_agent {
                 ));
             }
 
-            Ok(())
+            stream_read
+                .try_decode(|cursor| Ok::<_, std::io::Error>(cursor.peek_slice(rand_byte_len)))
+                .await
+                .and_then(|opt| {
+                    opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, ""))
+                })?;
+
+            Ok(Greeted::new(
+                EncryptedWrite::new(
+                    stream_write,
+                    ChaCha20::new(self.key.as_slice().into(), nonce.as_slice().into()),
+                ),
+                stream_read,
+            ))
+        }
+    }
+
+    pub struct Greeted<Stream, Cipher>
+    where
+        Cipher: StreamCipher + Unpin + 'static,
+        Stream: AsyncRead + AsyncWrite + 'static + Unpin,
+    {
+        stream_write: EncryptedWrite<WriteHalf<Stream>, Cipher>,
+        stream_read: BufDecoder<EncryptedRead<ReadHalf<Stream>, Cipher>>,
+    }
+
+    impl<Stream, Cipher> Greeted<Stream, Cipher>
+    where
+        Cipher: StreamCipher + Unpin + 'static,
+        Stream: AsyncRead + AsyncWrite + 'static + Unpin,
+    {
+        pub fn new(
+            stream_write: EncryptedWrite<WriteHalf<Stream>, Cipher>,
+            stream_read: BufDecoder<EncryptedRead<ReadHalf<Stream>, Cipher>>,
+        ) -> Self {
+            Self {
+                stream_write,
+                stream_read,
+            }
+        }
+
+        pub async fn recv_request(
+            mut self,
+        ) -> Result<((crate::socks5::msg::PeekAddr, PeekU16), BytesMut), std::io::Error> {
+            let ((addr_offset, port_offest), req_bytes) = self
+                .stream_read
+                .try_decode(|cursor| {
+                    let addr = try_peek!(crate::socks5::msg::peek_addr(cursor)?);
+                    let port = try_peek!(cursor.peek_u16());
+
+                    dbg!(addr.format(cursor.get_ref()));
+                    dbg!(port.read(cursor.get_ref()));
+
+                    Ok::<_, std::io::Error>(Some((addr, port)))
+                })
+                .await
+                .and_then(|msg_opt| match msg_opt {
+                    Some(msg) => Ok(msg),
+                    None => Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into()),
+                })?;
+
+            Ok(((addr_offset, port_offest), req_bytes))
         }
     }
 }

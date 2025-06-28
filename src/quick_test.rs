@@ -18,9 +18,19 @@ async fn main() {
     let client_agent = protocol::client_agent::Init::new(key.clone(), nonce, client_steam);
     let server_agent = protocol::server_agent::Init::new(key, server_stream);
 
-    tokio::time::pause();
-    client_agent.send_greeting(12).await.unwrap();
+    let client_agent = client_agent.send_greeting(12).await.unwrap();
+    let server_agent = server_agent.recv_greeting(12).await.unwrap();
 
-    tokio::time::advance(std::time::Duration::from_secs(2)).await;
-    server_agent.recv_greeting(12).await.unwrap();
+    let mut addr_buf = BytesMut::new();
+    addr_buf.put_u8(1);
+    addr_buf.put_slice(&std::net::Ipv4Addr::new(127, 0, 0, 1).octets());
+    addr_buf.put_u16(1234);
+
+    let mut client_agent = client_agent.send_request(&mut addr_buf).await.unwrap();
+
+    let ((addr, port), req_bytes) = server_agent.recv_request().await.unwrap();
+
+    dbg!(req_bytes.as_ref());
+    dbg!(addr.format(req_bytes.as_ref()));
+    dbg!(port.read(req_bytes.as_ref()));
 }

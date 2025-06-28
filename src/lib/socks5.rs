@@ -8,6 +8,8 @@ use tokio::net::TcpStream;
 use crate::decode::*;
 
 pub mod msg {
+    use bytes::Buf;
+
     use super::*;
 
     pub struct PeekClientGreedingMessage {
@@ -74,16 +76,26 @@ pub mod msg {
         }
     }
 
-    pub fn peek_addr(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Option<PeekAddr>, Socks5Error> {
+    pub fn peek_addr(
+        cursor: &mut std::io::Cursor<&[u8]>,
+    ) -> Result<Option<PeekAddr>, std::io::Error> {
         let atyp = try_peek!(cursor.peek_u8()).read(cursor.get_ref());
         Ok(Some(match atyp {
-            1 => PeekAddr::Ipv4(PeekIpv4Addr {
-                offset: cursor.position().try_into().unwrap(),
-            }),
+            1 => {
+                let addr = PeekAddr::Ipv4(PeekIpv4Addr {
+                    offset: cursor.position().try_into().unwrap(),
+                });
+                cursor.advance(4);
+                addr
+            }
 
-            4 => PeekAddr::Ipv6(PeekIpv6Addr {
-                offset: cursor.position().try_into().unwrap(),
-            }),
+            4 => {
+                let addr = PeekAddr::Ipv6(PeekIpv6Addr {
+                    offset: cursor.position().try_into().unwrap(),
+                });
+                cursor.advance(16);
+                addr
+            }
             3 => PeekAddr::Domain(try_peek!(cursor.peek_oct_len_slice())),
             _ => {
                 return Err(std::io::Error::new(

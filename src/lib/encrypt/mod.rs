@@ -45,12 +45,12 @@ mod encrypted_write {
     use chacha20::cipher::StreamCipher;
     use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-    pub struct EncryptedWrite<Cipher, Stream> {
+    pub struct EncryptedWrite<Stream, Cipher> {
         cipher: Cipher,
         inner: Stream,
     }
 
-    impl<Cipher, Stream> EncryptedWrite<Cipher, Stream>
+    impl<Stream, Cipher> EncryptedWrite<Stream, Cipher>
     where
         Cipher: StreamCipher + Unpin,
         Stream: AsyncWrite + Unpin,
