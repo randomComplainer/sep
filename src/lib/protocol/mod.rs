@@ -1,9 +1,10 @@
-// Client -> Server: Greeting (nounce, timestamp, random bytes)
-//
-// Server dose not send anything back,
-// close connection after random delay if Greeting is invalid
-//
-// Client -> Server: Request (addr, port)
+use chacha20::cipher::StreamCipher;
+use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
+
+use crate::decode::BufDecoder;
+use crate::prelude::*;
+
+// Client -> Server: Greeting (nounce, timestamp, random bytes) Server dose not send anything back, close connection after random delay if Greeting is invalid Client -> Server: Request (addr, port)
 // Server -> Client: Response
 // Client <-> Server: Data
 // Client <-> Server: EOF (for proxied connection)
@@ -20,6 +21,16 @@ fn cal_rand_byte_len(key: &[u8; 32], nonce: &[u8; 12], timestamp: u64) -> usize 
         .unwrap();
     len
 }
+
+type ReadEncrypted<S, C> = EncryptedRead<ReadHalf<S>, C>;
+type WriteEncrypted<S, C> = EncryptedWrite<WriteHalf<S>, C>;
+type FramedRead<S, C> = BufDecoder<ReadEncrypted<S, C>>;
+
+pub trait StaticStream: AsyncRead + AsyncWrite + Unpin + 'static {}
+impl<T: AsyncRead + AsyncWrite + Unpin + 'static> StaticStream for T {}
+
+pub trait StaticCipher: StreamCipher + Unpin + 'static {}
+impl<T: StreamCipher + Unpin + 'static> StaticCipher for T {}
 
 mod msg {
     use bytes::BytesMut;
@@ -83,13 +94,10 @@ mod msg {
 pub mod client_agent {
     use bytes::{BufMut, BytesMut};
     use chacha20::ChaCha20;
-    use chacha20::cipher::{KeyIvInit, StreamCipher};
+    use chacha20::cipher::KeyIvInit;
     use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-    use tokio::io::{ReadHalf, WriteHalf};
 
-    // use super::AddrRef;
-    use crate::decode::*;
-    use crate::prelude::*;
+    use super::*;
 
     pub struct Init<Stream>
     where
@@ -102,7 +110,7 @@ pub mod client_agent {
 
     impl<Stream> Init<Stream>
     where
-        Stream: AsyncRead + AsyncWrite + 'static + Unpin,
+        Stream: StaticStream,
     {
         pub fn new(key: Box<[u8; 32]>, nonce: Box<[u8; 12]>, stream: Stream) -> Self {
             Self { key, nonce, stream }
@@ -147,21 +155,21 @@ pub mod client_agent {
 
     pub struct Greeted<Stream, Cipher>
     where
-        Cipher: StreamCipher + Unpin + 'static,
-        Stream: AsyncRead + AsyncWrite + 'static + Unpin,
+        Stream: StaticStream,
+        Cipher: StaticCipher,
     {
-        stream_write: EncryptedWrite<WriteHalf<Stream>, Cipher>,
-        stream_read: BufDecoder<EncryptedRead<ReadHalf<Stream>, Cipher>>,
+        stream_write: WriteEncrypted<Stream, Cipher>,
+        stream_read: FramedRead<Stream, Cipher>,
     }
 
     impl<Stream, Cipher> Greeted<Stream, Cipher>
     where
-        Cipher: StreamCipher + Unpin + 'static,
-        Stream: AsyncRead + AsyncWrite + 'static + Unpin,
+        Stream: StaticStream,
+        Cipher: StaticCipher,
     {
         pub fn new(
-            stream_write: EncryptedWrite<WriteHalf<Stream>, Cipher>,
-            stream_read: BufDecoder<EncryptedRead<ReadHalf<Stream>, Cipher>>,
+            stream_write: WriteEncrypted<Stream, Cipher>,
+            stream_read: FramedRead<Stream, Cipher>,
         ) -> Self {
             Self {
                 stream_write,
@@ -180,14 +188,13 @@ pub mod client_agent {
 }
 
 pub mod server_agent {
+    use chacha20::ChaCha20;
     use chacha20::cipher::KeyIvInit;
-    use chacha20::{ChaCha20, cipher::StreamCipher};
     use thiserror::Error;
-    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadHalf, WriteHalf};
+    use tokio::io::AsyncReadExt;
 
-    use super::msg;
+    use super::*;
     use crate::decode::*;
-    use crate::prelude::*;
 
     #[derive(Error, Debug)]
     pub enum InitError {
@@ -199,7 +206,7 @@ pub mod server_agent {
 
     pub struct Init<Stream>
     where
-        Stream: AsyncRead + AsyncWrite + 'static + Unpin,
+        Stream: StaticStream,
     {
         key: Box<[u8; 32]>,
         stream: Stream,
@@ -207,7 +214,7 @@ pub mod server_agent {
 
     impl<Stream> Init<Stream>
     where
-        Stream: AsyncRead + AsyncWrite + 'static + Unpin,
+        Stream: StaticStream,
     {
         pub fn new(key: Box<[u8; 32]>, stream: Stream) -> Self {
             Self { key, stream }
@@ -277,21 +284,21 @@ pub mod server_agent {
 
     pub struct Greeted<Stream, Cipher>
     where
-        Cipher: StreamCipher + Unpin + 'static,
-        Stream: AsyncRead + AsyncWrite + 'static + Unpin,
+        Stream: StaticStream,
+        Cipher: StaticCipher,
     {
-        stream_write: EncryptedWrite<WriteHalf<Stream>, Cipher>,
-        stream_read: BufDecoder<EncryptedRead<ReadHalf<Stream>, Cipher>>,
+        stream_write: WriteEncrypted<Stream, Cipher>,
+        stream_read: FramedRead<Stream, Cipher>,
     }
 
     impl<Stream, Cipher> Greeted<Stream, Cipher>
     where
-        Cipher: StreamCipher + Unpin + 'static,
-        Stream: AsyncRead + AsyncWrite + 'static + Unpin,
+        Stream: StaticStream,
+        Cipher: StaticCipher,
     {
         pub fn new(
-            stream_write: EncryptedWrite<WriteHalf<Stream>, Cipher>,
-            stream_read: BufDecoder<EncryptedRead<ReadHalf<Stream>, Cipher>>,
+            stream_write: WriteEncrypted<Stream, Cipher>,
+            stream_read: FramedRead<Stream, Cipher>,
         ) -> Self {
             Self {
                 stream_write,
