@@ -12,15 +12,15 @@ async fn main() {
 
     let agent = listener.accept().await.unwrap();
 
-    let (greeting_msg, msg_bytes, agent) = agent.receive_greeting_message().await.unwrap();
+    let (msg, agent) = agent.receive_greeting_message().await.unwrap();
 
-    // dbg!(greeting_msg.ver.read(msg_bytes.as_ref()));
-    // dbg!(greeting_msg.methods.read(msg_bytes.as_ref()));
+    dbg!(msg.ver());
+    dbg!(msg.methods());
 
-    let (req_msg, msg_bytes, agent) = agent.send_method_selection_message(0).await.unwrap();
+    let (msg, agent) = agent.send_method_selection_message(0).await.unwrap();
 
-    dbg!(req_msg.ver.read(msg_bytes.as_ref()));
-    dbg!(req_msg.cmd.read(msg_bytes.as_ref()));
-    dbg!(req_msg.rsv.read(msg_bytes.as_ref()));
-    dbg!(req_msg.addr.format(msg_bytes.as_ref()));
+    dbg!(msg.ver());
+    dbg!(msg.cmd());
+    dbg!(msg.rsv());
+    dbg!(msg.addr());
 }

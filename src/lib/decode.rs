@@ -235,12 +235,27 @@ pub enum RefAddr {
     Domain(RefSlice),
 }
 
+#[derive(Debug)]
+pub enum ViewAddr<'a> {
+    Ipv4(std::net::Ipv4Addr),
+    Ipv6(std::net::Ipv6Addr),
+    Domain(&'a str),
+}
+
 impl RefAddr {
     pub fn format<'bytes>(&self, bytes: &'bytes [u8]) -> String {
         match self {
             RefAddr::Ipv4(addr) => addr.read(bytes).to_string(),
             RefAddr::Ipv6(addr) => addr.read(bytes).to_string(),
             RefAddr::Domain(addr) => String::from(addr.read_as_str(bytes)),
+        }
+    }
+
+    pub fn read<'bytes>(&self, bytes: &'bytes [u8]) -> ViewAddr<'bytes> {
+        match self {
+            RefAddr::Ipv4(addr) => ViewAddr::Ipv4(addr.read(bytes)),
+            RefAddr::Ipv6(addr) => ViewAddr::Ipv6(addr.read(bytes)),
+            RefAddr::Domain(addr) => ViewAddr::Domain(addr.read_as_str(bytes)),
         }
     }
 }

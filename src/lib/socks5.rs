@@ -10,18 +10,34 @@ use crate::decode::*;
 pub mod msg {
     use super::*;
 
-    pub struct PeekClientGreedingMessage {
+    pub struct RefClientGreeding {
         pub ver: RefU8,
         pub methods: RefSlice,
     }
 
     pub fn peek_client_greeding_message(
         cursor: &mut std::io::Cursor<&[u8]>,
-    ) -> Result<Option<PeekClientGreedingMessage>, Socks5Error> {
+    ) -> Result<Option<RefClientGreeding>, Socks5Error> {
         let ver = try_peek!(cursor.peek_u8());
         let methods = try_peek!(cursor.peek_oct_len_slice());
 
-        Ok(Some(PeekClientGreedingMessage { ver, methods }))
+        Ok(Some(RefClientGreeding { ver, methods }))
+    }
+
+    pub struct ViewClientGreeding(RefClientGreeding, BytesMut);
+
+    impl ViewClientGreeding {
+        pub fn new(greeting: RefClientGreeding, msg_bytes: BytesMut) -> Self {
+            Self(greeting, msg_bytes)
+        }
+
+        pub fn ver(&self) -> u8 {
+            self.0.ver.read(self.1.as_ref())
+        }
+
+        pub fn methods(&self) -> &[u8] {
+            self.0.methods.read(self.1.as_ref())
+        }
     }
 
     pub struct MethodSelection {
@@ -36,7 +52,7 @@ pub mod msg {
         return Ok(buf);
     }
 
-    pub struct PeekRequest {
+    pub struct RefRequest {
         pub ver: RefU8,
         pub cmd: RefU8,
         pub rsv: RefU8,
@@ -46,20 +62,47 @@ pub mod msg {
 
     pub fn peek_request(
         cursor: &mut std::io::Cursor<&[u8]>,
-    ) -> Result<Option<PeekRequest>, Socks5Error> {
+    ) -> Result<Option<RefRequest>, Socks5Error> {
         let ver = try_peek!(cursor.peek_u8());
         let cmd = try_peek!(cursor.peek_u8());
         let rsv = try_peek!(cursor.peek_u8());
         let addr = try_peek!(peek_addr(cursor)?);
         let port = try_peek!(cursor.peek_u16());
 
-        Ok(Some(PeekRequest {
+        Ok(Some(RefRequest {
             ver,
             cmd,
             rsv,
             addr,
             port,
         }))
+    }
+
+    pub struct ViewRequest(RefRequest, BytesMut);
+    impl ViewRequest {
+        pub fn new(request: RefRequest, msg_bytes: BytesMut) -> Self {
+            Self(request, msg_bytes)
+        }
+
+        pub fn ver(&self) -> u8 {
+            self.0.ver.read(self.1.as_ref())
+        }
+
+        pub fn cmd(&self) -> u8 {
+            self.0.cmd.read(self.1.as_ref())
+        }
+
+        pub fn rsv(&self) -> u8 {
+            self.0.rsv.read(self.1.as_ref())
+        }
+
+        pub fn addr(&self) -> ViewAddr {
+            self.0.addr.read(self.1.as_ref())
+        }
+
+        pub fn port(&self) -> u16 {
+            self.0.port.read(self.1.as_ref())
+        }
     }
 }
 
@@ -124,8 +167,7 @@ pub mod agent {
 
         pub async fn receive_greeting_message(
             mut self,
-        ) -> Result<(msg::PeekClientGreedingMessage, BytesMut, Greeted<Stream>), Socks5Error>
-        {
+        ) -> Result<(msg::ViewClientGreeding, Greeted<Stream>), Socks5Error> {
             let (greeting_msg, msg_bytes) = self
                 .stream_read
                 .try_decode(peek_client_greeding_message)
@@ -137,8 +179,7 @@ pub mod agent {
                 .contextualize_err("receving client greeting message")?;
 
             Ok((
-                greeting_msg,
-                msg_bytes,
+                ViewClientGreeding::new(greeting_msg, msg_bytes),
                 Greeted::new(self.stream_read, self.stream_write),
             ))
         }
@@ -169,7 +210,7 @@ pub mod agent {
         pub async fn send_method_selection_message(
             mut self,
             method: u8,
-        ) -> Result<(msg::PeekRequest, BytesMut, Requested<Stream>), Socks5Error> {
+        ) -> Result<(ViewRequest, Requested<Stream>), Socks5Error> {
             let buf = msg::encode_method_selection(msg::MethodSelection { ver: 5, method })?;
             self.stream_write
                 .write_all(buf.as_ref())
@@ -192,8 +233,7 @@ pub mod agent {
                 .contextualize_err("receving request message")?;
 
             Ok((
-                req_msg,
-                msg_bytes,
+                ViewRequest::new(req_msg, msg_bytes),
                 Requested::new(self.stream_read, self.stream_write),
             ))
         }

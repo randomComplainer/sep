@@ -28,9 +28,8 @@ async fn main() {
 
     let mut client_agent = client_agent.send_request(&mut addr_buf).await.unwrap();
 
-    let ((addr, port), req_bytes) = server_agent.recv_request().await.unwrap();
+    let req = server_agent.recv_request().await.unwrap();
 
-    dbg!(req_bytes.as_ref());
-    dbg!(addr.format(req_bytes.as_ref()));
-    dbg!(port.read(req_bytes.as_ref()));
+    dbg!(req.addr());
+    dbg!(req.port());
 }

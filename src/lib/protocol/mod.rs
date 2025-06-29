@@ -10,12 +10,6 @@
 
 const RAND_BYTE_LEN_MAX: usize = 1024;
 
-// pub enum AddrRef<'a> {
-//     Ipv4(std::net::Ipv4Addr),
-//     Ipv6(std::net::Ipv6Addr),
-//     Domain(&'a [u8]),
-// }
-
 fn cal_rand_byte_len(key: &[u8; 32], nonce: &[u8; 12], timestamp: u64) -> usize {
     let key_head = u64::from_be_bytes(key[0..8].try_into().unwrap());
     let nonce_head = u64::from_be_bytes(nonce[0..8].try_into().unwrap());
@@ -25,6 +19,65 @@ fn cal_rand_byte_len(key: &[u8; 32], nonce: &[u8; 12], timestamp: u64) -> usize 
         .try_into()
         .unwrap();
     len
+}
+
+mod msg {
+    use bytes::BytesMut;
+    use derive_more::From;
+
+    use crate::decode::*;
+
+    // nonce comes unencrypted so it's not here
+    pub struct RefGreeting {
+        timestamp: RefU64,
+    }
+
+    pub fn peek_greeting(
+        cursor: &mut std::io::Cursor<&[u8]>,
+    ) -> Result<Option<RefGreeting>, std::io::Error> {
+        let timestamp = try_peek!(cursor.peek_u64());
+        Ok(Some(RefGreeting { timestamp }))
+    }
+
+    pub struct ViewGreeting(RefGreeting, BytesMut);
+    impl ViewGreeting {
+        pub fn new(tup: (RefGreeting, BytesMut)) -> Self {
+            Self(tup.0, tup.1)
+        }
+
+        pub fn timestamp(&self) -> u64 {
+            self.0.timestamp.read(self.1.as_ref())
+        }
+    }
+
+    pub struct RefRequest {
+        addr: RefAddr,
+        port: RefU16,
+    }
+
+    pub fn peek_request(
+        cursor: &mut std::io::Cursor<&[u8]>,
+    ) -> Result<Option<RefRequest>, std::io::Error> {
+        let addr = try_peek!(peek_addr(cursor)?);
+        let port = try_peek!(cursor.peek_u16());
+        Ok(Some(RefRequest { addr, port }))
+    }
+
+    #[derive(From)]
+    pub struct ViewRequest(RefRequest, BytesMut);
+    impl ViewRequest {
+        pub fn new(tup: (RefRequest, BytesMut)) -> Self {
+            Self(tup.0, tup.1)
+        }
+
+        pub fn addr(&self) -> ViewAddr {
+            self.0.addr.read(self.1.as_ref())
+        }
+
+        pub fn port(&self) -> u16 {
+            self.0.port.read(self.1.as_ref())
+        }
+    }
 }
 
 pub mod client_agent {
@@ -127,13 +180,13 @@ pub mod client_agent {
 }
 
 pub mod server_agent {
-    use bytes::BytesMut;
     use chacha20::cipher::KeyIvInit;
     use chacha20::{ChaCha20, cipher::StreamCipher};
     use thiserror::Error;
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadHalf, WriteHalf};
 
-    use crate::decode::{BufDecoder, RefU16};
+    use super::msg;
+    use crate::decode::*;
     use crate::prelude::*;
 
     #[derive(Error, Debug)]
@@ -186,14 +239,12 @@ pub mod server_agent {
             let stream_read = EncryptedRead::new(stream_read, cipher);
             let mut stream_read = crate::decode::BufDecoder::new(stream_read);
 
-            let (peek_client_timestamp, timestamp_buf) = stream_read
-                .try_decode(|cursor| Ok::<_, std::io::Error>(cursor.peek_u64()))
-                .await
-                .and_then(|opt| {
-                    opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, ""))
-                })?;
+            let msg =
+                msg::ViewGreeting::new(stream_read.try_decode(msg::peek_greeting).await.and_then(
+                    |opt| opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "")),
+                )?);
 
-            let client_timestamp = peek_client_timestamp.read(&timestamp_buf);
+            let client_timestamp = msg.timestamp();
 
             if u64::abs_diff(client_timestamp, server_timestamp) > 30 {
                 return Err(InitError::InvalidGreeting("invalid timestamp"));
@@ -248,27 +299,20 @@ pub mod server_agent {
             }
         }
 
-        pub async fn recv_request(
-            mut self,
-        ) -> Result<((crate::decode::RefAddr, RefU16), BytesMut), std::io::Error> {
-            let ((addr_offset, port_offest), req_bytes) = self
-                .stream_read
-                .try_decode(|cursor| {
-                    let addr = try_peek!(crate::decode::peek_addr(cursor)?);
-                    let port = try_peek!(cursor.peek_u16());
+        pub async fn recv_request(mut self) -> Result<msg::ViewRequest, std::io::Error> {
+            let view = msg::ViewRequest::new(
+                self.stream_read
+                    .try_decode(msg::peek_request)
+                    .await
+                    .and_then(|msg_opt| match msg_opt {
+                        Some(msg) => Ok(msg),
+                        None => {
+                            Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
+                        }
+                    })?,
+            );
 
-                    dbg!(addr.format(cursor.get_ref()));
-                    dbg!(port.read(cursor.get_ref()));
-
-                    Ok::<_, std::io::Error>(Some((addr, port)))
-                })
-                .await
-                .and_then(|msg_opt| match msg_opt {
-                    Some(msg) => Ok(msg),
-                    None => Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into()),
-                })?;
-
-            Ok(((addr_offset, port_offest), req_bytes))
+            Ok(view)
         }
     }
 }
