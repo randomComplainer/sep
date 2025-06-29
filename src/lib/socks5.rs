@@ -8,13 +8,11 @@ use tokio::net::TcpStream;
 use crate::decode::*;
 
 pub mod msg {
-    use bytes::Buf;
-
     use super::*;
 
     pub struct PeekClientGreedingMessage {
-        pub ver: PeekU8,
-        pub methods: PeekSlice,
+        pub ver: RefU8,
+        pub methods: RefSlice,
     }
 
     pub fn peek_client_greeding_message(
@@ -38,81 +36,12 @@ pub mod msg {
         return Ok(buf);
     }
 
-    pub struct PeekIpv4Addr {
-        pub offset: usize,
-    }
-
-    impl PeekIpv4Addr {
-        pub fn read(&self, bytes: &[u8]) -> std::net::Ipv4Addr {
-            let raw = &bytes[self.offset..self.offset + 4];
-            std::net::Ipv4Addr::from(<[u8; 4]>::try_from(raw).unwrap())
-        }
-    }
-
-    pub struct PeekIpv6Addr {
-        pub offset: usize,
-    }
-
-    impl PeekIpv6Addr {
-        pub fn read(&self, bytes: &[u8]) -> std::net::Ipv6Addr {
-            let raw = &bytes[self.offset..self.offset + 16];
-            std::net::Ipv6Addr::from(<[u8; 16]>::try_from(raw).unwrap())
-        }
-    }
-
-    pub enum PeekAddr {
-        Ipv4(PeekIpv4Addr),
-        Ipv6(PeekIpv6Addr),
-        Domain(PeekSlice),
-    }
-
-    impl PeekAddr {
-        pub fn format<'bytes>(&self, bytes: &'bytes [u8]) -> String {
-            match self {
-                PeekAddr::Ipv4(addr) => addr.read(bytes).to_string(),
-                PeekAddr::Ipv6(addr) => addr.read(bytes).to_string(),
-                PeekAddr::Domain(addr) => String::from(addr.read_as_str(bytes)),
-            }
-        }
-    }
-
-    pub fn peek_addr(
-        cursor: &mut std::io::Cursor<&[u8]>,
-    ) -> Result<Option<PeekAddr>, std::io::Error> {
-        let atyp = try_peek!(cursor.peek_u8()).read(cursor.get_ref());
-        Ok(Some(match atyp {
-            1 => {
-                let addr = PeekAddr::Ipv4(PeekIpv4Addr {
-                    offset: cursor.position().try_into().unwrap(),
-                });
-                cursor.advance(4);
-                addr
-            }
-
-            4 => {
-                let addr = PeekAddr::Ipv6(PeekIpv6Addr {
-                    offset: cursor.position().try_into().unwrap(),
-                });
-                cursor.advance(16);
-                addr
-            }
-            3 => PeekAddr::Domain(try_peek!(cursor.peek_oct_len_slice())),
-            _ => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "invalid address type",
-                )
-                .into());
-            }
-        }))
-    }
-
     pub struct PeekRequest {
-        pub ver: PeekU8,
-        pub cmd: PeekU8,
-        pub rsv: PeekU8,
-        pub addr: PeekAddr,
-        pub port: PeekU16,
+        pub ver: RefU8,
+        pub cmd: RefU8,
+        pub rsv: RefU8,
+        pub addr: RefAddr,
+        pub port: RefU16,
     }
 
     pub fn peek_request(

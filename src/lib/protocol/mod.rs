@@ -133,7 +133,7 @@ pub mod server_agent {
     use thiserror::Error;
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadHalf, WriteHalf};
 
-    use crate::decode::{BufDecoder, PeekU16};
+    use crate::decode::{BufDecoder, RefU16};
     use crate::prelude::*;
 
     #[derive(Error, Debug)]
@@ -250,11 +250,11 @@ pub mod server_agent {
 
         pub async fn recv_request(
             mut self,
-        ) -> Result<((crate::socks5::msg::PeekAddr, PeekU16), BytesMut), std::io::Error> {
+        ) -> Result<((crate::decode::RefAddr, RefU16), BytesMut), std::io::Error> {
             let ((addr_offset, port_offest), req_bytes) = self
                 .stream_read
                 .try_decode(|cursor| {
-                    let addr = try_peek!(crate::socks5::msg::peek_addr(cursor)?);
+                    let addr = try_peek!(crate::decode::peek_addr(cursor)?);
                     let port = try_peek!(cursor.peek_u16());
 
                     dbg!(addr.format(cursor.get_ref()));
