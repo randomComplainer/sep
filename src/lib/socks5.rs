@@ -104,6 +104,34 @@ pub mod msg {
             self.0.port.read(self.1.as_ref())
         }
     }
+
+    pub struct Reply {
+        pub ver: u8,
+        pub rep: u8,
+        pub rsv: u8,
+        pub addr: SocketAddr,
+    }
+
+    pub fn encode_reply(item: Reply) -> Result<BytesMut, std::io::Error> {
+        let mut buf = BytesMut::with_capacity(4 + 16 + 2);
+        buf.put_u8(item.ver);
+        buf.put_u8(item.rep);
+        buf.put_u8(item.rsv);
+        match item.addr {
+            SocketAddr::V4(addr) => {
+                buf.put_u8(0x01);
+                buf.put_u32(addr.ip().to_bits());
+                buf.put_u16(addr.port());
+            }
+            SocketAddr::V6(addr) => {
+                buf.put_u8(0x04);
+                buf.put_slice(&addr.ip().octets());
+                buf.put_u16(addr.port());
+            }
+        };
+
+        return Ok(buf);
+    }
 }
 
 #[derive(Error, Debug)]
@@ -136,6 +164,8 @@ where
 }
 
 pub mod agent {
+    use std::net::SocketAddr;
+
     use tokio::io::AsyncRead;
     use tokio::io::AsyncWrite;
     use tokio::io::ReadHalf;
@@ -217,11 +247,6 @@ pub mod agent {
                 .await
                 .contextualize_err("sending method selection message")?;
 
-            self.stream_write
-                .write_all(&buf)
-                .await
-                .contextualize_err("sending method selection message")?;
-
             let (req_msg, msg_bytes) = self
                 .stream_read
                 .try_decode(peek_request)
@@ -259,6 +284,19 @@ pub mod agent {
                 stream_read,
                 stream_write,
             }
+        }
+
+        pub async fn reply(mut self, bound_addr: SocketAddr) -> Result<(), std::io::Error> {
+            let buf = msg::encode_reply(msg::Reply {
+                ver: 5,
+                rep: 0,
+                rsv: 0,
+                addr: bound_addr,
+            })?;
+
+            self.stream_write.write_all(buf.as_ref()).await?;
+
+            Ok(())
         }
     }
 

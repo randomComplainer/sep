@@ -23,4 +23,9 @@ async fn main() {
     dbg!(msg.cmd());
     dbg!(msg.rsv());
     dbg!(msg.addr());
+
+    agent.reply(std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
+        std::net::Ipv4Addr::new(127, 0, 0, 1),
+        1080,
+    )));
 }

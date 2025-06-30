@@ -188,6 +188,7 @@ pub mod client_agent {
 }
 
 pub mod server_agent {
+    use bytes::{BufMut, BytesMut};
     use chacha20::ChaCha20;
     use chacha20::cipher::KeyIvInit;
     use thiserror::Error;
@@ -320,6 +321,57 @@ pub mod server_agent {
             );
 
             Ok(view)
+        }
+    }
+
+    pub struct RequestAccepted<Stream, Cipher>
+    where
+        Stream: StaticStream,
+        Cipher: StaticCipher,
+    {
+        stream_write: WriteEncrypted<Stream, Cipher>,
+        stream_read: FramedRead<Stream, Cipher>,
+    }
+
+    impl<Stream, Cipher> RequestAccepted<Stream, Cipher>
+    where
+        Stream: StaticStream,
+        Cipher: StaticCipher,
+    {
+        pub fn new(
+            stream_write: WriteEncrypted<Stream, Cipher>,
+            stream_read: FramedRead<Stream, Cipher>,
+        ) -> Self {
+            Self {
+                stream_write,
+                stream_read,
+            }
+        }
+
+        pub async fn reply(
+            mut self,
+            bound_addr: std::net::SocketAddr,
+        ) -> Result<(), std::io::Error> {
+            let mut buf = match bound_addr {
+                std::net::SocketAddr::V4(addr) => {
+                    let mut buf = BytesMut::with_capacity(1 + 4 + 2);
+                    buf.put_u8(0x01);
+                    buf.put_u32(addr.ip().to_bits());
+                    buf.put_u16(addr.port());
+                    buf
+                }
+                std::net::SocketAddr::V6(addr) => {
+                    let mut buf = BytesMut::with_capacity(1 + 16 + 2);
+                    buf.put_u8(0x04);
+                    buf.put_slice(&addr.ip().octets());
+                    buf.put_u16(addr.port());
+                    buf
+                }
+            };
+
+            self.stream_write.write_all(buf.as_mut()).await?;
+
+            Ok(())
         }
     }
 }
