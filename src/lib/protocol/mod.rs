@@ -1,3 +1,5 @@
+use std::time::SystemTime;
+
 use chacha20::cipher::StreamCipher;
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 
@@ -10,6 +12,13 @@ use crate::prelude::*;
 // Client <-> Server: EOF (for proxied connection)
 
 const RAND_BYTE_LEN_MAX: usize = 1024;
+
+pub fn get_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
 
 fn cal_rand_byte_len(key: &[u8; 32], nonce: &[u8; 12], timestamp: u64) -> usize {
     let key_head = u64::from_be_bytes(key[0..8].try_into().unwrap());
@@ -92,12 +101,15 @@ mod msg {
 }
 
 pub mod client_agent {
+    use std::net::SocketAddr;
+
     use bytes::{BufMut, BytesMut};
     use chacha20::ChaCha20;
     use chacha20::cipher::KeyIvInit;
     use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
     use super::*;
+    use crate::decode::*;
 
     pub struct Init<Stream>
     where
@@ -180,14 +192,25 @@ pub mod client_agent {
         pub async fn send_request(
             mut self,
             addr_bytes: &mut [u8], // Addr + Port, in Socks5 format
-        ) -> Result<(), std::io::Error> {
+        ) -> Result<SocketAddr, std::io::Error> {
             self.stream_write.write_all(addr_bytes).await?;
-            Ok(())
+            let (addr, _) = self
+                .stream_read
+                .try_decode(crate::decode::peek_socket_addr)
+                .await
+                .and_then(|msg_opt| match msg_opt {
+                    Some(msg) => Ok(msg),
+                    None => Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into()),
+                })?;
+
+            Ok(addr)
         }
     }
 }
 
 pub mod server_agent {
+    use std::net::SocketAddr;
+
     use bytes::{BufMut, BytesMut};
     use chacha20::ChaCha20;
     use chacha20::cipher::KeyIvInit;
@@ -266,7 +289,7 @@ pub mod server_agent {
                 ));
             }
 
-            stream_read
+            let (ref_rand_byte, rand_byte) = stream_read
                 .try_decode(|cursor| Ok::<_, std::io::Error>(cursor.peek_slice(rand_byte_len)))
                 .await
                 .and_then(|opt| {
@@ -280,6 +303,24 @@ pub mod server_agent {
                 ),
                 stream_read,
             ))
+        }
+    }
+
+    pub struct TcpListener {
+        inner: tokio::net::TcpListener,
+        // TODO: use Arc<[u8; 32]>
+        key: Box<[u8; 32]>,
+    }
+
+    impl TcpListener {
+        pub async fn bind(addr: SocketAddr, key: Box<[u8; 32]>) -> Result<Self, InitError> {
+            let inner = tokio::net::TcpListener::bind(addr).await?;
+            Ok(Self { inner, key })
+        }
+
+        pub async fn accept(&self) -> Result<(Init<tokio::net::TcpStream>, SocketAddr), InitError> {
+            let (stream, addr) = self.inner.accept().await?;
+            Ok((Init::new(self.key.clone(), stream), addr))
         }
     }
 
@@ -307,7 +348,9 @@ pub mod server_agent {
             }
         }
 
-        pub async fn recv_request(mut self) -> Result<msg::ViewRequest, std::io::Error> {
+        pub async fn recv_request(
+            mut self,
+        ) -> Result<(msg::ViewRequest, RequestAccepted<Stream, Cipher>), std::io::Error> {
             let view = msg::ViewRequest::new(
                 self.stream_read
                     .try_decode(msg::peek_request)
@@ -320,7 +363,10 @@ pub mod server_agent {
                     })?,
             );
 
-            Ok(view)
+            Ok((
+                view,
+                RequestAccepted::new(self.stream_write, self.stream_read),
+            ))
         }
     }
 

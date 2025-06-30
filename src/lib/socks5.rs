@@ -78,7 +78,7 @@ pub mod msg {
         }))
     }
 
-    pub struct ViewRequest(RefRequest, BytesMut);
+    pub struct ViewRequest(pub RefRequest, BytesMut);
     impl ViewRequest {
         pub fn new(request: RefRequest, msg_bytes: BytesMut) -> Self {
             Self(request, msg_bytes)
@@ -100,19 +100,25 @@ pub mod msg {
             self.0.addr.read(self.1.as_ref())
         }
 
+        // in Socks5 format, including port
+        pub fn addr_bytes_mut(&mut self) -> &mut [u8] {
+            self.1[self.0.addr.offset() - 1..self.0.addr.offset() - 1 + self.0.addr.len() + 2]
+                .as_mut()
+        }
+
         pub fn port(&self) -> u16 {
             self.0.port.read(self.1.as_ref())
         }
     }
 
-    pub struct Reply {
+    pub struct Reply<'a> {
         pub ver: u8,
         pub rep: u8,
         pub rsv: u8,
-        pub addr: SocketAddr,
+        pub addr: &'a SocketAddr,
     }
 
-    pub fn encode_reply(item: Reply) -> Result<BytesMut, std::io::Error> {
+    pub fn encode_reply(item: &Reply) -> Result<BytesMut, std::io::Error> {
         let mut buf = BytesMut::with_capacity(4 + 16 + 2);
         buf.put_u8(item.ver);
         buf.put_u8(item.rep);
@@ -286,8 +292,8 @@ pub mod agent {
             }
         }
 
-        pub async fn reply(mut self, bound_addr: SocketAddr) -> Result<(), std::io::Error> {
-            let buf = msg::encode_reply(msg::Reply {
+        pub async fn reply(mut self, bound_addr: &SocketAddr) -> Result<(), std::io::Error> {
+            let buf = msg::encode_reply(&msg::Reply {
                 ver: 5,
                 rep: 0,
                 rsv: 0,
@@ -310,9 +316,9 @@ pub mod agent {
             Ok(Self { inner })
         }
 
-        pub async fn accept(&self) -> Result<Init<TcpStream>, Socks5Error> {
-            let (stream, _) = self.inner.accept().await?;
-            Ok(Init::new(stream))
+        pub async fn accept(&self) -> Result<(Init<TcpStream>, SocketAddr), Socks5Error> {
+            let (stream, addr) = self.inner.accept().await?;
+            Ok((Init::new(stream), addr))
         }
     }
 }

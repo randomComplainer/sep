@@ -258,27 +258,112 @@ impl RefAddr {
             RefAddr::Domain(addr) => ViewAddr::Domain(addr.read_as_str(bytes)),
         }
     }
+
+    pub fn bytes_mut<'bytes>(&self, bytes: &'bytes mut [u8]) -> &'bytes mut [u8] {
+        match self {
+            RefAddr::Ipv4(addr) => bytes[addr.offset - 2..addr.offset + 1].as_mut(),
+            RefAddr::Ipv6(addr) => bytes[addr.offset - 2..addr.offset + 15].as_mut(),
+            RefAddr::Domain(addr) => bytes[addr.offset - 2..addr.offset + addr.len].as_mut(),
+        }
+    }
+
+    pub fn offset(&self) -> usize {
+        match self {
+            RefAddr::Ipv4(addr) => addr.offset - 1,
+            RefAddr::Ipv6(addr) => addr.offset - 1,
+            RefAddr::Domain(addr) => addr.offset - 1,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            RefAddr::Ipv4(_) => 1 + 4,
+            RefAddr::Ipv6(_) => 1 + 16,
+            RefAddr::Domain(addr) => 1 + 1 + addr.len,
+        }
+    }
 }
 
 pub fn peek_addr(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Option<RefAddr>, std::io::Error> {
     let atyp = try_peek!(cursor.peek_u8()).read(cursor.get_ref());
     Ok(Some(match atyp {
         1 => {
+            let adv = 4;
+            if cursor.remaining() < adv {
+                return Ok(None);
+            }
             let addr = RefAddr::Ipv4(RefIpv4Addr {
                 offset: cursor.position().try_into().unwrap(),
             });
-            cursor.advance(4);
+            cursor.advance(adv);
             addr
         }
 
         4 => {
+            let adv = 16;
+            if cursor.remaining() < adv {
+                return Ok(None);
+            }
             let addr = RefAddr::Ipv6(RefIpv6Addr {
                 offset: cursor.position().try_into().unwrap(),
             });
-            cursor.advance(16);
+            cursor.advance(adv);
             addr
         }
         3 => RefAddr::Domain(try_peek!(cursor.peek_oct_len_slice())),
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid address type",
+            )
+            .into());
+        }
+    }))
+}
+
+pub fn peek_socket_addr(
+    cursor: &mut std::io::Cursor<&[u8]>,
+) -> Result<Option<std::net::SocketAddr>, std::io::Error> {
+    let atyp = try_peek!(cursor.peek_u8()).read(cursor.get_ref());
+    Ok(Some(match atyp {
+        1 => {
+            let adv = 4 + 2;
+            if cursor.remaining() < adv {
+                return Ok(None);
+            }
+            let ref_addr = RefIpv4Addr {
+                offset: cursor.position().try_into().unwrap(),
+            };
+            let ref_port = RefU16 {
+                offset: (cursor.position() + 4).try_into().unwrap(),
+            };
+            cursor.advance(adv);
+            std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
+                ref_addr.read(cursor.get_ref()),
+                ref_port.read(cursor.get_ref()),
+            ))
+        }
+
+        4 => {
+            let adv = 16 + 2;
+            if cursor.remaining() < adv {
+                return Ok(None);
+            }
+            let ref_addr = RefIpv6Addr {
+                offset: cursor.position().try_into().unwrap(),
+            };
+            let ref_port = RefU16 {
+                offset: (cursor.position() + 16).try_into().unwrap(),
+            };
+            cursor.advance(adv);
+            std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
+                ref_addr.read(cursor.get_ref()),
+                ref_port.read(cursor.get_ref()),
+                0,
+                0,
+            ))
+        }
+
         _ => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
