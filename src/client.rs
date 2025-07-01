@@ -51,7 +51,7 @@ where
 
     dbg!(proxyee_msg.0.ver.offset);
 
-    let server_bound_addr = server
+    let (server_bound_addr, _) = server
         .send_request(proxyee_msg.addr_bytes_mut())
         .await
         .unwrap();

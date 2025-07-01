@@ -109,7 +109,6 @@ pub mod client_agent {
     use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
     use super::*;
-    use crate::decode::*;
 
     pub struct Init<Stream>
     where
@@ -192,7 +191,7 @@ pub mod client_agent {
         pub async fn send_request(
             mut self,
             addr_bytes: &mut [u8], // Addr + Port, in Socks5 format
-        ) -> Result<SocketAddr, std::io::Error> {
+        ) -> Result<(SocketAddr, ()), std::io::Error> {
             self.stream_write.write_all(addr_bytes).await?;
             let (addr, _) = self
                 .stream_read
@@ -203,7 +202,7 @@ pub mod client_agent {
                     None => Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into()),
                 })?;
 
-            Ok(addr)
+            Ok((addr, ()))
         }
     }
 }
