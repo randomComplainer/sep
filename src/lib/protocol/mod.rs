@@ -106,6 +106,7 @@ pub mod client_agent {
     use bytes::{BufMut, BytesMut};
     use chacha20::ChaCha20;
     use chacha20::cipher::KeyIvInit;
+    use rand::RngCore;
     use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
     use super::*;
@@ -142,8 +143,8 @@ pub mod client_agent {
 
             let rand_byte_len = super::cal_rand_byte_len(&self.key, &self.nonce, timestamp);
 
-            // TODO: actually random generating
-            let rand_bytes = vec![0; rand_byte_len];
+            let mut rand_bytes = vec![0; rand_byte_len];
+            rand::rng().fill_bytes(&mut rand_bytes);
 
             let buf_size = 8 // timestamp
                 + rand_byte_len;
