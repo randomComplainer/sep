@@ -41,7 +41,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + 'static> StaticStream for T {}
 pub trait StaticCipher: StreamCipher + Unpin + 'static {}
 impl<T: StreamCipher + Unpin + 'static> StaticCipher for T {}
 
-mod msg {
+pub mod msg {
     use bytes::BytesMut;
     use derive_more::From;
 

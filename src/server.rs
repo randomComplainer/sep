@@ -1,6 +1,7 @@
+use std::iter;
 use std::net::SocketAddr;
 
-use sep_lib::protocol;
+use sep_lib::prelude::*;
 
 #[tokio::main]
 async fn main() {
@@ -22,6 +23,41 @@ async fn main() {
     }
 }
 
+async fn resolve_addrs(req: protocol::msg::ViewRequest) -> Result<Vec<SocketAddr>, std::io::Error> {
+    let addrs = match req.addr() {
+        decode::ViewAddr::Ipv4(addr) => {
+            vec![SocketAddr::new(addr.into(), req.port())]
+        }
+        decode::ViewAddr::Ipv6(addr) => {
+            vec![SocketAddr::new(addr.into(), req.port())]
+        }
+        decode::ViewAddr::Domain(addr) => {
+            tokio::net::lookup_host((addr, req.port())).await?.collect()
+        }
+    };
+
+    Ok(addrs)
+}
+
+async fn connect_target(addrs: Vec<SocketAddr>) -> Result<tokio::net::TcpStream, std::io::Error> {
+    for addr in addrs {
+        match tokio::net::TcpStream::connect(addr).await {
+            Ok(stream) => {
+                return Ok(stream);
+            }
+            // TODO: collect errors?
+            Err(_err) => {
+                continue;
+            }
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::ConnectionRefused,
+        "connect target failed",
+    ))
+}
+
 pub async fn handle_client<Stream>(agent: protocol::server_agent::Init<Stream>, addr: SocketAddr)
 where
     Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -31,13 +67,14 @@ where
         .await
         .unwrap();
 
-    let (msg, agent) = agent.recv_request().await.unwrap();
+    let (req, agent) = agent.recv_request().await.unwrap();
 
-    dbg!(msg.addr());
-    dbg!(msg.port());
+    let addrs = resolve_addrs(req).await.unwrap();
+
+    let target_stream = connect_target(addrs).await.unwrap();
 
     let _ = agent
-        .reply("128.0.0.1:1234".parse().unwrap())
+        .reply(target_stream.local_addr().unwrap())
         .await
         .unwrap();
 }

@@ -8,5 +8,5 @@ pub mod socks5;
 pub mod prelude {
     pub use crate::decode::Peek;
     pub use crate::encrypt::{EncryptedRead, EncryptedWrite};
-    pub use crate::{protocol, socks5};
+    pub use crate::{decode, protocol, socks5};
 }
