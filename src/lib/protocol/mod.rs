@@ -19,11 +19,11 @@ const RAND_BYTE_LEN_MAX: usize = 1024;
 pub type Key = [u8; 32];
 pub type Nonce = [u8; 12];
 
-pub fn key_from_string(s: &str) -> Arc<protocol::Key> {
+pub fn key_from_string(s: &str) -> Box<protocol::Key> {
     let mut hasher = Sha256::new();
     hasher.update(s.as_bytes());
     let result = hasher.finalize();
-    Arc::new(result.into())
+    Box::new(result.into())
 }
 
 pub fn rand_nonce() -> Box<protocol::Nonce> {

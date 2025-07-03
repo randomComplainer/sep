@@ -14,7 +14,7 @@ async fn main() {
 
     println!("Listening...");
 
-    let key = protocol::key_from_string("password");
+    let key: Arc<protocol::Key> = protocol::key_from_string("password").into();
 
     while let Ok((agent, addr)) = listener.accept().await {
         tokio::spawn({

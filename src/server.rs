@@ -8,7 +8,7 @@ async fn main() {
 
     let listener = protocol::server_agent::TcpListener::bind(
         "127.0.0.1:1081".parse().unwrap(),
-        protocol::key_from_string("password"),
+        protocol::key_from_string("password").into(),
     )
     .await
     .unwrap();
