@@ -1,6 +1,7 @@
 #![feature(assert_matches)]
 use std::assert_matches::assert_matches;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use chacha20::ChaCha20;
 use tokio::io::{DuplexStream, duplex};
@@ -11,8 +12,8 @@ async fn create_pair() -> (
     protocol::client_agent::Greeted<DuplexStream, ChaCha20>,
     protocol::server_agent::Greeted<DuplexStream, ChaCha20>,
 ) {
-    let key: Box<[u8; 32]> = vec![0u8; 32].try_into().unwrap();
-    let nonce: Box<[u8; 12]> = vec![1u8; 12].try_into().unwrap();
+    let key: Arc<protocol::Key> = protocol::key_from_string("000");
+    let nonce: Box<protocol::Nonce> = vec![1u8; 12].try_into().unwrap();
 
     let (client_steam, server_stream) = duplex(8 * 1024);
 

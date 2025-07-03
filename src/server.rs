@@ -1,4 +1,3 @@
-use std::iter;
 use std::net::SocketAddr;
 
 use sep_lib::prelude::*;
@@ -9,7 +8,7 @@ async fn main() {
 
     let listener = protocol::server_agent::TcpListener::bind(
         "127.0.0.1:1081".parse().unwrap(),
-        [0u8; 32].into(),
+        protocol::key_from_string("password"),
     )
     .await
     .unwrap();
@@ -58,8 +57,10 @@ async fn connect_target(addrs: Vec<SocketAddr>) -> Result<tokio::net::TcpStream,
     ))
 }
 
-pub async fn handle_client<Stream>(agent: protocol::server_agent::Init<Stream>, addr: SocketAddr)
-where
+pub async fn handle_client<Stream>(
+    agent: protocol::server_agent::Init<Stream>,
+    _local_addr: SocketAddr,
+) where
     Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let agent = agent

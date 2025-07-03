@@ -1,7 +1,9 @@
 use std::time::SystemTime;
+use std::sync::Arc;
 
 use chacha20::cipher::StreamCipher;
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
+use sha2::{Digest, Sha256};
 
 use crate::decode::BufDecoder;
 use crate::prelude::*;
@@ -12,6 +14,16 @@ use crate::prelude::*;
 // Client <-> Server: EOF (for proxied connection)
 
 const RAND_BYTE_LEN_MAX: usize = 1024;
+
+pub type Key = [u8; 32];
+pub type Nonce = [u8; 12];
+
+pub fn key_from_string(s: &str) -> Arc<protocol::Key> {
+    let mut hasher = Sha256::new();
+    hasher.update(s.as_bytes());
+    let result = hasher.finalize();
+    Arc::new(result.into())
+}
 
 pub fn get_timestamp() -> u64 {
     SystemTime::now()
@@ -42,6 +54,7 @@ pub trait StaticCipher: StreamCipher + Unpin + 'static {}
 impl<T: StreamCipher + Unpin + 'static> StaticCipher for T {}
 
 pub mod msg {
+
     use bytes::BytesMut;
     use derive_more::From;
 
@@ -102,6 +115,7 @@ pub mod msg {
 
 pub mod client_agent {
     use std::net::SocketAddr;
+    use std::sync::Arc;
 
     use bytes::{BufMut, BytesMut};
     use chacha20::ChaCha20;
@@ -115,8 +129,8 @@ pub mod client_agent {
     where
         Stream: AsyncRead + AsyncWrite + 'static + Unpin,
     {
-        key: Box<[u8; 32]>,
-        nonce: Box<[u8; 12]>,
+        key: Arc<Key>,
+        nonce: Box<Nonce>,
         stream: Stream,
     }
 
@@ -124,7 +138,7 @@ pub mod client_agent {
     where
         Stream: StaticStream,
     {
-        pub fn new(key: Box<[u8; 32]>, nonce: Box<[u8; 12]>, stream: Stream) -> Self {
+        pub fn new(key: Arc<Key>, nonce: Box<Nonce>, stream: Stream) -> Self {
             Self { key, nonce, stream }
         }
 
@@ -210,6 +224,7 @@ pub mod client_agent {
 
 pub mod server_agent {
     use std::net::SocketAddr;
+    use std::sync::Arc;
 
     use bytes::{BufMut, BytesMut};
     use chacha20::ChaCha20;
@@ -232,7 +247,7 @@ pub mod server_agent {
     where
         Stream: StaticStream,
     {
-        key: Box<[u8; 32]>,
+        key: Arc<[u8; 32]>,
         stream: Stream,
     }
 
@@ -240,7 +255,7 @@ pub mod server_agent {
     where
         Stream: StaticStream,
     {
-        pub fn new(key: Box<[u8; 32]>, stream: Stream) -> Self {
+        pub fn new(key: Arc<Key>, stream: Stream) -> Self {
             Self { key, stream }
         }
 
@@ -260,7 +275,7 @@ pub mod server_agent {
             mut self,
             server_timestamp: u64,
         ) -> Result<Greeted<Stream, ChaCha20>, InitError> {
-            let mut nonce: Box<[u8; 12]> = vec![0u8; 12].try_into().unwrap();
+            let mut nonce: Box<Nonce> = vec![0u8; 12].try_into().unwrap();
 
             self.stream.read_exact(nonce.as_mut()).await?;
 
@@ -289,7 +304,7 @@ pub mod server_agent {
                 ));
             }
 
-            let (ref_rand_byte, rand_byte) = stream_read
+            let (_ref_rand_byte, _rand_byte) = stream_read
                 .try_decode(|cursor| Ok::<_, std::io::Error>(cursor.peek_slice(rand_byte_len)))
                 .await
                 .and_then(|opt| {
@@ -309,11 +324,11 @@ pub mod server_agent {
     pub struct TcpListener {
         inner: tokio::net::TcpListener,
         // TODO: use Arc<[u8; 32]>
-        key: Box<[u8; 32]>,
+        key: Arc<Key>,
     }
 
     impl TcpListener {
-        pub async fn bind(addr: SocketAddr, key: Box<[u8; 32]>) -> Result<Self, InitError> {
+        pub async fn bind(addr: SocketAddr, key: Arc<Key>) -> Result<Self, InitError> {
             let inner = tokio::net::TcpListener::bind(addr).await?;
             Ok(Self { inner, key })
         }

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use tokio::io::{DuplexStream, duplex};
 
 use sep_lib::prelude::*;
@@ -6,8 +8,8 @@ fn create_pair() -> (
     protocol::client_agent::Init<DuplexStream>,
     protocol::server_agent::Init<DuplexStream>,
 ) {
-    let key: Box<[u8; 32]> = vec![0u8; 32].try_into().unwrap();
-    let nonce: Box<[u8; 12]> = vec![1u8; 12].try_into().unwrap();
+    let key: Arc<protocol::Key> = protocol::key_from_string("000");
+    let nonce: Box<protocol::Nonce> = vec![1u8; 12].try_into().unwrap();
 
     let (client_steam, server_stream) = duplex(8 * 1024);
 
@@ -27,9 +29,9 @@ async fn happy_path() {
 
 #[tokio::test]
 async fn wrong_key() {
-    let key1: Box<[u8; 32]> = vec![0u8; 32].try_into().unwrap();
-    let key2: Box<[u8; 32]> = vec![1u8; 32].try_into().unwrap();
-    let nonce: Box<[u8; 12]> = vec![1u8; 12].try_into().unwrap();
+    let key1: Arc<protocol::Key> = protocol::key_from_string("000");
+    let key2: Arc<protocol::Key> = protocol::key_from_string("111");
+    let nonce: Box<protocol::Nonce> = vec![1u8; 12].try_into().unwrap();
 
     let (client_steam, server_stream) = duplex(8 * 1024);
     let client_agent = protocol::client_agent::Init::new(key1.clone(), nonce, client_steam);

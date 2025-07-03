@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use sep_lib::protocol;
 use sep_lib::socks5;
@@ -13,15 +14,23 @@ async fn main() {
 
     println!("Listening...");
 
+    let key = protocol::key_from_string("password");
+
     while let Ok((agent, addr)) = listener.accept().await {
-        tokio::spawn(async move {
-            handle_proxyee(agent, addr).await;
+        tokio::spawn({
+            let key = key.clone();
+            async move {
+                handle_proxyee(key, agent, addr).await;
+            }
         });
     }
 }
 
-async fn handle_proxyee<Stream>(proxyee: socks5::agent::Init<Stream>, _: SocketAddr)
-where
+async fn handle_proxyee<Stream>(
+    key: Arc<protocol::Key>,
+    proxyee: socks5::agent::Init<Stream>,
+    _: SocketAddr,
+) where
     Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let (msg, proxyee) = proxyee.receive_greeting_message().await.unwrap();
@@ -37,7 +46,7 @@ where
     dbg!(proxyee_msg.addr());
 
     let server = protocol::client_agent::Init::new(
-        [0u8; 32].into(),
+        key,
         [0u8; 12].into(),
         tokio::net::TcpStream::connect("127.0.0.1:1081")
             .await
