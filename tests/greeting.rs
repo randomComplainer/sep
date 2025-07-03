@@ -8,7 +8,7 @@ fn create_pair() -> (
     protocol::client_agent::Init<DuplexStream>,
     protocol::server_agent::Init<DuplexStream>,
 ) {
-    let key: Arc<protocol::Key> = protocol::key_from_string("000");
+    let key: Arc<protocol::Key> = protocol::key_from_string("000").into();
     let nonce: Box<protocol::Nonce> = vec![1u8; 12].try_into().unwrap();
 
     let (client_steam, server_stream) = duplex(8 * 1024);
@@ -29,8 +29,8 @@ async fn happy_path() {
 
 #[tokio::test]
 async fn wrong_key() {
-    let key1: Arc<protocol::Key> = protocol::key_from_string("000");
-    let key2: Arc<protocol::Key> = protocol::key_from_string("111");
+    let key1: Arc<protocol::Key> = protocol::key_from_string("000").into();
+    let key2: Arc<protocol::Key> = protocol::key_from_string("111").into();
     let nonce: Box<protocol::Nonce> = vec![1u8; 12].try_into().unwrap();
 
     let (client_steam, server_stream) = duplex(8 * 1024);

@@ -74,6 +74,10 @@ where
         })
         .await
     }
+
+    pub fn into_parts(self) -> (BytesMut, Stream) {
+        (self.buf, self.inner)
+    }
 }
 
 #[macro_export]

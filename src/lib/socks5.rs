@@ -292,7 +292,10 @@ pub mod agent {
             }
         }
 
-        pub async fn reply(mut self, bound_addr: &SocketAddr) -> Result<(), std::io::Error> {
+        pub async fn reply(
+            mut self,
+            bound_addr: &SocketAddr,
+        ) -> Result<(BufDecoder<ReadHalf<Stream>>, WriteHalf<Stream>), std::io::Error> {
             let buf = msg::encode_reply(&msg::Reply {
                 ver: 5,
                 rep: 0,
@@ -302,7 +305,7 @@ pub mod agent {
 
             self.stream_write.write_all(buf.as_ref()).await?;
 
-            Ok(())
+            Ok((self.stream_read, self.stream_write))
         }
     }
 

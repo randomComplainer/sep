@@ -1,5 +1,7 @@
 use std::net::SocketAddr;
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
 use sep_lib::prelude::*;
 
 #[tokio::main]
@@ -74,8 +76,36 @@ pub async fn handle_client<Stream>(
 
     let target_stream = connect_target(addrs).await.unwrap();
 
-    let _ = agent
+    let (client_read, mut client_write) = agent
         .reply(target_stream.local_addr().unwrap())
         .await
         .unwrap();
+
+    let (mut target_read, mut target_write) = target_stream.into_split();
+
+    let (client_read_buf, mut client_read) = client_read.into_parts();
+
+    let client_to_target = async move {
+        target_write.write_all(client_read_buf.as_ref()).await?;
+
+        tokio::io::copy(&mut client_read, &mut target_write).await?;
+
+        Ok::<_, std::io::Error>(())
+    };
+
+    let target_to_client = async move {
+        // TODO: magic size
+        let mut buf = vec![0u8; 1024 * 4];
+        loop {
+            let n = target_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            client_write.write_all(&mut buf[..n]).await?;
+        }
+
+        Ok::<_, std::io::Error>(())
+    };
+
+    tokio::try_join!(client_to_target, target_to_client).unwrap();
 }

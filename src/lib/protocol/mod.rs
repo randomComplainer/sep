@@ -213,7 +213,13 @@ pub mod client_agent {
         pub async fn send_request(
             mut self,
             addr_bytes: &mut [u8], // Addr + Port, in Socks5 format
-        ) -> Result<(SocketAddr, ()), std::io::Error> {
+        ) -> Result<
+            (
+                SocketAddr,
+                (FramedRead<Stream, Cipher>, WriteEncrypted<Stream, Cipher>),
+            ),
+            std::io::Error,
+        > {
             self.stream_write.write_all(addr_bytes).await?;
             let (addr, _) = self
                 .stream_read
@@ -224,7 +230,7 @@ pub mod client_agent {
                     None => Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into()),
                 })?;
 
-            Ok((addr, ()))
+            Ok((addr, (self.stream_read, self.stream_write)))
         }
     }
 }
@@ -419,7 +425,8 @@ pub mod server_agent {
         pub async fn reply(
             mut self,
             bound_addr: std::net::SocketAddr,
-        ) -> Result<(), std::io::Error> {
+        ) -> Result<(FramedRead<Stream, Cipher>, WriteEncrypted<Stream, Cipher>), std::io::Error>
+        {
             let mut buf = match bound_addr {
                 std::net::SocketAddr::V4(addr) => {
                     let mut buf = BytesMut::with_capacity(1 + 4 + 2);
@@ -439,7 +446,7 @@ pub mod server_agent {
 
             self.stream_write.write_all(buf.as_mut()).await?;
 
-            Ok(())
+            Ok((self.stream_read, self.stream_write))
         }
     }
 }

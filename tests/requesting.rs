@@ -12,7 +12,7 @@ async fn create_pair() -> (
     protocol::client_agent::Greeted<DuplexStream, ChaCha20>,
     protocol::server_agent::Greeted<DuplexStream, ChaCha20>,
 ) {
-    let key: Arc<protocol::Key> = protocol::key_from_string("000");
+    let key: Arc<protocol::Key> = protocol::key_from_string("000").into();
     let nonce: Box<protocol::Nonce> = vec![1u8; 12].try_into().unwrap();
 
     let (client_steam, server_stream) = duplex(8 * 1024);

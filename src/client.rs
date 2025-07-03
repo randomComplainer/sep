@@ -1,6 +1,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
 use sep_lib::protocol;
 use sep_lib::socks5;
 
@@ -60,12 +62,39 @@ async fn handle_proxyee<Stream>(
 
     dbg!(proxyee_msg.0.ver.offset);
 
-    let (server_bound_addr, _) = server
+    let (server_bound_addr, (server_read, mut server_write)) = server
         .send_request(proxyee_msg.addr_bytes_mut())
         .await
         .unwrap();
 
+    let (server_read_buf, mut server_read) = server_read.into_parts();
+
     dbg!(server_bound_addr);
 
-    let _ = proxyee.reply(&server_bound_addr).await.unwrap();
+    let (proxyee_read, mut proxyee_write) = proxyee.reply(&server_bound_addr).await.unwrap();
+    let (mut proxyee_read_buf, mut proxyee_read) = proxyee_read.into_parts();
+
+    let proxyee_to_server = async move {
+        server_write.write_all(proxyee_read_buf.as_mut()).await?;
+        // TODO: magic size
+        let mut buf = vec![0u8; 1024 * 4];
+        loop {
+            let n = proxyee_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            server_write.write_all(&mut buf[..n]).await?;
+        }
+
+        Ok::<_, std::io::Error>(())
+    };
+
+    let server_to_proxyee = async move {
+        proxyee_write.write_all(server_read_buf.as_ref()).await?;
+        tokio::io::copy(&mut server_read, &mut proxyee_write).await?;
+
+        Ok::<_, std::io::Error>(())
+    };
+
+    tokio::try_join!(proxyee_to_server, server_to_proxyee).unwrap();
 }
