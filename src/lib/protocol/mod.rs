@@ -1,9 +1,10 @@
-use std::time::SystemTime;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use chacha20::cipher::StreamCipher;
-use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
+use rand::RngCore;
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 
 use crate::decode::BufDecoder;
 use crate::prelude::*;
@@ -23,6 +24,12 @@ pub fn key_from_string(s: &str) -> Arc<protocol::Key> {
     hasher.update(s.as_bytes());
     let result = hasher.finalize();
     Arc::new(result.into())
+}
+
+pub fn rand_nonce() -> Box<protocol::Nonce> {
+    let mut nonce: Box<protocol::Nonce> = vec![0u8; 12].try_into().unwrap();
+    rand::rng().fill_bytes(nonce.as_mut());
+    nonce
 }
 
 pub fn get_timestamp() -> u64 {

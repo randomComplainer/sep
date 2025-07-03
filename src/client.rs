@@ -47,7 +47,7 @@ async fn handle_proxyee<Stream>(
 
     let server = protocol::client_agent::Init::new(
         key,
-        [0u8; 12].into(),
+        protocol::rand_nonce(),
         tokio::net::TcpStream::connect("127.0.0.1:1081")
             .await
             .unwrap(),
