@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use rand::Rng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use sep_lib::protocol;
@@ -35,12 +36,28 @@ async fn handle_proxyee<Stream>(
 ) where
     Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let (msg, proxyee) = proxyee.receive_greeting_message().await.unwrap();
+    let (msg, proxyee) = match proxyee.receive_greeting_message().await {
+        Ok(x) => x,
+        Err(err) => {
+            dbg!(err);
+            dbg!("failed to receive greeting message");
+            let wait_time = rand::rng().random_range(30..61);
+            tokio::time::sleep(std::time::Duration::from_secs(wait_time)).await;
+            return;
+        }
+    };
 
     dbg!(msg.ver());
     dbg!(msg.methods());
 
-    let (mut proxyee_msg, proxyee) = proxyee.send_method_selection_message(0).await.unwrap();
+    let (mut proxyee_msg, proxyee) = match proxyee.send_method_selection_message(0).await {
+        Ok(x) => x,
+        Err(err) => {
+            dbg!(err);
+            dbg!("failed to send method selection message");
+            return;
+        }
+    };
 
     dbg!(proxyee_msg.ver());
     dbg!(proxyee_msg.cmd());
@@ -50,28 +67,49 @@ async fn handle_proxyee<Stream>(
     let server = protocol::client_agent::Init::new(
         key,
         protocol::rand_nonce(),
-        tokio::net::TcpStream::connect("149.28.61.13:1081")
-            .await
-            .unwrap(),
+        match tokio::net::TcpStream::connect("149.28.61.13:1081").await {
+            Ok(stream) => stream,
+            Err(err) => {
+                dbg!(err);
+                dbg!("failed to connect to server");
+                return;
+            }
+        },
     );
 
-    let server = server
-        .send_greeting(protocol::get_timestamp())
-        .await
-        .unwrap();
+    let server = match server.send_greeting(protocol::get_timestamp()).await {
+        Ok(server) => server,
+        Err(err) => {
+            dbg!(err);
+            dbg!("failed to send greeting");
+            return;
+        }
+    };
 
     dbg!(proxyee_msg.0.ver.offset);
 
-    let (server_bound_addr, (server_read, mut server_write)) = server
-        .send_request(proxyee_msg.addr_bytes_mut())
-        .await
-        .unwrap();
+    let (server_bound_addr, (server_read, mut server_write)) =
+        match server.send_request(proxyee_msg.addr_bytes_mut()).await {
+            Ok(x) => x,
+            Err(err) => {
+                dbg!(err);
+                dbg!("failed to send request");
+                return;
+            }
+        };
 
     let (server_read_buf, mut server_read) = server_read.into_parts();
 
     dbg!(server_bound_addr);
 
-    let (proxyee_read, mut proxyee_write) = proxyee.reply(&server_bound_addr).await.unwrap();
+    let (proxyee_read, mut proxyee_write) = match proxyee.reply(&server_bound_addr).await {
+        Ok(x) => x,
+        Err(err) => {
+            dbg!(err);
+            dbg!("failed to reply");
+            return;
+        }
+    };
     let (mut proxyee_read_buf, mut proxyee_read) = proxyee_read.into_parts();
 
     let proxyee_to_server = async move {
@@ -121,5 +159,11 @@ async fn handle_proxyee<Stream>(
         Ok::<_, std::io::Error>(())
     };
 
-    tokio::try_join!(proxyee_to_server, server_to_proxyee).unwrap();
+    match tokio::try_join!(proxyee_to_server, server_to_proxyee) {
+        Ok(_) => {}
+        Err(err) => {
+            dbg!(err);
+            dbg!("error while forwarding data");
+        }
+    }
 }

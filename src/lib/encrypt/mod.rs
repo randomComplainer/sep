@@ -17,6 +17,10 @@ mod encrypted_read {
         pub fn new(inner: Stream, cipher: Cipher) -> Self {
             Self { inner, cipher }
         }
+
+        pub fn into_parts(self) -> (Stream, Cipher) {
+            (self.inner, self.cipher)
+        }
     }
 
     impl<Stream, Cipher> AsyncRead for EncryptedRead<Stream, Cipher>

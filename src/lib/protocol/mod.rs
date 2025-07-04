@@ -249,11 +249,11 @@ pub mod server_agent {
     use crate::decode::*;
 
     #[derive(Error, Debug)]
-    pub enum InitError {
+    pub enum InitError<Stream> {
         #[error("io error")]
         Io(#[from] std::io::Error),
         #[error("greeting invalid, {0}")]
-        InvalidGreeting(&'static str),
+        InvalidGreeting(&'static str, Stream),
     }
 
     pub struct Init<Stream>
@@ -275,19 +275,19 @@ pub mod server_agent {
         pub async fn recv_greeting(
             self,
             server_timestamp: u64,
-        ) -> Result<Greeted<Stream, ChaCha20>, InitError> {
+        ) -> Result<Greeted<Stream, ChaCha20>, InitError<Stream>> {
             tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 self.recv_greeting_inner(server_timestamp),
             )
             .await
-            .map_err(|_| InitError::InvalidGreeting("timeout"))?
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout"))?
         }
 
         async fn recv_greeting_inner(
             mut self,
             server_timestamp: u64,
-        ) -> Result<Greeted<Stream, ChaCha20>, InitError> {
+        ) -> Result<Greeted<Stream, ChaCha20>, InitError<Stream>> {
             let mut nonce: Box<Nonce> = vec![0u8; 12].try_into().unwrap();
 
             self.stream.read_exact(nonce.as_mut()).await?;
@@ -306,7 +306,15 @@ pub mod server_agent {
             let client_timestamp = msg.timestamp();
 
             if u64::abs_diff(client_timestamp, server_timestamp) > 30 {
-                return Err(InitError::InvalidGreeting("invalid timestamp"));
+                return Err(InitError::InvalidGreeting(
+                    "invalid timestamp",
+                    stream_read
+                        .into_parts()
+                        .1
+                        .into_parts()
+                        .0
+                        .unsplit(stream_write),
+                ));
             }
 
             let rand_byte_len = super::cal_rand_byte_len(&self.key, &nonce, client_timestamp);
@@ -314,6 +322,12 @@ pub mod server_agent {
             if rand_byte_len > super::RAND_BYTE_LEN_MAX {
                 return Err(InitError::InvalidGreeting(
                     "rand_byte_len > RAND_BYTE_LEN_MAX",
+                    stream_read
+                        .into_parts()
+                        .1
+                        .into_parts()
+                        .0
+                        .unsplit(stream_write),
                 ));
             }
 
@@ -341,12 +355,14 @@ pub mod server_agent {
     }
 
     impl TcpListener {
-        pub async fn bind(addr: SocketAddr, key: Arc<Key>) -> Result<Self, InitError> {
+        pub async fn bind(addr: SocketAddr, key: Arc<Key>) -> Result<Self, std::io::Error> {
             let inner = tokio::net::TcpListener::bind(addr).await?;
             Ok(Self { inner, key })
         }
 
-        pub async fn accept(&self) -> Result<(Init<tokio::net::TcpStream>, SocketAddr), InitError> {
+        pub async fn accept(
+            &self,
+        ) -> Result<(Init<tokio::net::TcpStream>, SocketAddr), std::io::Error> {
             let (stream, addr) = self.inner.accept().await?;
             Ok((Init::new(self.key.clone(), stream), addr))
         }
