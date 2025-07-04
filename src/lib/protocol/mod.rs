@@ -110,7 +110,7 @@ pub mod msg {
             Self(tup.0, tup.1)
         }
 
-        pub fn addr(&self) -> ViewAddr {
+        pub fn addr(&self) -> ViewAddr<'_> {
             self.0.addr.read(self.1.as_ref())
         }
 

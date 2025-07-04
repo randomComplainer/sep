@@ -50,7 +50,7 @@ async fn handle_proxyee<Stream>(
     let server = protocol::client_agent::Init::new(
         key,
         protocol::rand_nonce(),
-        tokio::net::TcpStream::connect("127.0.0.1:1081")
+        tokio::net::TcpStream::connect("149.28.61.13:1081")
             .await
             .unwrap(),
     );
@@ -75,7 +75,14 @@ async fn handle_proxyee<Stream>(
     let (mut proxyee_read_buf, mut proxyee_read) = proxyee_read.into_parts();
 
     let proxyee_to_server = async move {
+        let mut bytes_forwarede_to_server = 0;
+        let mut log_bytes_sent = |n: usize| {
+            bytes_forwarede_to_server += n;
+            dbg!(bytes_forwarede_to_server);
+        };
         server_write.write_all(proxyee_read_buf.as_mut()).await?;
+        log_bytes_sent(proxyee_read_buf.len());
+
         // TODO: magic size
         let mut buf = vec![0u8; 1024 * 4];
         loop {
@@ -83,6 +90,7 @@ async fn handle_proxyee<Stream>(
             if n == 0 {
                 break;
             }
+            log_bytes_sent(n);
             server_write.write_all(&mut buf[..n]).await?;
         }
 
@@ -90,8 +98,25 @@ async fn handle_proxyee<Stream>(
     };
 
     let server_to_proxyee = async move {
+        let mut bytes_forwarede_to_proxyee = 0;
+        let mut log_bytes_forwarede_to_proxyee = |n: usize| {
+            bytes_forwarede_to_proxyee += n;
+            dbg!(bytes_forwarede_to_proxyee);
+        };
         proxyee_write.write_all(server_read_buf.as_ref()).await?;
-        tokio::io::copy(&mut server_read, &mut proxyee_write).await?;
+        log_bytes_forwarede_to_proxyee(server_read_buf.len());
+
+        // tokio::io::copy(&mut server_read, &mut proxyee_write).await?;
+
+        let mut buf = vec![0u8; 1024 * 4];
+        loop {
+            let n = server_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            proxyee_write.write_all(&mut buf[..n]).await?;
+            log_bytes_forwarede_to_proxyee(n);
+        }
 
         Ok::<_, std::io::Error>(())
     };

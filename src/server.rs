@@ -9,7 +9,7 @@ async fn main() {
     println!("Hello world from server");
 
     let listener = protocol::server_agent::TcpListener::bind(
-        "127.0.0.1:1081".parse().unwrap(),
+        "0.0.0.0:1081".parse().unwrap(),
         protocol::key_from_string("password").into(),
     )
     .await
@@ -65,6 +65,7 @@ pub async fn handle_client<Stream>(
 ) where
     Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    dbg!("incoming");
     let agent = agent
         .recv_greeting(protocol::get_timestamp())
         .await
@@ -72,9 +73,13 @@ pub async fn handle_client<Stream>(
 
     let (req, agent) = agent.recv_request().await.unwrap();
 
+    dbg!(req.addr());
+
     let addrs = resolve_addrs(req).await.unwrap();
 
     let target_stream = connect_target(addrs).await.unwrap();
+
+    dbg!("target connected");
 
     let (client_read, mut client_write) = agent
         .reply(target_stream.local_addr().unwrap())
@@ -86,18 +91,41 @@ pub async fn handle_client<Stream>(
     let (client_read_buf, mut client_read) = client_read.into_parts();
 
     let client_to_target = async move {
-        target_write.write_all(client_read_buf.as_ref()).await?;
+        let mut bytes_forwarede_to_target = 0;
+        let mut log_bytes_forwarede_to_target = |n: usize| {
+            bytes_forwarede_to_target += n;
+            dbg!(bytes_forwarede_to_target);
+        };
 
-        tokio::io::copy(&mut client_read, &mut target_write).await?;
+        target_write.write_all(client_read_buf.as_ref()).await?;
+        log_bytes_forwarede_to_target(client_read_buf.len());
+
+        // tokio::io::copy(&mut client_read, &mut target_write).await?;
+
+        let mut buf = vec![0u8; 1024 * 4];
+        loop {
+            let n = client_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            target_write.write_all(&mut buf[..n]).await?;
+            log_bytes_forwarede_to_target(n);
+        }
 
         Ok::<_, std::io::Error>(())
     };
 
     let target_to_client = async move {
+        let mut bytes_forwarede_to_client = 0;
+        let mut log_bytes_forwarede_to_client = |n: usize| {
+            bytes_forwarede_to_client += n;
+            dbg!(bytes_forwarede_to_client);
+        };
         // TODO: magic size
         let mut buf = vec![0u8; 1024 * 4];
         loop {
             let n = target_read.read(&mut buf).await?;
+            log_bytes_forwarede_to_client(n);
             if n == 0 {
                 break;
             }
