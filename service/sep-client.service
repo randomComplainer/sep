@@ -1,0 +1,11 @@
+[Unit]
+Description=Sep Client
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/sep-client --key {} --server {}
+Restart=on-failure
+User=nobody
+
+[Install]
+WantedBy=multi-user.target

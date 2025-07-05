@@ -8,11 +8,11 @@ name = "sep_lib"
 path = "src/lib/lib.rs"
 
 [[bin]]
-name = "client"
+name = "sep-client"
 path = "src/client.rs"
 
 [[bin]]
-name = "server"
+name = "sep-server"
 path = "src/server.rs"
 
 [[bin]]
