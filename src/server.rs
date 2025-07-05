@@ -1,21 +1,38 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+use clap::Parser;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use sep_lib::prelude::*;
 
+#[derive(Parser, Debug)]
+#[command(version)]
+struct Args {
+    #[arg(short, long)]
+    key: String,
+
+    #[arg(short, long="addr", default_value_t = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)))]
+    bound_addr: IpAddr,
+
+    #[arg(short, long, default_value_t = 1081)]
+    port: u16,
+}
+
 #[tokio::main]
 async fn main() {
-    println!("Hello world from server");
+    let args = Args::parse();
+    dbg!(&args);
+
+    let bound_addr = SocketAddr::new(args.bound_addr, args.port);
 
     let listener = protocol::server_agent::TcpListener::bind(
-        "0.0.0.0:1081".parse().unwrap(),
-        protocol::key_from_string("password").into(),
+        bound_addr,
+        protocol::key_from_string(&args.key).into(),
     )
     .await
     .unwrap();
 
-    println!("Listening...");
+    println!("Listening at {}...", bound_addr);
 
     while let Ok((agent, addr)) = listener.accept().await {
         tokio::spawn(async move {

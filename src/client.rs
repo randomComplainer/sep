@@ -1,30 +1,53 @@
+use std::net::IpAddr;
+use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use clap::Parser;
 use rand::Rng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use sep_lib::protocol;
 use sep_lib::socks5;
 
+#[derive(Parser, Debug)]
+#[command(version)]
+struct Args {
+    #[arg(short, long)]
+    key: String,
+
+    #[arg(long, default_value_t = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)))]
+    bound_addr: IpAddr,
+
+    #[arg(short, long, default_value_t = 1080)]
+    port: u16,
+
+    #[arg(long = "server")]
+    server_addr: SocketAddr,
+}
+
 #[tokio::main]
 async fn main() {
+    let args = Args::parse();
+    dbg!(&args);
     println!("Hello world from client");
 
-    let listener = socks5::agent::Socks5Listener::bind("127.0.0.1:1080".parse().unwrap())
+    let bound_addr = SocketAddr::new(args.bound_addr, args.port);
+
+    let listener = socks5::agent::Socks5Listener::bind(bound_addr)
         .await
         .unwrap();
 
-    println!("Listening...");
+    println!("Listening at {}...", bound_addr);
 
-    let key: Arc<protocol::Key> = protocol::key_from_string("password").into();
+    let key: Arc<protocol::Key> = protocol::key_from_string(&args.key).into();
+    let server_addr = Arc::new(args.server_addr);
 
-    while let Ok((agent, addr)) = listener.accept().await {
+    while let Ok((agent, local_addr)) = listener.accept().await {
         tokio::spawn({
             let key = key.clone();
-            async move {
-                handle_proxyee(key, agent, addr).await;
-            }
+            let server_addr = server_addr.clone();
+            handle_proxyee(key, agent, server_addr, local_addr)
         });
     }
 }
@@ -32,6 +55,7 @@ async fn main() {
 async fn handle_proxyee<Stream>(
     key: Arc<protocol::Key>,
     proxyee: socks5::agent::Init<Stream>,
+    server_addr: Arc<SocketAddr>,
     _: SocketAddr,
 ) where
     Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -67,7 +91,7 @@ async fn handle_proxyee<Stream>(
     let server = protocol::client_agent::Init::new(
         key,
         protocol::rand_nonce(),
-        match tokio::net::TcpStream::connect("149.28.61.13:1081").await {
+        match tokio::net::TcpStream::connect(server_addr.as_ref()).await {
             Ok(stream) => stream,
             Err(err) => {
                 dbg!(err);

@@ -22,6 +22,7 @@ path = "src/quick_test.rs"
 [dependencies]
 bytes = { version = "1.10.1", features = ["std"] }
 chacha20 = "0.9.1"
+clap = { version = "4.5.40", features = ["derive"] }
 derive_more = { version = "2.0.1", features = ["from"] }
 futures = "0.3.31"
 rand = "0.9.1"
