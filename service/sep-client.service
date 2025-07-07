@@ -3,7 +3,7 @@ Description=Sep Client
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/sep-client --key {} --server {}
+ExecStart=/usr/local/bin/sep-client --key pass --server 149.28.61.13:1081
 Restart=on-failure
 User=nobody
 

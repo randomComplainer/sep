@@ -92,100 +92,100 @@ pub async fn handle_client<Stream>(
             return;
         }
     };
-
-    let (req, agent) = match agent.recv_request().await {
-        Ok(req) => req,
-        Err(err) => {
-            dbg!(err);
-            dbg!("failed to receive request");
-            return;
-        }
-    };
-
-    dbg!(req.addr());
-
-    let addrs = match resolve_addrs(req).await {
-        Ok(addrs) => addrs,
-        Err(err) => {
-            dbg!(err);
-            dbg!("failed to resolve addrs");
-            return;
-        }
-    };
-
-    let target_stream = match connect_target(addrs).await {
-        Ok(target_stream) => target_stream,
-        Err(err) => {
-            dbg!(err);
-            dbg!("failed to connect target");
-            return;
-        }
-    };
-
-    dbg!("target connected");
-
-    let (client_read, mut client_write) =
-        match agent.reply(target_stream.local_addr().unwrap()).await {
-            Ok(client) => client,
-            Err(err) => {
-                dbg!(err);
-                dbg!("failed to reply");
-                return;
-            }
-        };
-
-    let (mut target_read, mut target_write) = target_stream.into_split();
-
-    let (client_read_buf, mut client_read) = client_read.into_parts();
-
-    let client_to_target = async move {
-        let mut bytes_forwarede_to_target = 0;
-        let mut log_bytes_forwarede_to_target = |n: usize| {
-            bytes_forwarede_to_target += n;
-            dbg!(bytes_forwarede_to_target);
-        };
-
-        target_write.write_all(client_read_buf.as_ref()).await?;
-        log_bytes_forwarede_to_target(client_read_buf.len());
-
-        let mut buf = vec![0u8; 1024 * 4];
-        loop {
-            let n = client_read.read(&mut buf).await?;
-            if n == 0 {
-                break;
-            }
-            target_write.write_all(&mut buf[..n]).await?;
-            log_bytes_forwarede_to_target(n);
-        }
-
-        Ok::<_, std::io::Error>(())
-    };
-
-    let target_to_client = async move {
-        let mut bytes_forwarede_to_client = 0;
-        let mut log_bytes_forwarede_to_client = |n: usize| {
-            bytes_forwarede_to_client += n;
-            dbg!(bytes_forwarede_to_client);
-        };
-        // TODO: magic size
-        let mut buf = vec![0u8; 1024 * 4];
-        loop {
-            let n = target_read.read(&mut buf).await?;
-            log_bytes_forwarede_to_client(n);
-            if n == 0 {
-                break;
-            }
-            client_write.write_all(&mut buf[..n]).await?;
-        }
-
-        Ok::<_, std::io::Error>(())
-    };
-
-    match tokio::try_join!(client_to_target, target_to_client) {
-        Ok(_) => {}
-        Err(err) => {
-            dbg!(err);
-            dbg!("error while forwarding data");
-        }
-    }
+    //
+    // let (req, agent) = match agent.recv_request().await {
+    //     Ok(req) => req,
+    //     Err(err) => {
+    //         dbg!(err);
+    //         dbg!("failed to receive request");
+    //         return;
+    //     }
+    // };
+    //
+    // dbg!(req.addr());
+    //
+    // let addrs = match resolve_addrs(req).await {
+    //     Ok(addrs) => addrs,
+    //     Err(err) => {
+    //         dbg!(err);
+    //         dbg!("failed to resolve addrs");
+    //         return;
+    //     }
+    // };
+    //
+    // let target_stream = match connect_target(addrs).await {
+    //     Ok(target_stream) => target_stream,
+    //     Err(err) => {
+    //         dbg!(err);
+    //         dbg!("failed to connect target");
+    //         return;
+    //     }
+    // };
+    //
+    // dbg!("target connected");
+    //
+    // let (client_read, mut client_write) =
+    //     match agent.reply(target_stream.local_addr().unwrap()).await {
+    //         Ok(client) => client,
+    //         Err(err) => {
+    //             dbg!(err);
+    //             dbg!("failed to reply");
+    //             return;
+    //         }
+    //     };
+    //
+    // let (mut target_read, mut target_write) = target_stream.into_split();
+    //
+    // let (client_read_buf, mut client_read) = client_read.into_parts();
+    //
+    // let client_to_target = async move {
+    //     let mut bytes_forwarede_to_target = 0;
+    //     let mut log_bytes_forwarede_to_target = |n: usize| {
+    //         bytes_forwarede_to_target += n;
+    //         dbg!(bytes_forwarede_to_target);
+    //     };
+    //
+    //     target_write.write_all(client_read_buf.as_ref()).await?;
+    //     log_bytes_forwarede_to_target(client_read_buf.len());
+    //
+    //     let mut buf = vec![0u8; 1024 * 4];
+    //     loop {
+    //         let n = client_read.read(&mut buf).await?;
+    //         if n == 0 {
+    //             break;
+    //         }
+    //         target_write.write_all(&mut buf[..n]).await?;
+    //         log_bytes_forwarede_to_target(n);
+    //     }
+    //
+    //     Ok::<_, std::io::Error>(())
+    // };
+    //
+    // let target_to_client = async move {
+    //     let mut bytes_forwarede_to_client = 0;
+    //     let mut log_bytes_forwarede_to_client = |n: usize| {
+    //         bytes_forwarede_to_client += n;
+    //         dbg!(bytes_forwarede_to_client);
+    //     };
+    //     // TODO: magic size
+    //     let mut buf = vec![0u8; 1024 * 4];
+    //     loop {
+    //         let n = target_read.read(&mut buf).await?;
+    //         log_bytes_forwarede_to_client(n);
+    //         if n == 0 {
+    //             break;
+    //         }
+    //         client_write.write_all(&mut buf[..n]).await?;
+    //     }
+    //
+    //     Ok::<_, std::io::Error>(())
+    // };
+    //
+    // match tokio::try_join!(client_to_target, target_to_client) {
+    //     Ok(_) => {}
+    //     Err(err) => {
+    //         dbg!(err);
+    //         dbg!("error while forwarding data");
+    //     }
+    // }
 }

@@ -110,6 +110,7 @@ pub trait Peek {
     fn peek_u64(&mut self) -> Option<RefU64>;
     fn peek_slice(&mut self, len: usize) -> Option<RefSlice>;
     fn peek_oct_len_slice(&mut self) -> Option<RefSlice>;
+    fn peek_16_bit_len_slice(&mut self) -> Option<RefSlice>;
 }
 
 impl Peek for Cursor<&[u8]> {
@@ -166,6 +167,11 @@ impl Peek for Cursor<&[u8]> {
         let len = peek!(self.peek_u8());
         self.peek_slice(len.read(self.get_ref()) as usize)
     }
+
+    fn peek_16_bit_len_slice(&mut self) -> Option<RefSlice> {
+        let len = peek!(self.peek_u16());
+        self.peek_slice(len.read(self.get_ref()) as usize)
+    }
 }
 
 pub struct RefU8 {
@@ -196,6 +202,7 @@ impl RefU64 {
     }
 }
 
+#[derive(Debug)]
 pub struct RefSlice {
     pub offset: usize,
     pub len: usize,
@@ -211,6 +218,7 @@ impl RefSlice {
     }
 }
 
+#[derive(Debug)]
 pub struct RefIpv4Addr {
     pub offset: usize,
 }
@@ -222,6 +230,7 @@ impl RefIpv4Addr {
     }
 }
 
+#[derive(Debug)]
 pub struct RefIpv6Addr {
     pub offset: usize,
 }
@@ -233,6 +242,7 @@ impl RefIpv6Addr {
     }
 }
 
+#[derive(Debug)]
 pub enum RefAddr {
     Ipv4(RefIpv4Addr),
     Ipv6(RefIpv6Addr),

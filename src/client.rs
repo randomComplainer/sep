@@ -111,83 +111,83 @@ async fn handle_proxyee<Stream>(
     };
 
     dbg!(proxyee_msg.0.ver.offset);
-
-    let (server_bound_addr, (server_read, mut server_write)) =
-        match server.send_request(proxyee_msg.addr_bytes_mut()).await {
-            Ok(x) => x,
-            Err(err) => {
-                dbg!(err);
-                dbg!("failed to send request");
-                return;
-            }
-        };
-
-    let (server_read_buf, mut server_read) = server_read.into_parts();
-
-    dbg!(server_bound_addr);
-
-    let (proxyee_read, mut proxyee_write) = match proxyee.reply(&server_bound_addr).await {
-        Ok(x) => x,
-        Err(err) => {
-            dbg!(err);
-            dbg!("failed to reply");
-            return;
-        }
-    };
-    let (mut proxyee_read_buf, mut proxyee_read) = proxyee_read.into_parts();
-
-    let proxyee_to_server = async move {
-        let mut bytes_forwarede_to_server = 0;
-        let mut log_bytes_sent = |n: usize| {
-            bytes_forwarede_to_server += n;
-            dbg!(bytes_forwarede_to_server);
-        };
-        server_write.write_all(proxyee_read_buf.as_mut()).await?;
-        log_bytes_sent(proxyee_read_buf.len());
-
-        // TODO: magic size
-        let mut buf = vec![0u8; 1024 * 4];
-        loop {
-            let n = proxyee_read.read(&mut buf).await?;
-            if n == 0 {
-                break;
-            }
-            log_bytes_sent(n);
-            server_write.write_all(&mut buf[..n]).await?;
-        }
-
-        Ok::<_, std::io::Error>(())
-    };
-
-    let server_to_proxyee = async move {
-        let mut bytes_forwarede_to_proxyee = 0;
-        let mut log_bytes_forwarede_to_proxyee = |n: usize| {
-            bytes_forwarede_to_proxyee += n;
-            dbg!(bytes_forwarede_to_proxyee);
-        };
-        proxyee_write.write_all(server_read_buf.as_ref()).await?;
-        log_bytes_forwarede_to_proxyee(server_read_buf.len());
-
-        // tokio::io::copy(&mut server_read, &mut proxyee_write).await?;
-
-        let mut buf = vec![0u8; 1024 * 4];
-        loop {
-            let n = server_read.read(&mut buf).await?;
-            if n == 0 {
-                break;
-            }
-            proxyee_write.write_all(&mut buf[..n]).await?;
-            log_bytes_forwarede_to_proxyee(n);
-        }
-
-        Ok::<_, std::io::Error>(())
-    };
-
-    match tokio::try_join!(proxyee_to_server, server_to_proxyee) {
-        Ok(_) => {}
-        Err(err) => {
-            dbg!(err);
-            dbg!("error while forwarding data");
-        }
-    }
+    //
+    // let (server_bound_addr, (server_read, mut server_write)) =
+    //     match server.send_request(proxyee_msg.addr_bytes_mut()).await {
+    //         Ok(x) => x,
+    //         Err(err) => {
+    //             dbg!(err);
+    //             dbg!("failed to send request");
+    //             return;
+    //         }
+    //     };
+    //
+    // let (server_read_buf, mut server_read) = server_read.into_parts();
+    //
+    // dbg!(server_bound_addr);
+    //
+    // let (proxyee_read, mut proxyee_write) = match proxyee.reply(&server_bound_addr).await {
+    //     Ok(x) => x,
+    //     Err(err) => {
+    //         dbg!(err);
+    //         dbg!("failed to reply");
+    //         return;
+    //     }
+    // };
+    // let (mut proxyee_read_buf, mut proxyee_read) = proxyee_read.into_parts();
+    //
+    // let proxyee_to_server = async move {
+    //     let mut bytes_forwarede_to_server = 0;
+    //     let mut log_bytes_sent = |n: usize| {
+    //         bytes_forwarede_to_server += n;
+    //         dbg!(bytes_forwarede_to_server);
+    //     };
+    //     server_write.write_all(proxyee_read_buf.as_mut()).await?;
+    //     log_bytes_sent(proxyee_read_buf.len());
+    //
+    //     // TODO: magic size
+    //     let mut buf = vec![0u8; 1024 * 4];
+    //     loop {
+    //         let n = proxyee_read.read(&mut buf).await?;
+    //         if n == 0 {
+    //             break;
+    //         }
+    //         log_bytes_sent(n);
+    //         server_write.write_all(&mut buf[..n]).await?;
+    //     }
+    //
+    //     Ok::<_, std::io::Error>(())
+    // };
+    //
+    // let server_to_proxyee = async move {
+    //     let mut bytes_forwarede_to_proxyee = 0;
+    //     let mut log_bytes_forwarede_to_proxyee = |n: usize| {
+    //         bytes_forwarede_to_proxyee += n;
+    //         dbg!(bytes_forwarede_to_proxyee);
+    //     };
+    //     proxyee_write.write_all(server_read_buf.as_ref()).await?;
+    //     log_bytes_forwarede_to_proxyee(server_read_buf.len());
+    //
+    //     // tokio::io::copy(&mut server_read, &mut proxyee_write).await?;
+    //
+    //     let mut buf = vec![0u8; 1024 * 4];
+    //     loop {
+    //         let n = server_read.read(&mut buf).await?;
+    //         if n == 0 {
+    //             break;
+    //         }
+    //         proxyee_write.write_all(&mut buf[..n]).await?;
+    //         log_bytes_forwarede_to_proxyee(n);
+    //     }
+    //
+    //     Ok::<_, std::io::Error>(())
+    // };
+    //
+    // match tokio::try_join!(proxyee_to_server, server_to_proxyee) {
+    //     Ok(_) => {}
+    //     Err(err) => {
+    //         dbg!(err);
+    //         dbg!("error while forwarding data");
+    //     }
+    // }
 }
