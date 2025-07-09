@@ -143,7 +143,7 @@ pub mod agent {
                     Some(msg) => Ok(msg),
                     None => Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into()),
                 })
-                .contextualize_err("receving client greeting message")?;
+                .contextualize_err("receving proxyee greeting message")?;
 
             Ok((
                 greeting_msg,

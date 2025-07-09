@@ -212,12 +212,12 @@ where
 
     pub async fn send_reply(
         &mut self,
-        sep: u16,
+        seq: u16,
         bound_addr: std::net::SocketAddr,
     ) -> Result<(), std::io::Error> {
         let mut buf = BytesMut::with_capacity(1 + 2 + 16 + 2);
         buf.put_u8(0x01);
-        buf.put_u16(sep);
+        buf.put_u16(seq);
         match bound_addr {
             std::net::SocketAddr::V4(addr) => {
                 buf.put_u8(0x01);

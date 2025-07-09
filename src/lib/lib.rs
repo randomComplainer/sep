@@ -4,7 +4,10 @@
 pub mod decode;
 pub mod encrypt;
 
+pub mod client_session;
 pub mod protocol;
+pub mod session;
+pub mod server_session;
 pub mod socks5;
 
 pub mod prelude {
