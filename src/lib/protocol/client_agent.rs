@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::{BufMut, BytesMut};
@@ -12,97 +11,49 @@ use super::*;
 
 pub mod msg {
     use super::*;
+    use crate::decode::*;
 
-    #[derive(Debug, From)]
-    pub enum ServerMsg {
-        Reply(#[from] Reply),
-        Data(#[from] Data),
-        Ack(#[from] Ack),
-        Eof(#[from] Eof),
+    crate::peek_type! {
+        #[derive(Debug, From)]
+        pub enum ServerMsg, PeekServerMsg {
+            1u8, Reply(#[from] PeekReply::peek => PeekReply),
+            2u8, Data(#[from] PeekData::peek => PeekData),
+            3u8, Ack(#[from] PeekAck::peek => PeekAck),
+            4u8, Eof(#[from] PeekEof::peek => PeekEof),
+        }
     }
 
-    pub fn peek_server_msg(
-        cursor: &mut std::io::Cursor<&[u8]>,
-    ) -> Result<Option<ServerMsg>, std::io::Error> {
-        let msg_type = try_peek!(cursor.peek_u8());
-
-        Ok(Some(match msg_type.read(cursor.get_ref()) {
-            1 => try_peek!(peek_reply(cursor)?).into(),
-            2 => try_peek!(peek_data(cursor)?).into(),
-            3 => try_peek!(peek_ack(cursor)?).into(),
-            4 => try_peek!(peek_eof(cursor)?).into(),
-            x => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("invalid msg type: {x}"),
-                ));
-            }
-        }))
+    crate::peek_type! {
+        #[derive(Debug)]
+        pub struct Reply, PeekReply {
+            proxyee_id: PeekU16::peek => PeekU16,
+            bound_addr: PeekSocketAddr::peek => PeekSocketAddr,
+        }
     }
 
-    #[derive(Debug)]
-    pub struct Reply {
-        pub proxyee_id: u16,
-        pub bound_addr: SocketAddr,
+    crate::peek_type! {
+        #[derive(Debug)]
+        pub struct Data, PeekData {
+            proxyee_id: PeekU16::peek => PeekU16,
+            seq: PeekU16::peek => PeekU16,
+            data: PeekSlice::peek_u16_len => PeekSlice,
+        }
     }
 
-    pub fn peek_reply(
-        cursor: &mut std::io::Cursor<&[u8]>,
-    ) -> Result<Option<Reply>, std::io::Error> {
-        let proxyee_id = try_peek!(cursor.peek_u16());
-        let bound_addr = try_peek!(crate::decode::peek_socket_addr(cursor)?);
-        Ok(Some(Reply {
-            proxyee_id: proxyee_id.read(cursor.get_ref()),
-            bound_addr,
-        }))
+    crate::peek_type! {
+        #[derive(Debug)]
+        pub struct Ack, PeekAck {
+            proxyee_id: PeekU16::peek => PeekU16,
+            seq: PeekU16::peek => PeekU16,
+        }
     }
 
-    #[derive(Debug)]
-    pub struct Data {
-        pub proxyee_id: u16,
-        pub seq: u16,
-        pub data: decode::RefSlice,
-    }
-
-    pub fn peek_data(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Option<Data>, std::io::Error> {
-        let proxyee_id = try_peek!(cursor.peek_u16());
-        let seq = try_peek!(cursor.peek_u16());
-        let data = try_peek!(cursor.peek_16_bit_len_slice());
-        Ok(Some(Data {
-            proxyee_id: proxyee_id.read(cursor.get_ref()),
-            seq: seq.read(cursor.get_ref()),
-            data,
-        }))
-    }
-
-    #[derive(Debug)]
-    pub struct Ack {
-        pub proxyee_id: u16,
-        pub seq: u16,
-    }
-
-    pub fn peek_ack(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Option<Ack>, std::io::Error> {
-        let proxyee_id = try_peek!(cursor.peek_u16());
-        let seq = try_peek!(cursor.peek_u16());
-        Ok(Some(Ack {
-            proxyee_id: proxyee_id.read(cursor.get_ref()),
-            seq: seq.read(cursor.get_ref()),
-        }))
-    }
-
-    #[derive(Debug)]
-    pub struct Eof {
-        pub proxyee_id: u16,
-        pub seq: u16,
-    }
-
-    pub fn peek_eof(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Option<Eof>, std::io::Error> {
-        let proxyee_id = try_peek!(cursor.peek_u16());
-        let seq = try_peek!(cursor.peek_u16());
-        Ok(Some(Eof {
-            proxyee_id: proxyee_id.read(cursor.get_ref()),
-            seq: seq.read(cursor.get_ref()),
-        }))
+    crate::peek_type! {
+        #[derive(Debug)]
+        pub struct Eof, PeekEof {
+            proxyee_id: PeekU16::peek => PeekU16,
+            seq: PeekU16::peek => PeekU16,
+        }
     }
 }
 
@@ -253,13 +204,13 @@ where
         Self { stream_read }
     }
 
-    pub async fn recv_msg(&mut self) -> Result<(msg::ServerMsg, BytesMut), std::io::Error> {
-        let (msg, buf) = self
+    pub async fn recv_msg(&mut self) -> Result<msg::ServerMsg, std::io::Error> {
+        let msg = self
             .stream_read
-            .try_decode(msg::peek_server_msg)
+            .read_next(msg::PeekServerMsg::peek)
             .await?
             .ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, ""))?;
 
-        Ok((msg, buf))
+        Ok(msg)
     }
 }

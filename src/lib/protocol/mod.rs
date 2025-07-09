@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::SystemTime;
 
 use chacha20::cipher::StreamCipher;
@@ -62,64 +61,3 @@ impl<T: AsyncRead + AsyncWrite + Unpin + 'static> StaticStream for T {}
 
 pub trait StaticCipher: StreamCipher + Unpin + 'static {}
 impl<T: StreamCipher + Unpin + 'static> StaticCipher for T {}
-
-pub mod msg {
-
-    use bytes::BytesMut;
-    use derive_more::From;
-
-    use crate::decode::*;
-
-    // nonce comes unencrypted so it's not here
-    pub struct RefGreeting {
-        timestamp: RefU64,
-    }
-
-    pub fn peek_greeting(
-        cursor: &mut std::io::Cursor<&[u8]>,
-    ) -> Result<Option<RefGreeting>, std::io::Error> {
-        let timestamp = try_peek!(cursor.peek_u64());
-        Ok(Some(RefGreeting { timestamp }))
-    }
-
-    pub struct ViewGreeting(RefGreeting, BytesMut);
-    impl ViewGreeting {
-        pub fn new(tup: (RefGreeting, BytesMut)) -> Self {
-            Self(tup.0, tup.1)
-        }
-
-        pub fn timestamp(&self) -> u64 {
-            self.0.timestamp.read(self.1.as_ref())
-        }
-    }
-
-    pub struct RefRequest {
-        addr: RefAddr,
-        port: RefU16,
-    }
-
-    pub fn peek_request(
-        cursor: &mut std::io::Cursor<&[u8]>,
-    ) -> Result<Option<RefRequest>, std::io::Error> {
-        let addr = try_peek!(peek_addr(cursor)?);
-        let port = try_peek!(cursor.peek_u16());
-        Ok(Some(RefRequest { addr, port }))
-    }
-
-    #[derive(From)]
-    pub struct ViewRequest(RefRequest, BytesMut);
-    impl ViewRequest {
-        pub fn new(tup: (RefRequest, BytesMut)) -> Self {
-            Self(tup.0, tup.1)
-        }
-
-        pub fn addr(&self) -> ViewAddr<'_> {
-            self.0.addr.read(self.1.as_ref())
-        }
-
-        pub fn port(&self) -> u16 {
-            self.0.port.read(self.1.as_ref())
-        }
-    }
-}
-

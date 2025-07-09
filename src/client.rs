@@ -71,10 +71,10 @@ async fn handle_proxyee<Stream>(
         }
     };
 
-    dbg!(msg.ver());
-    dbg!(msg.methods());
+    dbg!(msg.ver);
+    dbg!(msg.methods);
 
-    let (mut proxyee_msg, proxyee) = match proxyee.send_method_selection_message(0).await {
+    let (proxyee_msg, _proxyee) = match proxyee.send_method_selection_message(0).await {
         Ok(x) => x,
         Err(err) => {
             dbg!(err);
@@ -83,10 +83,10 @@ async fn handle_proxyee<Stream>(
         }
     };
 
-    dbg!(proxyee_msg.ver());
-    dbg!(proxyee_msg.cmd());
-    dbg!(proxyee_msg.rsv());
-    dbg!(proxyee_msg.addr());
+    dbg!(proxyee_msg.ver);
+    dbg!(proxyee_msg.cmd);
+    dbg!(proxyee_msg.rsv);
+    dbg!(proxyee_msg.addr.read());
 
     let server = protocol::client_agent::Init::new(
         key,
@@ -110,8 +110,6 @@ async fn handle_proxyee<Stream>(
         }
     };
 
-    dbg!(proxyee_msg.0.ver.offset);
-    //
     // let (server_bound_addr, (server_read, mut server_write)) =
     //     match server.send_request(proxyee_msg.addr_bytes_mut()).await {
     //         Ok(x) => x,

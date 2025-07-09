@@ -41,16 +41,20 @@ async fn main() {
     }
 }
 
-async fn resolve_addrs(req: protocol::msg::ViewRequest) -> Result<Vec<SocketAddr>, std::io::Error> {
-    let addrs = match req.addr() {
-        decode::ViewAddr::Ipv4(addr) => {
-            vec![SocketAddr::new(addr.into(), req.port())]
+async fn resolve_addrs(
+    req: protocol::server_agent::msg::Request,
+) -> Result<Vec<SocketAddr>, std::io::Error> {
+    let addrs = match req.addr {
+        decode::ReadRequestAddr::Ipv4(addr) => {
+            vec![SocketAddr::new(addr.into(), req.port)]
         }
-        decode::ViewAddr::Ipv6(addr) => {
-            vec![SocketAddr::new(addr.into(), req.port())]
+        decode::ReadRequestAddr::Ipv6(addr) => {
+            vec![SocketAddr::new(addr.into(), req.port)]
         }
-        decode::ViewAddr::Domain(addr) => {
-            tokio::net::lookup_host((addr, req.port())).await?.collect()
+        decode::ReadRequestAddr::Domain(addr) => {
+            tokio::net::lookup_host((str::from_utf8(addr.as_ref()).unwrap(), req.port))
+                .await?
+                .collect()
         }
     };
 

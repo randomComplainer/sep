@@ -3,6 +3,552 @@ use std::io::Cursor;
 use bytes::{Buf, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+pub trait Peek: Sized {
+    type Value;
+    // fn peek(cursor: &mut Cursor<&[u8]>) -> Result<Option<Self>, std::io::Error>;
+    fn split_from(self, buf: &mut BytesMut) -> Self::Value;
+}
+
+pub trait PeekFn {
+    type PeekType: Peek;
+    fn peek(&self, cursor: &mut Cursor<&[u8]>) -> Result<Option<Self::PeekType>, std::io::Error>;
+}
+
+impl<T, TPeek> PeekFn for T
+where
+    TPeek: Peek,
+    T: Fn(&mut Cursor<&[u8]>) -> Result<Option<TPeek>, std::io::Error>,
+{
+    type PeekType = TPeek;
+    fn peek(&self, cursor: &mut Cursor<&[u8]>) -> Result<Option<Self::PeekType>, std::io::Error> {
+        (self)(cursor)
+    }
+}
+
+pub struct PeekU8;
+impl PeekU8 {
+    pub fn peek(cursor: &mut Cursor<&[u8]>) -> Result<Option<Self>, std::io::Error> {
+        Ok(if cursor.remaining() < 1 {
+            None
+        } else {
+            cursor.advance(1);
+            Some(Self)
+        })
+    }
+}
+
+impl Peek for PeekU8 {
+    type Value = u8;
+
+    fn split_from(self, buf: &mut BytesMut) -> Self::Value {
+        buf.split_to(1)[0]
+    }
+}
+
+pub struct PeekU16;
+impl PeekU16 {
+    pub fn peek(cursor: &mut Cursor<&[u8]>) -> Result<Option<Self>, std::io::Error> {
+        Ok(if cursor.remaining() < 2 {
+            None
+        } else {
+            cursor.advance(2);
+            Some(Self)
+        })
+    }
+}
+impl Peek for PeekU16 {
+    type Value = u16;
+
+    fn split_from(self, buf: &mut BytesMut) -> Self::Value {
+        let splited = buf.split_to(2);
+        u16::from_be_bytes(splited.as_ref().try_into().unwrap())
+    }
+}
+
+pub struct PeekU64;
+impl PeekU64 {
+    pub fn peek(cursor: &mut Cursor<&[u8]>) -> Result<Option<Self>, std::io::Error> {
+        Ok(if cursor.remaining() < 8 {
+            None
+        } else {
+            cursor.advance(8);
+            Some(Self)
+        })
+    }
+}
+impl Peek for PeekU64 {
+    type Value = u64;
+
+    fn split_from(self, buf: &mut BytesMut) -> Self::Value {
+        u64::from_be_bytes(buf.split_to(8).as_ref().try_into().unwrap())
+    }
+}
+
+pub struct PeekSlice {
+    pub head_len: u8,
+    pub body_len: u16,
+}
+impl PeekSlice {
+    pub fn peek_fixed(len: usize) -> impl PeekFn {
+        move |cursor: &mut Cursor<&[u8]>| -> Result<Option<Self>, std::io::Error> {
+            if cursor.remaining() < len {
+                return Ok(None);
+            }
+
+            Ok(Some(Self {
+                head_len: 0,
+                body_len: len as u16,
+            }))
+        }
+    }
+
+    pub fn peek_u8_len(cursor: &mut Cursor<&[u8]>) -> Result<Option<Self>, std::io::Error> {
+        if cursor.remaining() < 1 {
+            return Ok(None);
+        }
+
+        let len = cursor.get_u8();
+        if cursor.remaining() < len as usize {
+            return Ok(None);
+        }
+
+        Ok(Some(Self {
+            head_len: 1,
+            body_len: len as u16,
+        }))
+    }
+
+    pub fn peek_u16_len(cursor: &mut Cursor<&[u8]>) -> Result<Option<Self>, std::io::Error> {
+        if cursor.remaining() < 2 {
+            return Ok(None);
+        }
+
+        let len = cursor.get_u16();
+        if cursor.remaining() < len as usize {
+            return Ok(None);
+        }
+
+        Ok(Some(Self {
+            head_len: 2,
+            body_len: len as u16,
+        }))
+    }
+}
+impl Peek for PeekSlice {
+    type Value = BytesMut;
+
+    fn split_from(self, buf: &mut BytesMut) -> Self::Value {
+        let _ = buf.split_to(self.head_len as usize);
+        buf.split_to(self.body_len as usize)
+    }
+}
+
+pub struct PeekIpv4Addr;
+impl PeekIpv4Addr {
+    pub fn peek(cursor: &mut Cursor<&[u8]>) -> Result<Option<Self>, std::io::Error> {
+        if cursor.remaining() < 4 {
+            return Ok(None);
+        } else {
+            return Ok(Some(Self));
+        }
+    }
+}
+
+impl Peek for PeekIpv4Addr {
+    type Value = std::net::Ipv4Addr;
+
+    fn split_from(self, buf: &mut BytesMut) -> Self::Value {
+        let raw = &buf.split_to(4);
+        std::net::Ipv4Addr::new(raw[0], raw[1], raw[2], raw[3])
+    }
+}
+
+pub struct PeekIpv6Addr;
+impl PeekIpv6Addr {
+    pub fn peek(cursor: &mut Cursor<&[u8]>) -> Result<Option<Self>, std::io::Error> {
+        if cursor.remaining() < 16 {
+            return Ok(None);
+        } else {
+            return Ok(Some(Self));
+        }
+    }
+}
+
+impl Peek for PeekIpv6Addr {
+    type Value = std::net::Ipv6Addr;
+
+    fn split_from(self, buf: &mut BytesMut) -> Self::Value {
+        let raw = &buf.split_to(16);
+        std::net::Ipv6Addr::from_octets(raw.as_ref().try_into().unwrap())
+    }
+}
+
+crate::peek_type! {
+    pub enum ReadRequestAddr, PeekReadRequestAddr {
+        1u8, Ipv4(PeekIpv4Addr::peek => PeekIpv4Addr),
+        4u8, Ipv6(PeekIpv6Addr::peek => PeekIpv6Addr),
+        3u8, Domain(PeekSlice::peek_u8_len => PeekSlice),
+    }
+}
+
+impl ReadRequestAddr {
+    pub fn read(&self) -> String {
+        match self {
+            Self::Ipv4(addr) => addr.to_string(),
+            Self::Ipv6(addr) => addr.to_string(),
+            Self::Domain(bytes) => std::str::from_utf8(bytes.as_ref()).unwrap().to_string(),
+        }
+    }
+}
+
+pub struct PeekSocketAddrV4(PeekIpv4Addr, PeekU16);
+impl PeekSocketAddrV4 {
+    pub fn peek(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Option<Self>, std::io::Error> {
+        match (PeekIpv4Addr::peek(cursor)?, PeekU16::peek(cursor)?) {
+            (Some(addr), Some(port)) => Ok(Some(Self(addr, port))),
+            _ => Ok(None),
+        }
+    }
+}
+
+impl Peek for PeekSocketAddrV4 {
+    type Value = std::net::SocketAddr;
+
+    fn split_from(self, buf: &mut BytesMut) -> Self::Value {
+        std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
+            self.0.split_from(buf),
+            self.1.split_from(buf),
+        ))
+    }
+}
+
+pub struct PeekSocketAddrV6(PeekIpv6Addr, PeekU16);
+impl PeekSocketAddrV6 {
+    pub fn peek(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Option<Self>, std::io::Error> {
+        match (PeekIpv6Addr::peek(cursor)?, PeekU16::peek(cursor)?) {
+            (Some(addr), Some(port)) => Ok(Some(Self(addr, port))),
+            _ => Ok(None),
+        }
+    }
+}
+
+impl Peek for PeekSocketAddrV6 {
+    type Value = std::net::SocketAddr;
+
+    fn split_from(self, buf: &mut BytesMut) -> Self::Value {
+        std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
+            self.0.split_from(buf),
+            self.1.split_from(buf),
+            0,
+            0,
+        ))
+    }
+}
+
+pub enum PeekSocketAddr {
+    Ipv4(PeekSocketAddrV4),
+    Ipv6(PeekSocketAddrV6),
+}
+
+impl PeekSocketAddr {
+    pub fn peek(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Option<Self>, std::io::Error> {
+        if cursor.remaining() < 1 {
+            return Ok(None);
+        }
+
+        let addr_type = cursor.get_u8();
+        Ok(match addr_type {
+            1 => PeekSocketAddrV4::peek(cursor)?.map(Self::Ipv4),
+            4 => PeekSocketAddrV6::peek(cursor)?.map(Self::Ipv6),
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid addr type",
+                )
+                .into());
+            }
+        })
+    }
+}
+
+impl Peek for PeekSocketAddr {
+    type Value = std::net::SocketAddr;
+
+    fn split_from(self, buf: &mut BytesMut) -> Self::Value {
+        let _ = buf.split_to(1);
+        match self {
+            Self::Ipv4(addr) => addr.split_from(buf),
+            Self::Ipv6(addr) => addr.split_from(buf),
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! peek_type {
+    (
+        $(#[$meta:meta])*
+        $vis:vis struct $struct_name:ident, $peek_type_name:ident {
+        $(
+            $field:ident: $field_peek_fn:path => $field_peek_type:ty,
+        )*
+    }) => {
+        $(#[$meta])*
+        $vis struct $struct_name {
+            $(
+                pub $field: <$field_peek_type as Peek>::Value,
+            )*
+        }
+
+        $vis struct $peek_type_name {
+            $(
+                pub $field: $field_peek_type,
+            )*
+        }
+
+        impl $peek_type_name {
+            pub fn peek(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Option<Self>, std::io::Error> {
+                $(
+                    let $field = match ($field_peek_fn)(cursor) {
+                        Ok(Some(peeked)) => peeked,
+                        Ok(None) => return Ok(None),
+                        Err(err) => return Err(err),
+                    };
+                )*
+
+                    Ok(Some($peek_type_name {
+                        $(
+                            $field,
+                        )*
+                    }))
+            }
+        }
+
+        impl Peek for $peek_type_name {
+            type Value = $struct_name;
+
+            fn split_from(self, buf: &mut BytesMut) -> Self::Value {
+                $struct_name {
+                    $(
+                        $field: self.$field.split_from(buf),
+                    )*
+                }
+            }
+
+        }
+    };
+
+    // Only support one field
+    ($vis:vis struct $struct_name:ident, $peek_type_name:ident (
+            $field_peek_fn:path => $field_peek_type:ty,
+    )) => {
+        $vis struct $struct_name (
+            pub <$field_peek_type as Peek>::Value,
+        );
+
+        $vis struct $peek_type_name (
+            pub $field_peek_type,
+        );
+
+        impl $peek_type_name {
+            pub fn peek(cursor: &mut Cursor<&[u8]>) -> Result<Option<Self>, std::io::Error> {
+                Ok(Some($peek_type_name (
+                            match ($field_peek_fn)(cursor) {
+                                Ok(Some(peeked)) => peeked,
+                                Ok(None) => return Ok(None),
+                                Err(err) => return Err(err),
+                            },
+                )))
+            }
+        }
+
+        impl Peek for $peek_type_name {
+            type Value = $struct_name;
+
+            fn split_from(self, buf: &mut BytesMut) -> Self::Value {
+                $struct_name (
+                    self.0.split_from(buf),
+                )
+            }
+        }
+    };
+
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $enum_name:ident, $peek_type_name:ident {
+        $(
+            $branch_code:expr, $branch_name:ident(
+                $(#[$branch_meta:meta])* $branch_peek_fn:path => $branch_peek_type:ty
+            ),
+        )*
+    }) => {
+        $(#[$meta])*
+        $vis enum $enum_name {
+            $(
+                $branch_name($(#[$branch_meta])* <$branch_peek_type as Peek>::Value),
+            )*
+        }
+
+        $vis enum $peek_type_name {
+            $(
+                $branch_name($branch_peek_type),
+            )*
+        }
+
+        impl $peek_type_name {
+            pub fn peek(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Option<Self>, std::io::Error> {
+                use bytes::Buf;
+
+                if cursor.remaining() < 1 {
+                    return Ok(None);
+                }
+
+                let value = match cursor.get_u8() {
+                    $(
+                        $branch_code => Self::$branch_name(
+                            match ($branch_peek_fn)(cursor) {
+                                Ok(Some(peeked)) => peeked,
+                                Ok(None) => return Ok(None),
+                                Err(err) => return Err(err),
+                            }
+                        ),
+                    )*
+                        _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid enum code").into()),
+                };
+
+                Ok(Some(value))
+            }
+        }
+
+        impl Peek for $peek_type_name {
+            type Value = $enum_name;
+
+
+            fn split_from(self, buf: &mut BytesMut) -> Self::Value {
+                let _ = buf.split_to(1);
+                match self {
+                    $(
+                        $peek_type_name::$branch_name(value) => $enum_name::$branch_name(value.split_from(buf)),
+                    )*
+                }
+            }
+        }
+    };
+}
+
+#[allow(dead_code)]
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    use bytes::{BufMut, BytesMut};
+
+    peek_type! {
+        struct Aggregated, PeekAggregated {
+            value_1: PeekU8::peek => PeekU8,
+            value_2: PeekU8::peek => PeekU8,
+        }
+    }
+
+    #[test]
+    fn test_aggregate() {
+        let mut buf = BytesMut::with_capacity(2);
+        buf.put_u8(0x01);
+        buf.put_u8(0x02);
+
+        let resolved = PeekAggregated::peek(&mut Cursor::new(&buf))
+            .unwrap()
+            .unwrap()
+            .split_from(&mut buf);
+
+        assert_eq!(resolved.value_1, 0x01);
+        assert_eq!(resolved.value_2, 0x02);
+    }
+
+    peek_type! {struct Nested,PeekNested {
+        value_1: PeekU8::peek => PeekU8,
+        value_2: PeekAggregated::peek => PeekAggregated,
+    }
+    }
+
+    #[test]
+    fn test_nested() {
+        let mut buf = BytesMut::with_capacity(3);
+        buf.put_u8(0x01);
+        buf.put_u8(0x02);
+        buf.put_u8(0x03);
+
+        let resolved = PeekNested::peek(&mut Cursor::new(&buf))
+            .unwrap()
+            .unwrap()
+            .split_from(&mut buf);
+
+        assert_eq!(resolved.value_1, 0x01);
+        assert_eq!(resolved.value_2.value_1, 0x02);
+        assert_eq!(resolved.value_2.value_2, 0x03);
+    }
+
+    peek_type! {
+        struct Tuple,PeekTuple(
+            PeekAggregated::peek => PeekAggregated,
+        )
+    }
+
+    #[test]
+    fn test_tuple() {
+        let mut buf = BytesMut::with_capacity(2);
+        buf.put_u8(0x01);
+        buf.put_u8(0x02);
+
+        let resolved = PeekTuple::peek(&mut Cursor::new(&buf))
+            .unwrap()
+            .unwrap()
+            .split_from(&mut buf);
+
+        assert_eq!(resolved.0.value_1, 0x01);
+        assert_eq!(resolved.0.value_2, 0x02);
+    }
+
+    peek_type! {
+        enum Enum,PeekEnum {
+            1u8, Branch1(PeekU8::peek => PeekU8),
+            2u8, Branch2(PeekAggregated::peek => PeekAggregated),
+        }
+    }
+
+    #[test]
+    fn test_enum_1() {
+        let mut buf = BytesMut::from([1, 8].as_ref());
+
+        let resolved = PeekEnum::peek(&mut Cursor::new(&buf))
+            .unwrap()
+            .unwrap()
+            .split_from(&mut buf);
+
+        match resolved {
+            Enum::Branch1(value) => assert_eq!(value, 8),
+            _ => panic!("wrong branch"),
+        };
+    }
+
+    #[test]
+    fn test_enum_2() {
+        let mut buf = BytesMut::from([2, 0x01, 0x02].as_ref());
+
+        let resolved = PeekEnum::peek(&mut Cursor::new(&buf))
+            .unwrap()
+            .unwrap()
+            .split_from(&mut buf);
+
+        match resolved {
+            Enum::Branch2(value) => {
+                assert_eq!(value.value_1, 0x01);
+                assert_eq!(value.value_2, 0x02);
+            }
+            _ => panic!("wrong branch"),
+        };
+    }
+}
+
 pub struct BufDecoder<Stream>
 where
     Stream: AsyncRead + 'static + Unpin,
@@ -25,365 +571,28 @@ where
         }
     }
 
-    pub async fn read_next<T, E>(
+    pub async fn read_next<P: PeekFn>(
         &mut self,
-        decode: impl Fn(&mut BytesMut) -> Result<Option<T>, E>,
-    ) -> Result<Option<T>, E>
-    where
-        E: From<std::io::Error>,
-    {
-        match (decode)(&mut self.buf) {
-            Ok(Some(item)) => return Ok(Some(item)),
-            Ok(None) => {}
-            Err(err) => return Err(err),
-        }
-
+        peek_fn: P,
+    ) -> Result<Option<<P::PeekType as Peek>::Value>, std::io::Error> {
         loop {
+            let mut cursor = Cursor::new(self.buf.as_ref());
+            match peek_fn.peek(&mut cursor) {
+                Ok(Some(peeked)) => return Ok(Some(peeked.split_from(&mut self.buf))),
+                Ok(None) => {}
+                Err(err) => return Err(err),
+            };
+
             self.buf.reserve(1);
             let n = self.inner.read_buf(&mut self.buf).await?;
 
             if n == 0 {
                 return Ok(None);
             }
-
-            match (decode)(&mut self.buf) {
-                Ok(Some(item)) => return Ok(Some(item)),
-                Ok(None) => {}
-                Err(err) => return Err(err),
-            }
         }
-    }
-
-    pub async fn try_decode<T, E>(
-        &mut self,
-        peek_fn: impl Fn(&mut Cursor<&[u8]>) -> Result<Option<T>, E>,
-    ) -> Result<Option<(T, BytesMut)>, E>
-    where
-        E: From<std::io::Error>,
-    {
-        self.read_next(move |bytes| {
-            let mut cursor = Cursor::new(bytes.as_ref());
-            let peeked = peek_fn(&mut cursor);
-            let pos = cursor.position();
-            peeked.map(|peeked| {
-                peeked.map(|peeked| {
-                    let size: usize = pos.try_into().unwrap();
-                    (peeked, bytes.split_to(size))
-                })
-            })
-        })
-        .await
     }
 
     pub fn into_parts(self) -> (BytesMut, Stream) {
         (self.buf, self.inner)
     }
-}
-
-#[macro_export]
-macro_rules! peek {
-    ($value:expr) => {
-        match $value {
-            Some(result) => result,
-            None => return None,
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! try_peek {
-    ($value:expr) => {
-        match $value {
-            Some(result) => result,
-            None => return Ok(None),
-        }
-    };
-}
-
-pub enum DecodeError {
-    NotEnoughData,
-}
-
-pub trait Peek {
-    fn peek_u8(&mut self) -> Option<RefU8>;
-    fn peek_u16(&mut self) -> Option<RefU16>;
-    fn peek_u64(&mut self) -> Option<RefU64>;
-    fn peek_slice(&mut self, len: usize) -> Option<RefSlice>;
-    fn peek_oct_len_slice(&mut self) -> Option<RefSlice>;
-    fn peek_16_bit_len_slice(&mut self) -> Option<RefSlice>;
-}
-
-impl Peek for Cursor<&[u8]> {
-    fn peek_u8(&mut self) -> Option<RefU8> {
-        if self.remaining() < 1 {
-            None
-        } else {
-            let result = Some(RefU8 {
-                offset: self.position().try_into().unwrap(),
-            });
-            self.advance(1);
-            result
-        }
-    }
-
-    fn peek_u16(&mut self) -> Option<RefU16> {
-        if self.remaining() < 2 {
-            None
-        } else {
-            let result = Some(RefU16 {
-                offset: self.position().try_into().unwrap(),
-            });
-            self.advance(2);
-            result
-        }
-    }
-
-    fn peek_u64(&mut self) -> Option<RefU64> {
-        if self.remaining() < 8 {
-            None
-        } else {
-            let result = Some(RefU64 {
-                offset: self.position().try_into().unwrap(),
-            });
-            self.advance(8);
-            result
-        }
-    }
-
-    fn peek_slice(&mut self, len: usize) -> Option<RefSlice> {
-        if self.remaining() < len {
-            None
-        } else {
-            let result = Some(RefSlice {
-                offset: self.position().try_into().unwrap(),
-                len,
-            });
-            self.advance(len);
-            result
-        }
-    }
-
-    fn peek_oct_len_slice(&mut self) -> Option<RefSlice> {
-        let len = peek!(self.peek_u8());
-        self.peek_slice(len.read(self.get_ref()) as usize)
-    }
-
-    fn peek_16_bit_len_slice(&mut self) -> Option<RefSlice> {
-        let len = peek!(self.peek_u16());
-        self.peek_slice(len.read(self.get_ref()) as usize)
-    }
-}
-
-pub struct RefU8 {
-    pub offset: usize,
-}
-impl RefU8 {
-    pub fn read(&self, bytes: &[u8]) -> u8 {
-        bytes[self.offset]
-    }
-}
-
-pub struct RefU16 {
-    pub offset: usize,
-}
-impl RefU16 {
-    pub fn read(&self, bytes: &[u8]) -> u16 {
-        u16::from_be_bytes([bytes[self.offset], bytes[self.offset + 1]])
-    }
-}
-
-pub struct RefU64 {
-    pub offset: usize,
-}
-
-impl RefU64 {
-    pub fn read(&self, bytes: &[u8]) -> u64 {
-        u64::from_be_bytes(bytes[self.offset..self.offset + 8].try_into().unwrap())
-    }
-}
-
-#[derive(Debug)]
-pub struct RefSlice {
-    pub offset: usize,
-    pub len: usize,
-}
-
-impl RefSlice {
-    pub fn read<'bytes>(&self, bytes: &'bytes [u8]) -> &'bytes [u8] {
-        &bytes[self.offset..self.offset + self.len]
-    }
-
-    pub fn read_as_str<'bytes>(&self, bytes: &'bytes [u8]) -> &'bytes str {
-        std::str::from_utf8(&bytes[self.offset..self.offset + self.len]).unwrap()
-    }
-}
-
-#[derive(Debug)]
-pub struct RefIpv4Addr {
-    pub offset: usize,
-}
-
-impl RefIpv4Addr {
-    pub fn read(&self, bytes: &[u8]) -> std::net::Ipv4Addr {
-        let raw = &bytes[self.offset..self.offset + 4];
-        std::net::Ipv4Addr::from(<[u8; 4]>::try_from(raw).unwrap())
-    }
-}
-
-#[derive(Debug)]
-pub struct RefIpv6Addr {
-    pub offset: usize,
-}
-
-impl RefIpv6Addr {
-    pub fn read(&self, bytes: &[u8]) -> std::net::Ipv6Addr {
-        let raw = &bytes[self.offset..self.offset + 16];
-        std::net::Ipv6Addr::from(<[u8; 16]>::try_from(raw).unwrap())
-    }
-}
-
-#[derive(Debug)]
-pub enum RefAddr {
-    Ipv4(RefIpv4Addr),
-    Ipv6(RefIpv6Addr),
-    Domain(RefSlice),
-}
-
-#[derive(Debug)]
-pub enum ViewAddr<'a> {
-    Ipv4(std::net::Ipv4Addr),
-    Ipv6(std::net::Ipv6Addr),
-    Domain(&'a str),
-}
-
-impl RefAddr {
-    pub fn format<'bytes>(&self, bytes: &'bytes [u8]) -> String {
-        match self {
-            RefAddr::Ipv4(addr) => addr.read(bytes).to_string(),
-            RefAddr::Ipv6(addr) => addr.read(bytes).to_string(),
-            RefAddr::Domain(addr) => String::from(addr.read_as_str(bytes)),
-        }
-    }
-
-    pub fn read<'bytes>(&self, bytes: &'bytes [u8]) -> ViewAddr<'bytes> {
-        match self {
-            RefAddr::Ipv4(addr) => ViewAddr::Ipv4(addr.read(bytes)),
-            RefAddr::Ipv6(addr) => ViewAddr::Ipv6(addr.read(bytes)),
-            RefAddr::Domain(addr) => ViewAddr::Domain(addr.read_as_str(bytes)),
-        }
-    }
-
-    pub fn bytes_mut<'bytes>(&self, bytes: &'bytes mut [u8]) -> &'bytes mut [u8] {
-        match self {
-            RefAddr::Ipv4(addr) => bytes[addr.offset - 2..addr.offset + 1].as_mut(),
-            RefAddr::Ipv6(addr) => bytes[addr.offset - 2..addr.offset + 15].as_mut(),
-            RefAddr::Domain(addr) => bytes[addr.offset - 2..addr.offset + addr.len].as_mut(),
-        }
-    }
-
-    pub fn offset(&self) -> usize {
-        match self {
-            RefAddr::Ipv4(addr) => addr.offset - 1,
-            RefAddr::Ipv6(addr) => addr.offset - 1,
-            RefAddr::Domain(addr) => addr.offset - 1,
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        match self {
-            RefAddr::Ipv4(_) => 1 + 4,
-            RefAddr::Ipv6(_) => 1 + 16,
-            RefAddr::Domain(addr) => 1 + 1 + addr.len,
-        }
-    }
-}
-
-pub fn peek_addr(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Option<RefAddr>, std::io::Error> {
-    let atyp = try_peek!(cursor.peek_u8()).read(cursor.get_ref());
-    Ok(Some(match atyp {
-        1 => {
-            let adv = 4;
-            if cursor.remaining() < adv {
-                return Ok(None);
-            }
-            let addr = RefAddr::Ipv4(RefIpv4Addr {
-                offset: cursor.position().try_into().unwrap(),
-            });
-            cursor.advance(adv);
-            addr
-        }
-
-        4 => {
-            let adv = 16;
-            if cursor.remaining() < adv {
-                return Ok(None);
-            }
-            let addr = RefAddr::Ipv6(RefIpv6Addr {
-                offset: cursor.position().try_into().unwrap(),
-            });
-            cursor.advance(adv);
-            addr
-        }
-        3 => RefAddr::Domain(try_peek!(cursor.peek_oct_len_slice())),
-        _ => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "invalid address type",
-            )
-            .into());
-        }
-    }))
-}
-
-pub fn peek_socket_addr(
-    cursor: &mut std::io::Cursor<&[u8]>,
-) -> Result<Option<std::net::SocketAddr>, std::io::Error> {
-    let atyp = try_peek!(cursor.peek_u8()).read(cursor.get_ref());
-    Ok(Some(match atyp {
-        1 => {
-            let adv = 4 + 2;
-            if cursor.remaining() < adv {
-                return Ok(None);
-            }
-            let ref_addr = RefIpv4Addr {
-                offset: cursor.position().try_into().unwrap(),
-            };
-            let ref_port = RefU16 {
-                offset: (cursor.position() + 4).try_into().unwrap(),
-            };
-            cursor.advance(adv);
-            std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
-                ref_addr.read(cursor.get_ref()),
-                ref_port.read(cursor.get_ref()),
-            ))
-        }
-
-        4 => {
-            let adv = 16 + 2;
-            if cursor.remaining() < adv {
-                return Ok(None);
-            }
-            let ref_addr = RefIpv6Addr {
-                offset: cursor.position().try_into().unwrap(),
-            };
-            let ref_port = RefU16 {
-                offset: (cursor.position() + 16).try_into().unwrap(),
-            };
-            cursor.advance(adv);
-            std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
-                ref_addr.read(cursor.get_ref()),
-                ref_port.read(cursor.get_ref()),
-                0,
-                0,
-            ))
-        }
-
-        _ => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "invalid address type",
-            )
-            .into());
-        }
-    }))
 }

@@ -64,14 +64,16 @@ async fn client_req_v4() {
     };
 
     let server = async move {
-        let (msg, msg_buf) = server_read.recv_msg().await?;
+        let msg = server_read.recv_msg().await?;
         match msg {
             server_agent::ClientMsg::Request(server_agent::msg::Request {
                 proxyee_id,
-                addr: sep_lib::decode::RefAddr::Ipv4(addr),
+                addr: decode::ReadRequestAddr::Ipv4(addr),
+                port,
             }) => {
                 assert_eq!(proxyee_id, 0);
-                assert_eq!(addr.read(msg_buf.as_ref()), req_ip);
+                assert_eq!(addr, req_ip);
+                assert_eq!(port, req_port);
             }
             _ => panic!("unexpected msg"),
         }
@@ -97,14 +99,16 @@ async fn client_req_domain() {
     };
 
     let server = async move {
-        let (msg, msg_buf) = server_read.recv_msg().await?;
+        let msg = server_read.recv_msg().await?;
         match msg {
             server_agent::ClientMsg::Request(server_agent::msg::Request {
                 proxyee_id,
-                addr: sep_lib::decode::RefAddr::Domain(addr),
+                addr: decode::ReadRequestAddr::Domain(addr),
+                port,
             }) => {
                 assert_eq!(proxyee_id, 0);
-                assert_eq!(addr.read_as_str(msg_buf.as_ref()), req_domain);
+                assert_eq!(addr, req_domain);
+                assert_eq!(port, req_port);
             }
             _ => panic!("unexpected msg"),
         }
@@ -123,7 +127,7 @@ async fn server_reply_v4() {
     let ((mut client_read, _client_write), (_server_read, mut server_write)) = create_pair().await;
 
     let client = async move {
-        let (msg, _msg_buf) = client_read.recv_msg().await?;
+        let msg = client_read.recv_msg().await?;
 
         match msg {
             client_agent::ServerMsg::Reply(client_agent::msg::Reply {
@@ -166,7 +170,7 @@ async fn client_data() {
     };
 
     let server = async move {
-        let (msg, msg_buf) = server_read.recv_msg().await?;
+        let msg = server_read.recv_msg().await?;
         match msg {
             server_agent::ClientMsg::Data(server_agent::msg::Data {
                 proxyee_id,
@@ -175,7 +179,7 @@ async fn client_data() {
             }) => {
                 assert_eq!(proxyee_id, 0);
                 assert_eq!(seq, 1);
-                assert_eq!(recv_data.read(msg_buf.as_ref()), data.as_ref());
+                assert_eq!(recv_data.as_ref(), data.as_ref());
             }
             _ => panic!("unexpected msg"),
         }
@@ -194,7 +198,7 @@ async fn server_data() {
     let client = {
         let data = data.clone();
         async move {
-            let (msg, msg_buf) = client_read.recv_msg().await?;
+            let msg = client_read.recv_msg().await?;
 
             match msg {
                 client_agent::ServerMsg::Data(client_agent::msg::Data {
@@ -204,7 +208,7 @@ async fn server_data() {
                 }) => {
                     assert_eq!(proxyee_id, 0);
                     assert_eq!(seq, 1);
-                    assert_eq!(recv_data.read(msg_buf.as_ref()), data.as_ref());
+                    assert_eq!(recv_data.as_ref(), data.as_ref());
                 }
                 _ => panic!("unexpected msg"),
             };
@@ -235,7 +239,7 @@ async fn client_ack() {
     };
 
     let server = async move {
-        let (msg, _msg_buf) = server_read.recv_msg().await?;
+        let msg = server_read.recv_msg().await?;
         match msg {
             server_agent::ClientMsg::Ack(server_agent::msg::Ack { proxyee_id, seq }) => {
                 assert_eq!(proxyee_id, 0);
@@ -256,7 +260,7 @@ async fn server_ack() {
 
     let client = {
         async move {
-            let (msg, _msg_buf) = client_read.recv_msg().await?;
+            let msg = client_read.recv_msg().await?;
             match msg {
                 client_agent::ServerMsg::Ack(client_agent::msg::Ack { proxyee_id, seq }) => {
                     assert_eq!(proxyee_id, 0);
@@ -291,7 +295,7 @@ async fn client_eof() {
     };
 
     let server = async move {
-        let (msg, _msg_buf) = server_read.recv_msg().await?;
+        let msg = server_read.recv_msg().await?;
         match msg {
             server_agent::ClientMsg::Eof(server_agent::msg::Eof { proxyee_id, seq }) => {
                 assert_eq!(proxyee_id, 0);
@@ -312,7 +316,7 @@ async fn server_eof() {
 
     let client = {
         async move {
-            let (msg, _msg_buf) = client_read.recv_msg().await?;
+            let msg = client_read.recv_msg().await?;
             match msg {
                 client_agent::ServerMsg::Eof(client_agent::msg::Eof { proxyee_id, seq }) => {
                     assert_eq!(proxyee_id, 0);
