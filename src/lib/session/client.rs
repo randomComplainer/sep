@@ -35,7 +35,7 @@ where
     )
 }
 
-async fn run_task<ProxyeeStream>(
+pub async fn run_task<ProxyeeStream>(
     proxyee: socks5::agent::Init<ProxyeeStream>,
     mut server_read: impl Stream<Item = msg::ServerMsg> + Unpin,
     mut server_write: impl Sink<msg::ClientMsg, Error = futures::channel::mpsc::SendError> + Unpin,

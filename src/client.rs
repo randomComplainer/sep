@@ -4,11 +4,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use clap::Parser;
+use futures::prelude::*;
 use rand::Rng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use sep_lib::protocol;
-use sep_lib::socks5;
+use sep_lib::prelude::*;
 
 #[derive(Parser, Debug)]
 #[command(version)]
@@ -43,13 +43,47 @@ async fn main() {
     let key: Arc<protocol::Key> = protocol::key_from_string(&args.key).into();
     let server_addr = Arc::new(args.server_addr);
 
-    while let Ok((agent, local_addr)) = listener.accept().await {
-        tokio::spawn({
-            let key = key.clone();
-            let server_addr = server_addr.clone();
-            handle_proxyee(key, agent, server_addr, local_addr)
-        });
+    let (mut new_proxee_tx, new_proxee_rx) = futures::channel::mpsc::channel(4);
+    let channeling_new_proxee = async move {
+        loop {
+            let (agent, socket_addr) = listener.accept().await.unwrap();
+            new_proxee_tx
+                .send((socket_addr.port(), agent))
+                .await
+                .unwrap();
+        }
+
+        Ok::<_, std::io::Error>(())
+    };
+
+    let main_task = sep_lib::proxyee_conn_group::run_task(new_proxee_rx, move || {
+        let key = key.clone();
+        let server_addr = server_addr.clone();
+
+        Box::pin(async move {
+            let server = protocol::client_agent::Init::new(
+                key,
+                protocol::rand_nonce(),
+                tokio::net::TcpStream::connect(server_addr.as_ref())
+                    .await
+                    .unwrap(),
+            );
+
+            let conn = server
+                .send_greeting(protocol::get_timestamp())
+                .await
+                .unwrap();
+
+            Ok::<_, std::io::Error>(conn)
+        })
+    });
+
+    tokio::try_join! {
+        main_task,
+        channeling_new_proxee,
     }
+    .map(|_| ())
+    .unwrap();
 }
 
 async fn handle_proxyee<Stream>(

@@ -10,8 +10,8 @@ use sep_lib::prelude::*;
 
 async fn create_pair() -> (
     (
-        client_agent::GreetedRead<DuplexStream, ChaCha20>,
         client_agent::GreetedWrite<DuplexStream, ChaCha20>,
+        client_agent::GreetedRead<DuplexStream, ChaCha20>,
     ),
     (
         server_agent::GreetedRead<DuplexStream, ChaCha20>,
@@ -54,17 +54,18 @@ async fn client_req_v4() {
     let req_ip = std::net::Ipv4Addr::new(129, 0, 0, 1);
     let req_port = 1234;
 
-    let ((_client_read, mut client_write), (mut server_read, _server_write)) = create_pair().await;
+    let ((mut client_write, _client_read), (mut server_read, _server_write)) = create_pair().await;
 
     let client = async move {
-        let mut req_buf = ipv4_to_bytes(req_ip, req_port);
-        client_write.send_request(0, &mut req_buf).await?;
+        client_write
+            .send_request(0, decode::ReadRequestAddr::Ipv4(req_ip), req_port)
+            .await?;
 
         Ok::<_, std::io::Error>(())
     };
 
     let server = async move {
-        let msg = server_read.recv_msg().await?;
+        let msg = server_read.recv_msg().await?.unwrap();
         match msg {
             server_agent::ClientMsg::Request(server_agent::msg::Request {
                 proxyee_id,
@@ -89,17 +90,22 @@ async fn client_req_domain() {
     let req_domain = "example.com";
     let req_port = 1234;
 
-    let ((_client_read, mut client_write), (mut server_read, _server_write)) = create_pair().await;
+    let ((mut client_write, _client_read), (mut server_read, _server_write)) = create_pair().await;
 
     let client = async move {
-        let mut req_buf = domain_to_bytes(req_domain, req_port);
-        client_write.send_request(0, &mut req_buf).await?;
+        client_write
+            .send_request(
+                0,
+                decode::ReadRequestAddr::Domain(req_domain.into()),
+                req_port,
+            )
+            .await?;
 
         Ok::<_, std::io::Error>(())
     };
 
     let server = async move {
-        let msg = server_read.recv_msg().await?;
+        let msg = server_read.recv_msg().await?.unwrap();
         match msg {
             server_agent::ClientMsg::Request(server_agent::msg::Request {
                 proxyee_id,
@@ -124,10 +130,10 @@ async fn server_reply_v4() {
     let reply_ip = std::net::Ipv4Addr::new(129, 0, 0, 1);
     let reply_port = 1234;
 
-    let ((mut client_read, _client_write), (_server_read, mut server_write)) = create_pair().await;
+    let ((_client_write, mut client_read), (_server_read, mut server_write)) = create_pair().await;
 
     let client = async move {
-        let msg = client_read.recv_msg().await?;
+        let msg = client_read.recv_msg().await?.unwrap();
 
         match msg {
             client_agent::ServerMsg::Reply(client_agent::msg::Reply {
@@ -158,7 +164,7 @@ async fn server_reply_v4() {
 async fn client_data() {
     let data = vec![0x01, 0x02, 0x03, 0x04].into_boxed_slice();
 
-    let ((_client_read, mut client_write), (mut server_read, _server_write)) = create_pair().await;
+    let ((mut client_write, _client_read), (mut server_read, _server_write)) = create_pair().await;
 
     let client = {
         let data = data.clone();
@@ -170,7 +176,7 @@ async fn client_data() {
     };
 
     let server = async move {
-        let msg = server_read.recv_msg().await?;
+        let msg = server_read.recv_msg().await?.unwrap();
         match msg {
             server_agent::ClientMsg::Data(server_agent::msg::Data {
                 proxyee_id,
@@ -193,12 +199,12 @@ async fn client_data() {
 #[tokio::test]
 async fn server_data() {
     let data = vec![0x01, 0x02, 0x03, 0x04].into_boxed_slice();
-    let ((mut client_read, _client_write), (_server_read, mut server_write)) = create_pair().await;
+    let ((_client_write, mut client_read), (_server_read, mut server_write)) = create_pair().await;
 
     let client = {
         let data = data.clone();
         async move {
-            let msg = client_read.recv_msg().await?;
+            let msg = client_read.recv_msg().await?.unwrap();
 
             match msg {
                 client_agent::ServerMsg::Data(client_agent::msg::Data {
@@ -228,7 +234,7 @@ async fn server_data() {
 
 #[tokio::test]
 async fn client_ack() {
-    let ((_client_read, mut client_write), (mut server_read, _server_write)) = create_pair().await;
+    let ((mut client_write, _client_read), (mut server_read, _server_write)) = create_pair().await;
 
     let client = {
         async move {
@@ -239,7 +245,7 @@ async fn client_ack() {
     };
 
     let server = async move {
-        let msg = server_read.recv_msg().await?;
+        let msg = server_read.recv_msg().await?.unwrap();
         match msg {
             server_agent::ClientMsg::Ack(server_agent::msg::Ack { proxyee_id, seq }) => {
                 assert_eq!(proxyee_id, 0);
@@ -256,11 +262,11 @@ async fn client_ack() {
 
 #[tokio::test]
 async fn server_ack() {
-    let ((mut client_read, _client_write), (_server_read, mut server_write)) = create_pair().await;
+    let ((_client_write, mut client_read), (_server_read, mut server_write)) = create_pair().await;
 
     let client = {
         async move {
-            let msg = client_read.recv_msg().await?;
+            let msg = client_read.recv_msg().await?.unwrap();
             match msg {
                 client_agent::ServerMsg::Ack(client_agent::msg::Ack { proxyee_id, seq }) => {
                     assert_eq!(proxyee_id, 0);
@@ -284,7 +290,7 @@ async fn server_ack() {
 
 #[tokio::test]
 async fn client_eof() {
-    let ((_client_read, mut client_write), (mut server_read, _server_write)) = create_pair().await;
+    let ((mut client_write, _client_read), (mut server_read, _server_write)) = create_pair().await;
 
     let client = {
         async move {
@@ -295,7 +301,7 @@ async fn client_eof() {
     };
 
     let server = async move {
-        let msg = server_read.recv_msg().await?;
+        let msg = server_read.recv_msg().await?.unwrap();
         match msg {
             server_agent::ClientMsg::Eof(server_agent::msg::Eof { proxyee_id, seq }) => {
                 assert_eq!(proxyee_id, 0);
@@ -312,11 +318,11 @@ async fn client_eof() {
 
 #[tokio::test]
 async fn server_eof() {
-    let ((mut client_read, _client_write), (_server_read, mut server_write)) = create_pair().await;
+    let ((_client_write, mut client_read), (_server_read, mut server_write)) = create_pair().await;
 
     let client = {
         async move {
-            let msg = client_read.recv_msg().await?;
+            let msg = client_read.recv_msg().await?.unwrap();
             match msg {
                 client_agent::ServerMsg::Eof(client_agent::msg::Eof { proxyee_id, seq }) => {
                     assert_eq!(proxyee_id, 0);

@@ -191,6 +191,16 @@ crate::peek_type! {
     }
 }
 
+impl std::fmt::Debug for ReadRequestAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ipv4(addr) => write!(f, "{}", addr),
+            Self::Ipv6(addr) => write!(f, "{}", addr),
+            Self::Domain(bytes) => write!(f, "{}", std::str::from_utf8(bytes.as_ref()).unwrap()),
+        }
+    }
+}
+
 impl ReadRequestAddr {
     pub fn read(&self) -> String {
         match self {

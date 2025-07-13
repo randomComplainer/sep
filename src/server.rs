@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use clap::Parser;
+use futures::prelude::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use sep_lib::prelude::*;
@@ -34,11 +35,44 @@ async fn main() {
 
     println!("Listening at {}...", bound_addr);
 
-    while let Ok((agent, addr)) = listener.accept().await {
-        tokio::spawn(async move {
-            handle_client(agent, addr).await;
-        });
+    let (new_client_conn_tx, new_client_conn_rx) = futures::channel::mpsc::channel(4);
+
+    let channeling_new_client = async move {
+        loop {
+            let (agent, socket_addr) = listener.accept().await.unwrap();
+            tokio::spawn({
+                let mut new_client_conn_tx = new_client_conn_tx.clone();
+                async move {
+                    let (client_read, client_write) =
+                        match agent.recv_greeting(protocol::get_timestamp()).await {
+                            Ok(agent) => agent,
+                            Err(err) => {
+                                dbg!(format!("{}", err));
+                                dbg!("failed to receive greeting");
+                                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                                return;
+                            }
+                        };
+
+                    new_client_conn_tx
+                        .send((socket_addr.port(), client_read, client_write))
+                        .await
+                        .unwrap();
+                }
+            });
+        }
+
+        Ok::<_, std::io::Error>(())
+    };
+
+    let main_task = sep_lib::client_conn_group::run_task(new_client_conn_rx);
+
+    tokio::try_join! {
+        main_task,
+        channeling_new_client,
     }
+    .map(|_| ())
+    .unwrap();
 }
 
 async fn resolve_addrs(

@@ -15,17 +15,17 @@ pub enum ServerSessionError {
     ClientWriteClosed,
 }
 
-pub async fn create_task(
-    client_read_rx: impl Stream<Item = msg::ClientMsg> + Unpin,
-) -> (
-    impl Stream<Item = msg::ServerMsg> + Unpin,
-    impl std::future::Future<Output = Result<(), ServerSessionError>>,
-) {
-    // TODO: magic queue size
-    let (client_write_tx, client_write_rx) = futures::channel::mpsc::channel(4);
-
-    (client_write_rx, run_task(client_read_rx, client_write_tx))
-}
+// pub fn create_task(
+//     client_read_rx: impl Stream<Item = msg::ClientMsg> + Unpin,
+// ) -> (
+//     impl Stream<Item = msg::ServerMsg> + Unpin,
+//     impl std::future::Future<Output = Result<(), ServerSessionError>>,
+// ) {
+//     // TODO: magic queue size
+//     let (client_write_tx, client_write_rx) = futures::channel::mpsc::channel(4);
+//
+//     (client_write_rx, run_task(client_read_rx, client_write_tx))
+// }
 
 async fn resolve_addrs(
     addr: decode::ReadRequestAddr,
@@ -67,7 +67,7 @@ async fn connect_target(addrs: Vec<SocketAddr>) -> Result<tokio::net::TcpStream,
     ))
 }
 
-async fn run_task(
+pub async fn create_task(
     mut client_read: impl Stream<Item = msg::ClientMsg> + Unpin,
     mut client_write: impl Sink<msg::ServerMsg, Error = futures::channel::mpsc::SendError> + Unpin,
 ) -> Result<(), ServerSessionError> {
@@ -88,6 +88,8 @@ async fn run_task(
             )));
         }
     };
+
+    dbg!(req.addr.read());
 
     let addrs = resolve_addrs(req.addr, req.port).await?;
     let target_stream = connect_target(addrs).await?;

@@ -1,3 +1,3 @@
-mod client;
-mod msg;
-mod server;
+pub mod client;
+pub mod msg;
+pub mod server;

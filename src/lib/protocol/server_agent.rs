@@ -16,7 +16,7 @@ pub mod msg {
     use derive_more::From;
 
     crate::peek_type! {
-        #[derive(From)]
+        #[derive(Debug, From)]
         pub enum ClientMsg, PeekClientMsg {
             0u8, Request(#[from] PeekRequest::peek => PeekRequest),
             1u8, Data(#[from] PeekData::peek => PeekData),
@@ -26,6 +26,7 @@ pub mod msg {
     }
 
     crate::peek_type! {
+        #[derive(Debug)]
         pub struct Request,PeekRequest {
             proxyee_id: PeekU16::peek => PeekU16,
             addr: PeekReadRequestAddr::peek => PeekReadRequestAddr,
@@ -286,12 +287,8 @@ where
         Self { stream_read }
     }
 
-    pub async fn recv_msg(&mut self) -> Result<ClientMsg, std::io::Error> {
-        let msg = self
-            .stream_read
-            .read_next(msg::PeekClientMsg::peek)
-            .await?
-            .ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, ""))?;
+    pub async fn recv_msg(&mut self) -> Result<Option<ClientMsg>, std::io::Error> {
+        let msg = self.stream_read.read_next(msg::PeekClientMsg::peek).await?;
 
         Ok(msg)
     }

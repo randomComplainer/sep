@@ -81,8 +81,8 @@ where
         timestamp: u64,
     ) -> Result<
         (
-            GreetedRead<Stream, ChaCha20>,
             GreetedWrite<Stream, ChaCha20>,
+            GreetedRead<Stream, ChaCha20>,
         ),
         std::io::Error,
     > {
@@ -110,11 +110,11 @@ where
         stream_write.write_all(buf.as_mut()).await?;
 
         Ok((
+            GreetedWrite::new(stream_write),
             GreetedRead::new(BufDecoder::new(EncryptedRead::new(
                 stream_read,
                 ChaCha20::new(self.key.as_slice().into(), self.nonce.as_slice().into()),
             ))),
-            GreetedWrite::new(stream_write),
         ))
     }
 }
@@ -135,14 +135,35 @@ where
     pub async fn send_request(
         &mut self,
         proxyee_id: u16,
-        addr_bytes: &mut [u8], // Addr + Port, in Socks5 format
+        mut addr: decode::ReadRequestAddr,
+        port: u16,
     ) -> Result<(), std::io::Error> {
         // TODO: batch write
         self.stream_write.write_all(&mut [0u8]).await?;
         self.stream_write
             .write_all(&mut proxyee_id.to_be_bytes())
             .await?;
-        self.stream_write.write_all(addr_bytes).await?;
+
+        match &mut addr {
+            decode::ReadRequestAddr::Ipv4(addr) => {
+                self.stream_write.write_all(&mut [1u8]).await?;
+                self.stream_write.write_all(&mut addr.octets()).await?;
+            }
+            decode::ReadRequestAddr::Ipv6(addr) => {
+                self.stream_write.write_all(&mut [4u8]).await?;
+                self.stream_write.write_all(&mut addr.octets()).await?;
+            }
+            decode::ReadRequestAddr::Domain(domain) => {
+                self.stream_write.write_all(&mut [3u8]).await?;
+                self.stream_write
+                    .write_all(&mut [domain.len() as u8])
+                    .await?;
+                self.stream_write.write_all(domain.as_mut()).await?;
+            }
+        }
+
+        self.stream_write.write_all(&mut port.to_be_bytes()).await?;
+
         Ok(())
     }
 
@@ -204,12 +225,8 @@ where
         Self { stream_read }
     }
 
-    pub async fn recv_msg(&mut self) -> Result<msg::ServerMsg, std::io::Error> {
-        let msg = self
-            .stream_read
-            .read_next(msg::PeekServerMsg::peek)
-            .await?
-            .ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, ""))?;
+    pub async fn recv_msg(&mut self) -> Result<Option<msg::ServerMsg>, std::io::Error> {
+        let msg = self.stream_read.read_next(msg::PeekServerMsg::peek).await?;
 
         Ok(msg)
     }
