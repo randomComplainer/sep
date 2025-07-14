@@ -13,26 +13,44 @@ pub mod msg {
     use super::*;
     use crate::decode::*;
 
-    crate::peek_type! {
-        #[derive(Debug, From)]
-        pub enum ServerMsg, PeekServerMsg {
-            1u8, Reply(#[from] PeekReply::peek => PeekReply),
-            2u8, Data(#[from] PeekData::peek => PeekData),
-            3u8, Ack(#[from] PeekAck::peek => PeekAck),
-            4u8, Eof(#[from] PeekEof::peek => PeekEof),
-        }
+    #[derive(Debug, From)]
+    pub enum ServerMsg {
+        Reply(Reply),
+        Data(Data),
+        Ack(Ack),
+        Eof(Eof),
     }
 
     crate::peek_type! {
-        #[derive(Debug)]
+        pub enum ServerMsg, PeekServerMsg {
+            1u8, Reply(PeekReply::peek => PeekReply),
+            2u8, Data(PeekData::peek => PeekData),
+            3u8, Ack(PeekAck::peek => PeekAck),
+            4u8, Eof(PeekEof::peek => PeekEof),
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct Reply {
+        pub proxyee_id: u16,
+        pub bound_addr: std::net::SocketAddr,
+    }
+
+    crate::peek_type! {
         pub struct Reply, PeekReply {
             proxyee_id: PeekU16::peek => PeekU16,
             bound_addr: PeekSocketAddr::peek => PeekSocketAddr,
         }
     }
 
+    #[derive(Debug)]
+    pub struct Data {
+        pub proxyee_id: u16,
+        pub seq: u16,
+        pub data: BytesMut,
+    }
+
     crate::peek_type! {
-        #[derive(Debug)]
         pub struct Data, PeekData {
             proxyee_id: PeekU16::peek => PeekU16,
             seq: PeekU16::peek => PeekU16,
@@ -40,16 +58,26 @@ pub mod msg {
         }
     }
 
+    #[derive(Debug)]
+    pub struct Ack {
+        pub proxyee_id: u16,
+        pub seq: u16,
+    }
+
     crate::peek_type! {
-        #[derive(Debug)]
         pub struct Ack, PeekAck {
             proxyee_id: PeekU16::peek => PeekU16,
             seq: PeekU16::peek => PeekU16,
         }
     }
 
+    #[derive(Debug)]
+    pub struct Eof {
+        pub proxyee_id: u16,
+        pub seq: u16,
+    }
+
     crate::peek_type! {
-        #[derive(Debug)]
         pub struct Eof, PeekEof {
             proxyee_id: PeekU16::peek => PeekU16,
             seq: PeekU16::peek => PeekU16,

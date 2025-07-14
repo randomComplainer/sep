@@ -12,8 +12,13 @@ pub mod msg {
     use super::*;
     use crate::decode::*;
 
+    #[derive(Debug)]
+    pub struct ClientGreeting {
+        pub ver: u8,
+        pub methods: BytesMut,
+    }
+
     crate::peek_type! {
-        #[derive(Debug)]
         pub struct ClientGreeting, PeekClientGreeting {
             ver: PeekU8::peek => PeekU8,
             methods: PeekSlice::peek_u8_len => PeekSlice,
@@ -30,6 +35,15 @@ pub mod msg {
         buf.put_u8(item.ver);
         buf.put_u8(item.method);
         return Ok(buf);
+    }
+
+    #[derive(Debug)]
+    pub struct ClientRequest {
+        pub ver: u8,
+        pub cmd: u8,
+        pub rsv: u8,
+        pub addr: ReadRequestAddr,
+        pub port: u16,
     }
 
     crate::peek_type! {

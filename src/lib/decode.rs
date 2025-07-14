@@ -1,4 +1,7 @@
-use std::io::Cursor;
+use std::{
+    io::Cursor,
+    net::{Ipv4Addr, Ipv6Addr},
+};
 
 use bytes::{Buf, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -183,6 +186,12 @@ impl Peek for PeekIpv6Addr {
     }
 }
 
+pub enum ReadRequestAddr {
+    Ipv4(Ipv4Addr),
+    Ipv6(Ipv6Addr),
+    Domain(BytesMut),
+}
+
 crate::peek_type! {
     pub enum ReadRequestAddr, PeekReadRequestAddr {
         1u8, Ipv4(PeekIpv4Addr::peek => PeekIpv4Addr),
@@ -303,12 +312,6 @@ macro_rules! peek_type {
         )*
     }) => {
         $(#[$meta])*
-        $vis struct $struct_name {
-            $(
-                pub $field: <$field_peek_type as Peek>::Value,
-            )*
-        }
-
         $vis struct $peek_type_name {
             $(
                 pub $field: $field_peek_type,
@@ -351,10 +354,6 @@ macro_rules! peek_type {
     ($vis:vis struct $struct_name:ident, $peek_type_name:ident (
             $field_peek_fn:path => $field_peek_type:ty,
     )) => {
-        $vis struct $struct_name (
-            pub <$field_peek_type as Peek>::Value,
-        );
-
         $vis struct $peek_type_name (
             pub $field_peek_type,
         );
@@ -392,12 +391,6 @@ macro_rules! peek_type {
         )*
     }) => {
         $(#[$meta])*
-        $vis enum $enum_name {
-            $(
-                $branch_name($(#[$branch_meta])* <$branch_peek_type as Peek>::Value),
-            )*
-        }
-
         $vis enum $peek_type_name {
             $(
                 $branch_name($branch_peek_type),
@@ -452,6 +445,11 @@ mod test {
 
     use bytes::{BufMut, BytesMut};
 
+    struct Aggregated {
+        pub value_1: u8,
+        pub value_2: u8,
+    }
+
     peek_type! {
         struct Aggregated, PeekAggregated {
             value_1: PeekU8::peek => PeekU8,
@@ -474,10 +472,16 @@ mod test {
         assert_eq!(resolved.value_2, 0x02);
     }
 
-    peek_type! {struct Nested,PeekNested {
-        value_1: PeekU8::peek => PeekU8,
-        value_2: PeekAggregated::peek => PeekAggregated,
+    struct Nested {
+        pub value_1: u8,
+        pub value_2: Aggregated,
     }
+
+    peek_type! {
+        struct Nested,PeekNested {
+            value_1: PeekU8::peek => PeekU8,
+            value_2: PeekAggregated::peek => PeekAggregated,
+        }
     }
 
     #[test]
@@ -496,6 +500,8 @@ mod test {
         assert_eq!(resolved.value_2.value_1, 0x02);
         assert_eq!(resolved.value_2.value_2, 0x03);
     }
+
+    struct Tuple(Aggregated);
 
     peek_type! {
         struct Tuple,PeekTuple(
@@ -516,6 +522,11 @@ mod test {
 
         assert_eq!(resolved.0.value_1, 0x01);
         assert_eq!(resolved.0.value_2, 0x02);
+    }
+
+    enum Enum {
+        Branch1(u8),
+        Branch2(Aggregated),
     }
 
     peek_type! {

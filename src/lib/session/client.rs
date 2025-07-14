@@ -1,5 +1,7 @@
+use bytes::BytesMut;
 use futures::prelude::*;
 use thiserror::Error;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use super::msg;
 use crate::prelude::*;
@@ -73,7 +75,39 @@ where
         }
     };
 
-    proxyee.reply(&reply.bound_addr).await?;
+    let (proxyee_read, proxyee_write) = proxyee.reply(&reply.bound_addr).await?;
+
+    // let proxyee_to_server = {
+    //     async move {
+    //         let (mut buf, mut proxyee_read) = proxyee_read.into_parts();
+    //         let mut seq = 0;
+    //
+    //         server_write
+    //             .send(msg::Data { seq, data: buf }.into())
+    //             .await
+    //             .unwrap();
+    //
+    //         seq += 1;
+    //
+    //         // TODO: buf size
+    //         let mut buf = BytesMut::with_capacity(1024 * 4);
+    //         loop {
+    //             let n = proxyee_read.read(&mut buf).await?;
+    //             if n == 0 {
+    //                 break;
+    //             }
+    //
+    //             server_write
+    //                 .send(msg::Data { seq, data: buf }.into())
+    //                 .await
+    //                 .unwrap();
+    //
+    //             seq += 1;
+    //         }
+    //
+    //         Ok::<_, std::io::Error>(())
+    //     }
+    // };
 
     Ok(())
 }
