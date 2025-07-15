@@ -99,42 +99,44 @@ pub mod client_conn_group {
 
         let accepting_client_conns = {
             let mut client_write_tx = client_write_tx.clone();
-            let accept_client_msg = accept_client_msg.clone();
+            let accept_client_msg = Arc::clone(&accept_client_msg);
             async move {
-                while let Some((session_id, mut client_read, client_write)) =
-                    new_conn_rx.next().await
-                {
+                while let Some((_, mut client_read, client_write)) = new_conn_rx.next().await {
                     client_write_tx.send(client_write).await.unwrap();
                     let reciving_msg_from_conn = {
-                        let accept_client_msg = accept_client_msg.clone();
+                        let accept_client_msg = Arc::clone(&accept_client_msg);
                         async move {
                             // TODO: if client_write closed/errored, do something
                             while let Some(agent_msg) = client_read.recv_msg().await? {
                                 dbg!(format!("message from client: {:?}", &agent_msg));
                                 // TODO: To/From
-                                let session_msg = match agent_msg {
-                                    protocol::server_agent::ClientMsg::Request(req) => {
+                                let (session_id, session_msg) = match agent_msg {
+                                    protocol::server_agent::ClientMsg::Request(req) => (
+                                        req.proxyee_id,
                                         session::msg::ClientMsg::Request(session::msg::Request {
                                             addr: req.addr,
                                             port: req.port,
-                                        })
-                                    }
-                                    protocol::server_agent::ClientMsg::Data(data) => {
+                                        }),
+                                    ),
+                                    protocol::server_agent::ClientMsg::Data(data) => (
+                                        data.proxyee_id,
                                         session::msg::ClientMsg::Data(session::msg::Data {
                                             seq: data.seq,
                                             data: data.data,
-                                        })
-                                    }
-                                    protocol::server_agent::ClientMsg::Ack(ack) => {
+                                        }),
+                                    ),
+                                    protocol::server_agent::ClientMsg::Ack(ack) => (
+                                        ack.proxyee_id,
                                         session::msg::ClientMsg::Ack(session::msg::Ack {
                                             seq: ack.seq,
-                                        })
-                                    }
-                                    protocol::server_agent::ClientMsg::Eof(eof) => {
+                                        }),
+                                    ),
+                                    protocol::server_agent::ClientMsg::Eof(eof) => (
+                                        eof.proxyee_id,
                                         session::msg::ClientMsg::Eof(session::msg::Eof {
                                             seq: eof.seq,
-                                        })
-                                    }
+                                        }),
+                                    ),
                                 };
 
                                 accept_client_msg(session_id, session_msg).await;
@@ -159,13 +161,14 @@ pub mod client_conn_group {
         };
 
         let sending_msg_to_client = async move {
-            while let Some((session_id, client_msg)) = server_msg_rx.next().await {
+            while let Some((session_id, server_msg)) = server_msg_rx.next().await {
                 let mut client_write = client_write_rx.next().await.unwrap();
                 tokio::spawn({
                     let mut client_write_tx = client_write_tx.clone();
                     async move {
+                        dbg!(format!("message to client: {:?}", &server_msg));
                         // TODO: do I care about error?
-                        let _ = match client_msg {
+                        let _ = match server_msg {
                             session::msg::ServerMsg::Reply(reply) => {
                                 client_write.send_reply(session_id, reply.bound_addr).await
                             }
@@ -242,7 +245,7 @@ pub mod proxyee_conn_group {
 
         let accepting_proxyee = {
             let client_msg_tx = client_msg_tx.clone();
-            let session_server_msg_senders = session_server_msg_senders.clone();
+            let session_server_msg_senders = Arc::clone(&session_server_msg_senders);
             async move {
                 while let Some((session_id, proxyee)) = new_proxee_rx.next().await {
                     let (session_server_msg_tx, session_server_msg_rx) =
@@ -250,6 +253,8 @@ pub mod proxyee_conn_group {
                     let session_client_msg_tx = client_msg_tx
                         .clone()
                         .with(move |msg| std::future::ready(Ok((session_id, msg))));
+                    session_server_msg_senders.insert(session_id, session_server_msg_tx);
+
                     let session_task = session::client::run_task(
                         proxyee,
                         session_server_msg_rx,
@@ -264,8 +269,6 @@ pub mod proxyee_conn_group {
                             }
                         }
                     });
-
-                    session_server_msg_senders.insert(session_id, session_server_msg_tx);
                 }
 
                 Ok::<_, std::io::Error>(())
@@ -313,16 +316,17 @@ pub mod proxyee_conn_group {
 
         let connect_to_server = {
             let mut server_write_tx = server_write_tx.clone();
-            let session_server_msg_senders = session_server_msg_senders.clone();
+            let session_server_msg_senders = Arc::clone(&session_server_msg_senders);
             async move {
                 let mut i = 0;
                 while i < 4 {
-                    let session_server_msg_senders = session_server_msg_senders.clone();
+                    let session_server_msg_senders = Arc::clone(&session_server_msg_senders);
                     let (server_write, mut server_read) = connect_to_server().await?;
 
                     let reciving_msg_from_server = {
                         async move {
                             while let Some(agent_msg) = server_read.recv_msg().await? {
+                                dbg!(format!("message from server: {:?}", &agent_msg));
                                 let (session_id, session_msg): (u16, session::msg::ServerMsg) =
                                     match agent_msg {
                                         protocol::client_agent::ServerMsg::Reply(reply) => (

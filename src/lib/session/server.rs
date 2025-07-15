@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 
 use futures::prelude::*;
 use thiserror::Error;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::msg;
 use crate::prelude::*;
@@ -101,5 +102,97 @@ pub async fn create_task(
         .await
         .map_err(|_| ServerSessionError::ClientWriteClosed)?;
 
-    return Ok(());
+    let (mut target_read, mut target_write) = target_stream.into_split();
+
+    let target_to_client = {
+        async move {
+            let mut seq = 0;
+            loop {
+                // TODO: reuse buf & buf size
+                let mut buf = bytes::BytesMut::with_capacity(1024 * 4);
+                let n = target_read.read_buf(&mut buf).await?;
+                dbg!(n);
+                if n == 0 {
+                    break;
+                }
+
+                client_write
+                    .send(msg::Data { seq, data: buf }.into())
+                    .await
+                    .unwrap();
+
+                seq += 1;
+            }
+            dbg!("hit");
+
+            client_write.send(msg::Eof { seq }.into()).await.unwrap();
+            Ok::<_, std::io::Error>(())
+        }
+    };
+
+    let client_to_target = {
+        async move {
+            // TODO: magic capacity
+            let mut heap = std::collections::BinaryHeap::<
+                std::cmp::Reverse<super::client::StreamEntry>,
+            >::with_capacity(8);
+
+            let mut next_seq = 0u16;
+
+            while let Some(msg) = client_read.next().await {
+                match msg {
+                    msg::ClientMsg::Data(data) => {
+                        if heap.len() == heap.capacity() {
+                            panic!("too many data");
+                        }
+
+                        heap.push(std::cmp::Reverse(super::client::StreamEntry::data(
+                            data.seq, data.data,
+                        )));
+                    }
+                    msg::ClientMsg::Ack(ack) => {
+                        // TODO
+                    }
+                    msg::ClientMsg::Eof(eof) => {
+                        if heap.len() == heap.capacity() {
+                            panic!("too many eof");
+                        }
+
+                        heap.push(std::cmp::Reverse(super::client::StreamEntry::eof(eof.seq)));
+                    }
+                    _ => panic!("unexpected msg"),
+                };
+
+                while heap.peek().map(|e| e.0.0 == next_seq).unwrap_or(false) {
+                    let super::client::StreamEntry(_seq, entry) = heap.pop().unwrap().0;
+
+                    match entry {
+                        super::client::StreamEntryValue::Data(data) => {
+                            dbg!(data.as_ref());
+                            dbg!(format!("data to target [{}]", data.len()));
+                            target_write.write_all(data.as_ref()).await?;
+                        }
+                        super::client::StreamEntryValue::Eof => {
+                            dbg!("eof");
+                            target_write.flush().await?;
+                            drop(target_write);
+                            return Ok(());
+                        }
+                    }
+
+                    next_seq += 1;
+                }
+            }
+
+            Ok::<_, std::io::Error>(())
+        }
+    };
+
+    tokio::try_join! {
+        target_to_client,
+        client_to_target,
+    }
+    .unwrap();
+
+    Ok(())
 }
