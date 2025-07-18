@@ -16,18 +16,6 @@ pub enum ServerSessionError {
     ClientWriteClosed,
 }
 
-// pub fn create_task(
-//     client_read_rx: impl Stream<Item = msg::ClientMsg> + Unpin,
-// ) -> (
-//     impl Stream<Item = msg::ServerMsg> + Unpin,
-//     impl std::future::Future<Output = Result<(), ServerSessionError>>,
-// ) {
-//     // TODO: magic queue size
-//     let (client_write_tx, client_write_rx) = futures::channel::mpsc::channel(4);
-//
-//     (client_write_rx, run_task(client_read_rx, client_write_tx))
-// }
-
 async fn resolve_addrs(
     addr: decode::ReadRequestAddr,
     port: u16,
@@ -90,7 +78,7 @@ pub async fn create_task(
         }
     };
 
-    dbg!(req.addr.read());
+    dbg!(&req.addr);
 
     let addrs = resolve_addrs(req.addr, req.port).await?;
     let target_stream = connect_target(addrs).await?;

@@ -18,11 +18,28 @@ pub mod msg {
         pub methods: BytesMut,
     }
 
-    crate::peek_type! {
-        pub struct ClientGreeting, PeekClientGreeting {
-            ver: PeekU8::peek => PeekU8,
-            methods: PeekSlice::peek_u8_len => PeekSlice,
+    pub struct ClientGreetingReader {
+        pub ver: U8Reader,
+        pub methods: SliceReader,
+    }
+
+    impl Reader for ClientGreetingReader {
+        type Value = ClientGreeting;
+        fn read(&self, buf: &mut BytesMut) -> ClientGreeting {
+            ClientGreeting {
+                ver: self.ver.read(buf),
+                methods: self.methods.read(buf),
+            }
         }
+    }
+
+    pub fn client_greeting_peeker() -> impl Peeker<ClientGreeting, Reader = ClientGreetingReader> {
+        peek::wrap(|cursor| {
+            Ok(Some(ClientGreetingReader {
+                ver: crate::peek!(u8_peeker().peek(cursor)),
+                methods: crate::peek!(slice_peeker_u8_len().peek(cursor)),
+            }))
+        })
     }
 
     pub struct MethodSelection {
@@ -46,14 +63,37 @@ pub mod msg {
         pub port: u16,
     }
 
-    crate::peek_type! {
-        pub struct ClientRequest, PeekClientRequest {
-            ver: PeekU8::peek => PeekU8,
-            cmd: PeekU8::peek => PeekU8,
-            rsv: PeekU8::peek => PeekU8,
-            addr: PeekReadRequestAddr::peek => PeekReadRequestAddr,
-            port: PeekU16::peek => PeekU16,
+    pub struct ClientRequestReader {
+        pub ver: U8Reader,
+        pub cmd: U8Reader,
+        pub rsv: U8Reader,
+        pub addr: ReadRequestAddrReader,
+        pub port: U16Reader,
+    }
+
+    impl Reader for ClientRequestReader {
+        type Value = ClientRequest;
+        fn read(&self, buf: &mut BytesMut) -> ClientRequest {
+            ClientRequest {
+                ver: self.ver.read(buf),
+                cmd: self.cmd.read(buf),
+                rsv: self.rsv.read(buf),
+                addr: self.addr.read(buf),
+                port: self.port.read(buf),
+            }
         }
+    }
+
+    pub fn client_request_peeker() -> impl Peeker<ClientRequest, Reader = ClientRequestReader> {
+        peek::wrap(|cursor| {
+            Ok(Some(ClientRequestReader {
+                ver: crate::peek!(u8_peeker().peek(cursor)),
+                cmd: crate::peek!(u8_peeker().peek(cursor)),
+                rsv: crate::peek!(u8_peeker().peek(cursor)),
+                addr: crate::peek!(request_addr_peeker().peek(cursor)),
+                port: crate::peek!(u16_peeker().peek(cursor)),
+            }))
+        })
     }
 
     pub struct Reply<'a> {
@@ -151,7 +191,7 @@ pub mod agent {
         ) -> Result<(msg::ClientGreeting, Greeted<Stream>), Socks5Error> {
             let greeting_msg = self
                 .stream_read
-                .read_next(PeekClientGreeting::peek)
+                .read_next(msg::client_greeting_peeker())
                 .await
                 .and_then(|msg_opt| match msg_opt {
                     Some(msg) => Ok(msg),
@@ -200,7 +240,7 @@ pub mod agent {
 
             let req_msg = self
                 .stream_read
-                .read_next(PeekClientRequest::peek)
+                .read_next(msg::client_request_peeker())
                 .await
                 .and_then(|msg_opt| match msg_opt {
                     Some(msg) => Ok(msg),

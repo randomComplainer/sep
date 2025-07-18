@@ -3,89 +3,10 @@ use std::sync::Arc;
 use bytes::{BufMut, BytesMut};
 use chacha20::ChaCha20;
 use chacha20::cipher::KeyIvInit;
-use derive_more::From;
 use rand::RngCore;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use super::*;
-
-pub mod msg {
-    use super::*;
-    use crate::decode::*;
-
-    #[derive(Debug, From)]
-    pub enum ServerMsg {
-        Reply(Reply),
-        Data(Data),
-        Ack(Ack),
-        Eof(Eof),
-    }
-
-    crate::peek_type! {
-        pub enum ServerMsg, PeekServerMsg {
-            1u8, Reply(PeekReply::peek => PeekReply),
-            2u8, Data(PeekData::peek => PeekData),
-            3u8, Ack(PeekAck::peek => PeekAck),
-            4u8, Eof(PeekEof::peek => PeekEof),
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct Reply {
-        pub proxyee_id: u16,
-        pub bound_addr: std::net::SocketAddr,
-    }
-
-    crate::peek_type! {
-        pub struct Reply, PeekReply {
-            proxyee_id: PeekU16::peek => PeekU16,
-            bound_addr: PeekSocketAddr::peek => PeekSocketAddr,
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct Data {
-        pub proxyee_id: u16,
-        pub seq: u16,
-        pub data: BytesMut,
-    }
-
-    crate::peek_type! {
-        pub struct Data, PeekData {
-            proxyee_id: PeekU16::peek => PeekU16,
-            seq: PeekU16::peek => PeekU16,
-            data: PeekSlice::peek_u16_len => PeekSlice,
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct Ack {
-        pub proxyee_id: u16,
-        pub seq: u16,
-    }
-
-    crate::peek_type! {
-        pub struct Ack, PeekAck {
-            proxyee_id: PeekU16::peek => PeekU16,
-            seq: PeekU16::peek => PeekU16,
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct Eof {
-        pub proxyee_id: u16,
-        pub seq: u16,
-    }
-
-    crate::peek_type! {
-        pub struct Eof, PeekEof {
-            proxyee_id: PeekU16::peek => PeekU16,
-            seq: PeekU16::peek => PeekU16,
-        }
-    }
-}
-
-pub use msg::ServerMsg;
 
 pub struct Init<Stream>
 where
@@ -160,78 +81,57 @@ where
         Self { stream_write }
     }
 
-    pub async fn send_request(
-        &mut self,
-        proxyee_id: u16,
-        mut addr: decode::ReadRequestAddr,
-        port: u16,
-    ) -> Result<(), std::io::Error> {
-        // TODO: batch write
-        self.stream_write.write_all(&mut [0u8]).await?;
-        self.stream_write
-            .write_all(&mut proxyee_id.to_be_bytes())
-            .await?;
+    pub async fn send_msg(&mut self, msg: protocol::msg::ClientMsg) -> Result<(), std::io::Error> {
+        // TODO: Do I need calculated size?
+        let mut buf = BytesMut::with_capacity(64);
 
-        match &mut addr {
-            decode::ReadRequestAddr::Ipv4(addr) => {
-                self.stream_write.write_all(&mut [1u8]).await?;
-                self.stream_write.write_all(&mut addr.octets()).await?;
+        match msg {
+            protocol::msg::ClientMsg::SessionMsg(proxyee_id, session_msg) => {
+                buf.put_u8(0u8);
+                buf.put_u16(proxyee_id);
+                match session_msg {
+                    session::msg::ClientMsg::Request(req) => {
+                        buf.put_u8(0u8);
+                        match &req.addr {
+                            decode::ReadRequestAddr::Ipv4(addr) => {
+                                buf.put_u8(0x01);
+                                buf.put_slice(&addr.octets());
+                            }
+                            decode::ReadRequestAddr::Ipv6(addr) => {
+                                buf.put_u8(0x04);
+                                buf.put_slice(&addr.octets());
+                            }
+                            decode::ReadRequestAddr::Domain(domain) => {
+                                buf.put_u8(0x03);
+                                buf.put_u8(domain.len() as u8);
+                                // TODO: no copy?
+                                buf.put_slice(domain.as_ref());
+                            }
+                        }
+                        buf.put_u16(req.port);
+                        self.stream_write.write_all(&mut buf).await?;
+                    }
+                    session::msg::ClientMsg::Data(mut data) => {
+                        buf.put_u8(1u8);
+                        buf.put_u16(data.seq);
+                        buf.put_u16(data.data.len().try_into().unwrap());
+                        self.stream_write.write_all(&mut buf).await?;
+                        self.stream_write.write_all(&mut data.data).await?;
+                    }
+                    session::msg::ClientMsg::Ack(ack) => {
+                        buf.put_u8(2u8);
+                        buf.put_u16(ack.seq);
+                        self.stream_write.write_all(&mut buf).await?;
+                    }
+                    session::msg::ClientMsg::Eof(eof) => {
+                        buf.put_u8(3u8);
+                        buf.put_u16(eof.seq);
+                        self.stream_write.write_all(&mut buf).await?;
+                    }
+                };
             }
-            decode::ReadRequestAddr::Ipv6(addr) => {
-                self.stream_write.write_all(&mut [4u8]).await?;
-                self.stream_write.write_all(&mut addr.octets()).await?;
-            }
-            decode::ReadRequestAddr::Domain(domain) => {
-                self.stream_write.write_all(&mut [3u8]).await?;
-                self.stream_write
-                    .write_all(&mut [domain.len() as u8])
-                    .await?;
-                self.stream_write.write_all(domain.as_mut()).await?;
-            }
-        }
+        };
 
-        self.stream_write.write_all(&mut port.to_be_bytes()).await?;
-
-        Ok(())
-    }
-
-    pub async fn send_data(
-        &mut self,
-        proxyee_id: u16,
-        seq: u16,
-        data: &mut [u8],
-    ) -> Result<(), std::io::Error> {
-        // TODO: batch write
-        self.stream_write.write_all(&mut [1u8]).await?;
-        self.stream_write
-            .write_all(&mut proxyee_id.to_be_bytes())
-            .await?;
-        self.stream_write.write_all(&mut seq.to_be_bytes()).await?;
-        let len: u16 = data.len().try_into().unwrap();
-        self.stream_write
-            .write_all(len.to_be_bytes().as_mut())
-            .await?;
-        self.stream_write.write_all(data).await?;
-        Ok(())
-    }
-
-    pub async fn send_ack(&mut self, proxyee_id: u16, seq: u16) -> Result<(), std::io::Error> {
-        // TODO: batch write
-        self.stream_write.write_all(&mut [2u8]).await?;
-        self.stream_write
-            .write_all(&mut proxyee_id.to_be_bytes())
-            .await?;
-        self.stream_write.write_all(&mut seq.to_be_bytes()).await?;
-        Ok(())
-    }
-
-    pub async fn send_eof(&mut self, proxyee_id: u16, seq: u16) -> Result<(), std::io::Error> {
-        // TODO: batch write
-        self.stream_write.write_all(&mut [3u8]).await?;
-        self.stream_write
-            .write_all(&mut proxyee_id.to_be_bytes())
-            .await?;
-        self.stream_write.write_all(&mut seq.to_be_bytes()).await?;
         Ok(())
     }
 }
@@ -254,7 +154,7 @@ where
     }
 
     pub async fn recv_msg(&mut self) -> Result<Option<msg::ServerMsg>, std::io::Error> {
-        let msg = self.stream_read.read_next(msg::PeekServerMsg::peek).await?;
+        let msg = self.stream_read.read_next(msg::server_msg_peeker()).await?;
 
         Ok(msg)
     }

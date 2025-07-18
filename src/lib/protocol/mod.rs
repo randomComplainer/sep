@@ -8,6 +8,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use crate::decode::BufDecoder;
 use crate::prelude::*;
 
+pub mod msg;
 pub mod client_agent;
 pub mod server_agent;
 

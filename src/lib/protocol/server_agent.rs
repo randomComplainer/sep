@@ -10,87 +10,6 @@ use tokio::io::AsyncReadExt;
 use super::*;
 use crate::decode::*;
 
-pub mod msg {
-    use super::*;
-
-    use derive_more::From;
-
-    #[derive(Debug, From)]
-    pub enum ClientMsg {
-        Request(Request),
-        Data(Data),
-        Ack(Ack),
-        Eof(Eof),
-    }
-
-    crate::peek_type! {
-        pub enum ClientMsg, PeekClientMsg {
-            0u8, Request(PeekRequest::peek => PeekRequest),
-            1u8, Data(PeekData::peek => PeekData),
-            2u8, Ack(PeekAck::peek => PeekAck),
-            3u8, Eof(PeekEof::peek => PeekEof),
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct Request {
-        pub proxyee_id: u16,
-        pub addr: ReadRequestAddr,
-        pub port: u16,
-    }
-
-    crate::peek_type! {
-        pub struct Request,PeekRequest {
-            proxyee_id: PeekU16::peek => PeekU16,
-            addr: PeekReadRequestAddr::peek => PeekReadRequestAddr,
-            port: PeekU16::peek => PeekU16,
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct Data {
-        pub proxyee_id: u16,
-        pub seq: u16,
-        pub data: BytesMut,
-    }
-
-    crate::peek_type! {
-        pub struct Data,PeekData {
-            proxyee_id: PeekU16::peek => PeekU16,
-            seq: PeekU16::peek => PeekU16,
-            data: PeekSlice::peek_u16_len => PeekSlice,
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct Ack {
-        pub proxyee_id: u16,
-        pub seq: u16,
-    }
-
-    crate::peek_type! {
-        pub struct Ack,PeekAck {
-            proxyee_id: PeekU16::peek => PeekU16,
-            seq: PeekU16::peek => PeekU16,
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct Eof {
-        pub proxyee_id: u16,
-        pub seq: u16,
-    }
-
-    crate::peek_type! {
-        pub struct Eof,PeekEof {
-            proxyee_id: PeekU16::peek => PeekU16,
-            seq: PeekU16::peek => PeekU16,
-        }
-    }
-}
-
-pub use msg::ClientMsg;
-
 #[derive(Error, Debug)]
 pub enum InitError<Stream> {
     #[error("io error")]
@@ -153,12 +72,13 @@ where
         let stream_read = EncryptedRead::new(stream_read, cipher);
         let mut stream_read = crate::decode::BufDecoder::new(stream_read);
 
-        let client_timestamp = stream_read
-            .read_next(decode::PeekU64::peek)
-            .await
-            .and_then(|opt| {
-                opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, ""))
-            })?;
+        let client_timestamp =
+            stream_read
+                .read_next(decode::u64_peeker())
+                .await
+                .and_then(|opt| {
+                    opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, ""))
+                })?;
 
         if u64::abs_diff(client_timestamp, server_timestamp) > 30 {
             return Err(InitError::InvalidGreeting(
@@ -187,7 +107,7 @@ where
         }
 
         let _ = stream_read
-            .read_next(decode::PeekSlice::peek_fixed(rand_byte_len))
+            .read_next(slice_peeker_fixed_len(rand_byte_len.try_into().unwrap()))
             .await
             .and_then(|opt| {
                 opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, ""))
@@ -240,61 +160,51 @@ where
         Self { stream_write }
     }
 
-    pub async fn send_reply(
-        &mut self,
-        seq: u16,
-        bound_addr: std::net::SocketAddr,
-    ) -> Result<(), std::io::Error> {
-        let mut buf = BytesMut::with_capacity(1 + 2 + 16 + 2);
-        buf.put_u8(0x01);
-        buf.put_u16(seq);
-        match bound_addr {
-            std::net::SocketAddr::V4(addr) => {
-                buf.put_u8(0x01);
-                buf.put_u32(addr.ip().to_bits());
+    pub async fn send_msg(&mut self, msg: protocol::msg::ServerMsg) -> Result<(), std::io::Error> {
+        // TODO: Do I need calculated size?
+        let mut buf = BytesMut::with_capacity(64);
+
+        match msg {
+            msg::ServerMsg::SessionMsg(proxyee_id, server_msg) => {
+                buf.put_u8(0u8);
+                buf.put_u16(proxyee_id);
+                match server_msg {
+                    session::msg::ServerMsg::Reply(reply) => {
+                        buf.put_u8(0u8);
+                        match &reply.bound_addr {
+                            std::net::SocketAddr::V4(addr) => {
+                                buf.put_u8(0x01);
+                                buf.put_u32(addr.ip().to_bits());
+                            }
+                            std::net::SocketAddr::V6(addr) => {
+                                buf.put_u8(0x04);
+                                buf.put_slice(&addr.ip().octets());
+                            }
+                        };
+                        buf.put_u16(reply.bound_addr.port());
+                        self.stream_write.write_all(&mut buf).await?;
+                    }
+                    session::msg::ServerMsg::Data(mut data) => {
+                        buf.put_u8(1u8);
+                        buf.put_u16(data.seq);
+                        buf.put_u16(data.data.len().try_into().unwrap());
+                        self.stream_write.write_all(&mut buf).await?;
+                        self.stream_write.write_all(&mut data.data).await?;
+                    }
+                    session::msg::ServerMsg::Ack(ack) => {
+                        buf.put_u8(2u8);
+                        buf.put_u16(ack.seq);
+                        self.stream_write.write_all(&mut buf).await?;
+                    }
+                    session::msg::ServerMsg::Eof(eof) => {
+                        buf.put_u8(3u8);
+                        buf.put_u16(eof.seq);
+                        self.stream_write.write_all(&mut buf).await?;
+                    }
+                };
             }
-            std::net::SocketAddr::V6(addr) => {
-                buf.put_u8(0x04);
-                buf.put_slice(&addr.ip().octets());
-            }
-        };
-        buf.put_u16(bound_addr.port());
-        self.stream_write.write_all(buf.as_mut()).await?;
-        Ok(())
-    }
+        }
 
-    pub async fn send_data(
-        &mut self,
-        proxyee_id: u16,
-        seq: u16,
-        data: &mut [u8],
-    ) -> Result<(), std::io::Error> {
-        let mut buf = BytesMut::with_capacity(1 + 2 + 2 + 2 + data.len());
-        buf.put_u8(0x02);
-        buf.put_u16(proxyee_id);
-        buf.put_u16(seq);
-        buf.put_u16(data.len().try_into().unwrap());
-        // TODO: no copy
-        buf.put_slice(data);
-        self.stream_write.write_all(buf.as_mut()).await?;
-        Ok(())
-    }
-
-    pub async fn send_ack(&mut self, proxyee_id: u16, seq: u16) -> Result<(), std::io::Error> {
-        let mut buf = BytesMut::with_capacity(1 + 2 + 2);
-        buf.put_u8(0x03);
-        buf.put_u16(proxyee_id);
-        buf.put_u16(seq);
-        self.stream_write.write_all(buf.as_mut()).await?;
-        Ok(())
-    }
-
-    pub async fn send_eof(&mut self, proxyee_id: u16, seq: u16) -> Result<(), std::io::Error> {
-        let mut buf = BytesMut::with_capacity(1 + 2 + 2);
-        buf.put_u8(0x04);
-        buf.put_u16(proxyee_id);
-        buf.put_u16(seq);
-        self.stream_write.write_all(buf.as_mut()).await?;
         Ok(())
     }
 }
@@ -316,8 +226,8 @@ where
         Self { stream_read }
     }
 
-    pub async fn recv_msg(&mut self) -> Result<Option<ClientMsg>, std::io::Error> {
-        let msg = self.stream_read.read_next(msg::PeekClientMsg::peek).await?;
+    pub async fn recv_msg(&mut self) -> Result<Option<msg::ClientMsg>, std::io::Error> {
+        let msg = self.stream_read.read_next(msg::client_msg_peeker()).await?;
 
         Ok(msg)
     }

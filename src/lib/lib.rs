@@ -1,4 +1,5 @@
 #![feature(ip_from)]
+#![feature(trait_alias)]
 
 #[macro_use]
 pub mod decode;
@@ -9,7 +10,7 @@ pub mod session;
 pub mod socks5;
 
 pub mod prelude {
-    pub use crate::decode::{Peek as _, PeekFn as _};
+    pub use crate::decode::*;
     pub use crate::encrypt::{EncryptedRead, EncryptedWrite};
     pub use crate::{decode, protocol, session, socks5};
 }
@@ -85,11 +86,9 @@ pub mod client_conn_group {
 
                 // it's fine if send fails
                 // session could be ended due to target closed or something
-                let _ = session_client_msg_senders
-                    .get_mut(&session_id)
-                    .unwrap()
-                    .send(client_msg)
-                    .await;
+                if let Some(mut client_msg_tx) = session_client_msg_senders.get_mut(&session_id) {
+                    client_msg_tx.send(client_msg).await.unwrap();
+                }
 
                 ()
             }
@@ -111,32 +110,10 @@ pub mod client_conn_group {
                                 dbg!(format!("message from client: {:?}", &agent_msg));
                                 // TODO: To/From
                                 let (session_id, session_msg) = match agent_msg {
-                                    protocol::server_agent::ClientMsg::Request(req) => (
-                                        req.proxyee_id,
-                                        session::msg::ClientMsg::Request(session::msg::Request {
-                                            addr: req.addr,
-                                            port: req.port,
-                                        }),
-                                    ),
-                                    protocol::server_agent::ClientMsg::Data(data) => (
-                                        data.proxyee_id,
-                                        session::msg::ClientMsg::Data(session::msg::Data {
-                                            seq: data.seq,
-                                            data: data.data,
-                                        }),
-                                    ),
-                                    protocol::server_agent::ClientMsg::Ack(ack) => (
-                                        ack.proxyee_id,
-                                        session::msg::ClientMsg::Ack(session::msg::Ack {
-                                            seq: ack.seq,
-                                        }),
-                                    ),
-                                    protocol::server_agent::ClientMsg::Eof(eof) => (
-                                        eof.proxyee_id,
-                                        session::msg::ClientMsg::Eof(session::msg::Eof {
-                                            seq: eof.seq,
-                                        }),
-                                    ),
+                                    protocol::msg::ClientMsg::SessionMsg(
+                                        session_id,
+                                        session_msg,
+                                    ) => (session_id, session_msg),
                                 };
 
                                 accept_client_msg(session_id, session_msg).await;
@@ -167,26 +144,13 @@ pub mod client_conn_group {
                     let mut client_write_tx = client_write_tx.clone();
                     async move {
                         dbg!(format!("message to client: {:?}", &server_msg));
-                        // TODO: do I care about error?
-                        let _ = match server_msg {
-                            session::msg::ServerMsg::Reply(reply) => {
-                                client_write.send_reply(session_id, reply.bound_addr).await
-                            }
-                            session::msg::ServerMsg::Data(mut data) => {
-                                client_write
-                                    .send_data(session_id, data.seq, data.data.as_mut())
-                                    .await
-                            }
-                            session::msg::ServerMsg::Ack(ack) => {
-                                client_write.send_ack(session_id, ack.seq).await
-                            }
-                            session::msg::ServerMsg::Eof(eof) => {
-                                client_write.send_eof(session_id, eof.seq).await
-                            }
-                        };
 
+                        client_write
+                            .send_msg(server_msg.with_session_id(session_id))
+                            .await
+                            .unwrap();
                         // TODO: do I care about error?
-                        let _ = client_write_tx.send(client_write).await;
+                        let _ = client_write_tx.send(client_write).await.unwrap();
                     }
                 });
             }
@@ -284,26 +248,12 @@ pub mod proxyee_conn_group {
 
                     tokio::spawn({
                         let mut server_write_tx = server_write_tx.clone();
-                        async move {
-                            let _ = match client_msg {
-                                session::msg::ClientMsg::Request(req) => {
-                                    server_write
-                                        .send_request(session_id, req.addr, req.port)
-                                        .await
-                                }
-                                session::msg::ClientMsg::Data(mut data) => {
-                                    server_write
-                                        .send_data(session_id, data.seq, data.data.as_mut())
-                                        .await
-                                }
-                                session::msg::ClientMsg::Ack(ack) => {
-                                    server_write.send_ack(session_id, ack.seq).await
-                                }
-                                session::msg::ClientMsg::Eof(eof) => {
-                                    server_write.send_eof(session_id, eof.seq).await
-                                }
-                            };
 
+                        async move {
+                            server_write
+                                .send_msg(client_msg.with_session_id(session_id))
+                                .await
+                                .unwrap();
                             // TODO: do I care about error?
                             let _ = server_write_tx.send(server_write).await;
                         }
@@ -329,29 +279,10 @@ pub mod proxyee_conn_group {
                                 dbg!(format!("message from server: {:?}", &agent_msg));
                                 let (session_id, session_msg): (u16, session::msg::ServerMsg) =
                                     match agent_msg {
-                                        protocol::client_agent::ServerMsg::Reply(reply) => (
-                                            reply.proxyee_id,
-                                            session::msg::Reply {
-                                                bound_addr: reply.bound_addr,
-                                            }
-                                            .into(),
-                                        ),
-                                        protocol::client_agent::ServerMsg::Data(data) => (
-                                            data.proxyee_id,
-                                            session::msg::Data {
-                                                seq: data.seq,
-                                                data: data.data,
-                                            }
-                                            .into(),
-                                        ),
-                                        protocol::client_agent::ServerMsg::Ack(ack) => (
-                                            ack.proxyee_id,
-                                            session::msg::Ack { seq: ack.seq }.into(),
-                                        ),
-                                        protocol::client_agent::ServerMsg::Eof(eof) => (
-                                            eof.proxyee_id,
-                                            session::msg::Eof { seq: eof.seq }.into(),
-                                        ),
+                                        protocol::msg::ServerMsg::SessionMsg(
+                                            session_id,
+                                            session_msg,
+                                        ) => (session_id, session_msg),
                                     };
 
                                 if let Some(mut session_server_msg_sender) =
