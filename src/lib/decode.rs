@@ -4,10 +4,23 @@ use std::{
 };
 
 use bytes::{Buf, BytesMut};
+use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 pub use peek::Peeker;
 pub use read::Reader;
+
+#[derive(Error, Debug)]
+pub enum DecodeError {
+    #[error("invalid stream: {0}")]
+    InvalidStream(String),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+pub fn unknown_enum_code(enum_name: &'static str, code: u8) -> DecodeError {
+    DecodeError::InvalidStream(format!("unkown enum code: {code}, enum name: {enum_name}"))
+}
 
 pub mod read {
     use bytes::BytesMut;
@@ -40,27 +53,27 @@ pub mod peek {
 
     use bytes::Buf;
 
-    use super::Reader;
+    use super::{DecodeError, Reader};
 
     pub trait Peeker<T> {
         type Reader: Reader<Value = T>;
 
-        fn peek(&self, cursor: &mut Cursor<&[u8]>) -> Result<Option<Self::Reader>, std::io::Error>;
+        fn peek(&self, cursor: &mut Cursor<&[u8]>) -> Result<Option<Self::Reader>, DecodeError>;
     }
 
     impl<T, TReader, F> Peeker<T> for F
     where
-        F: Fn(&mut Cursor<&[u8]>) -> Result<Option<TReader>, std::io::Error>,
+        F: Fn(&mut Cursor<&[u8]>) -> Result<Option<TReader>, DecodeError>,
         TReader: Reader<Value = T>,
     {
         type Reader = TReader;
-        fn peek(&self, cursor: &mut Cursor<&[u8]>) -> Result<Option<Self::Reader>, std::io::Error> {
+        fn peek(&self, cursor: &mut Cursor<&[u8]>) -> Result<Option<Self::Reader>, DecodeError> {
             (self)(cursor)
         }
     }
 
     pub const fn wrap<T, TReader>(
-        f: impl Fn(&mut Cursor<&[u8]>) -> Result<Option<TReader>, std::io::Error>,
+        f: impl Fn(&mut Cursor<&[u8]>) -> Result<Option<TReader>, DecodeError>,
     ) -> impl Peeker<T, Reader = TReader>
     where
         TReader: Reader<Value = T>,
@@ -69,7 +82,7 @@ pub mod peek {
     }
 
     pub const fn peek_enum<T, TReader>(
-        f: impl Fn(&mut Cursor<&[u8]>, u8) -> Result<Option<TReader>, std::io::Error>,
+        f: impl Fn(&mut Cursor<&[u8]>, u8) -> Result<Option<TReader>, DecodeError>,
     ) -> impl Peeker<T, Reader = TReader>
     where
         TReader: Reader<Value = T>,
@@ -92,10 +105,6 @@ pub mod peek {
                 Err(err) => return Err(err),
             }
         };
-    }
-
-    pub fn invalid_enum_code() -> std::io::Error {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid enum code")
     }
 }
 
@@ -300,8 +309,8 @@ pub fn request_addr_peeker() -> impl Peeker<ReadRequestAddr, Reader = ReadReques
 
             4 => ReadRequestAddrReader::IpV6(crate::peek!(ipv6_peeker().peek(cursor))),
             3 => ReadRequestAddrReader::Domain(crate::peek!(slice_peeker_u8_len().peek(cursor))),
-            _ => {
-                return Err(peek::invalid_enum_code());
+            x => {
+                return Err(unknown_enum_code("reuqest addr", x));
             }
         }))
     })
@@ -341,8 +350,8 @@ pub fn socket_addr_peeker() -> impl Peeker<SocketAddr, Reader = SockerAddrReader
                 crate::peek!(ipv6_peeker().peek(cursor)),
                 crate::peek!(u16_peeker().peek(cursor)),
             ),
-            _ => {
-                return Err(peek::invalid_enum_code());
+            x => {
+                return Err(unknown_enum_code("socket addr", x));
             }
         }))
     })
@@ -426,8 +435,8 @@ mod tests {
                     crate::peek!(Aggregated::peeker().peek(cursor));
                     DecodeEnum::Branch2
                 }
-                _ => {
-                    return Err(peek::invalid_enum_code());
+                x => {
+                    return Err(unknown_enum_code("test enum", x));
                 }
             }))
         })
@@ -500,7 +509,7 @@ where
     pub async fn read_next<T, P: Peeker<T>>(
         &mut self,
         peeker: P,
-    ) -> Result<Option<T>, std::io::Error> {
+    ) -> Result<Option<T>, DecodeError> {
         loop {
             let mut cursor = Cursor::new(self.buf.as_ref());
             match peeker.peek(&mut cursor) {

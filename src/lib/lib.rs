@@ -106,7 +106,7 @@ pub mod client_conn_group {
                         let accept_client_msg = Arc::clone(&accept_client_msg);
                         async move {
                             // TODO: if client_write closed/errored, do something
-                            while let Some(agent_msg) = client_read.recv_msg().await? {
+                            while let Some(agent_msg) = client_read.recv_msg().await.unwrap() {
                                 dbg!(format!("message from client: {:?}", &agent_msg));
                                 // TODO: To/From
                                 let (session_id, session_msg) = match agent_msg {
@@ -275,7 +275,8 @@ pub mod proxyee_conn_group {
 
                     let reciving_msg_from_server = {
                         async move {
-                            while let Some(agent_msg) = server_read.recv_msg().await? {
+                            // TODO: proper error handling
+                            while let Some(agent_msg) = server_read.recv_msg().await.unwrap() {
                                 dbg!(format!("message from server: {:?}", &agent_msg));
                                 let (session_id, session_msg): (u16, session::msg::ServerMsg) =
                                     match agent_msg {

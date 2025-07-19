@@ -16,6 +16,17 @@ pub enum InitError<Stream> {
     Io(#[from] std::io::Error),
     #[error("greeting invalid, {0}")]
     InvalidGreeting(&'static str, Stream),
+    #[error("protocol error: {0}")]
+    Protocol(#[from] protocol::ProtocolError),
+}
+
+impl<Stream> InitError<Stream> {
+    pub fn from_decode_error(err: DecodeError) -> Self {
+        match err {
+            DecodeError::InvalidStream(str) => InitError::Protocol(str.into()),
+            DecodeError::Io(err) => InitError::Io(err),
+        }
+    }
 }
 
 pub struct Init<Stream>
@@ -72,13 +83,13 @@ where
         let stream_read = EncryptedRead::new(stream_read, cipher);
         let mut stream_read = crate::decode::BufDecoder::new(stream_read);
 
-        let client_timestamp =
-            stream_read
-                .read_next(decode::u64_peeker())
-                .await
-                .and_then(|opt| {
-                    opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, ""))
-                })?;
+        let client_timestamp = stream_read
+            .read_next(decode::u64_peeker())
+            .await
+            .map_err(InitError::from_decode_error)
+            .and_then(|opt| {
+                opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
+            })?;
 
         if u64::abs_diff(client_timestamp, server_timestamp) > 30 {
             return Err(InitError::InvalidGreeting(
@@ -109,8 +120,9 @@ where
         let _ = stream_read
             .read_next(slice_peeker_fixed_len(rand_byte_len.try_into().unwrap()))
             .await
+            .map_err(InitError::from_decode_error)
             .and_then(|opt| {
-                opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, ""))
+                opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
             })?;
 
         Ok((
@@ -226,7 +238,7 @@ where
         Self { stream_read }
     }
 
-    pub async fn recv_msg(&mut self) -> Result<Option<msg::ClientMsg>, std::io::Error> {
+    pub async fn recv_msg(&mut self) -> Result<Option<msg::ClientMsg>, DecodeError> {
         let msg = self.stream_read.read_next(msg::client_msg_peeker()).await?;
 
         Ok(msg)

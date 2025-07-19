@@ -54,7 +54,7 @@ async fn client_req_v4() {
     };
 
     let server = async move {
-        let msg = server_read.recv_msg().await?.unwrap();
+        let msg = server_read.recv_msg().await.unwrap().unwrap();
         match msg {
             protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
@@ -98,7 +98,7 @@ async fn client_req_domain() {
     };
 
     let server = async move {
-        let msg = server_read.recv_msg().await?.unwrap();
+        let msg = server_read.recv_msg().await.unwrap().unwrap();
         match msg {
             protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
@@ -128,7 +128,7 @@ async fn server_reply_v4() {
     let ((_client_write, mut client_read), (_server_read, mut server_write)) = create_pair().await;
 
     let client = async move {
-        let msg = client_read.recv_msg().await?.unwrap();
+        let msg = client_read.recv_msg().await.unwrap().unwrap();
 
         match msg {
             protocol::msg::ServerMsg::SessionMsg(
@@ -186,7 +186,7 @@ async fn client_data() {
     };
 
     let server = async move {
-        let msg = server_read.recv_msg().await?.unwrap();
+        let msg = server_read.recv_msg().await.unwrap().unwrap();
         match msg {
             protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
@@ -216,7 +216,7 @@ async fn server_data() {
     let client = {
         let data = data.clone();
         async move {
-            let msg = client_read.recv_msg().await?.unwrap();
+            let msg = client_read.recv_msg().await.unwrap().unwrap();
 
             match msg {
                 protocol::msg::ServerMsg::SessionMsg(
@@ -271,7 +271,7 @@ async fn client_ack() {
     };
 
     let server = async move {
-        let msg = server_read.recv_msg().await?.unwrap();
+        let msg = server_read.recv_msg().await.unwrap().unwrap();
         match msg {
             protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
@@ -295,7 +295,7 @@ async fn server_ack() {
 
     let client = {
         async move {
-            let msg = client_read.recv_msg().await?.unwrap();
+            let msg = client_read.recv_msg().await.unwrap().unwrap();
             match msg {
                 protocol::msg::ServerMsg::SessionMsg(
                     proxyee_id,
@@ -339,7 +339,7 @@ async fn client_eof() {
     };
 
     let server = async move {
-        let msg = server_read.recv_msg().await?.unwrap();
+        let msg = server_read.recv_msg().await.unwrap().unwrap();
         match msg {
             protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
@@ -363,7 +363,7 @@ async fn server_eof() {
 
     let client = {
         async move {
-            let msg = client_read.recv_msg().await?.unwrap();
+            let msg = client_read.recv_msg().await.unwrap().unwrap();
             match msg {
                 protocol::msg::ServerMsg::SessionMsg(
                     proxyee_id,

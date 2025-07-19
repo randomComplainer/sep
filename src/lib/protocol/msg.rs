@@ -39,8 +39,8 @@ pub fn server_msg_peeker() -> impl Peeker<ServerMsg, Reader = ServerMsgReader> {
                 crate::peek!(u16_peeker().peek(cursor)),
                 crate::peek!(session::msg::server_msg_peeker().peek(cursor)),
             ),
-            _ => {
-                return Err(peek::invalid_enum_code());
+            x => {
+                return Err(decode::unknown_enum_code("server message", x).into());
             }
         }))
     })
@@ -81,8 +81,8 @@ pub fn client_msg_peeker() -> impl Peeker<ClientMsg, Reader = ClientMsgReader> {
                 crate::peek!(u16_peeker().peek(cursor)),
                 crate::peek!(session::msg::client_msg_peeker().peek(cursor)),
             ),
-            _ => {
-                return Err(peek::invalid_enum_code());
+            x => {
+                return Err(decode::unknown_enum_code("client message", x).into());
             }
         }))
     })

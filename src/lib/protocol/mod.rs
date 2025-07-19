@@ -3,13 +3,14 @@ use std::time::SystemTime;
 use chacha20::cipher::StreamCipher;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
+use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 
 use crate::decode::BufDecoder;
 use crate::prelude::*;
 
-pub mod msg;
 pub mod client_agent;
+pub mod msg;
 pub mod server_agent;
 
 // Client -> Server: Greeting (nounce, timestamp, random bytes) Server dose not send anything back, close connection after random delay if Greeting is invalid Client -> Server: Request (addr, port)
@@ -21,6 +22,15 @@ const RAND_BYTE_LEN_MAX: usize = 1024;
 
 pub type Key = [u8; 32];
 pub type Nonce = [u8; 12];
+
+#[derive(Error, Debug)]
+#[error("protocol error: {0}")]
+pub struct ProtocolError(String);
+impl From<String> for ProtocolError {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
 
 pub fn key_from_string(s: &str) -> Box<protocol::Key> {
     let mut hasher = Sha256::new();

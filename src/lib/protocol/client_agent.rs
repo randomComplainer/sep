@@ -153,7 +153,7 @@ where
         Self { stream_read }
     }
 
-    pub async fn recv_msg(&mut self) -> Result<Option<msg::ServerMsg>, std::io::Error> {
+    pub async fn recv_msg(&mut self) -> Result<Option<msg::ServerMsg>, decode::DecodeError> {
         let msg = self.stream_read.read_next(msg::server_msg_peeker()).await?;
 
         Ok(msg)

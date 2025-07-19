@@ -130,12 +130,30 @@ pub enum Socks5Error {
     #[error("io error")]
     Io(#[from] std::io::Error),
 
+    #[error("protocol error: {0}")]
+    Protocol(String),
+
     #[error("Error at '{context}': {source}")]
     Contextualized {
         context: &'static str,
         #[source]
         source: Box<Socks5Error>,
     },
+}
+
+impl From<String> for Socks5Error {
+    fn from(s: String) -> Self {
+        Self::Protocol(s)
+    }
+}
+
+impl Socks5Error {
+    pub fn from_decode_error(err: DecodeError) -> Self {
+        match err {
+            DecodeError::InvalidStream(str) => Socks5Error::Protocol(str),
+            DecodeError::Io(err) => Socks5Error::Io(err),
+        }
+    }
 }
 
 pub trait Contextualize<Ok> {
@@ -193,6 +211,7 @@ pub mod agent {
                 .stream_read
                 .read_next(msg::client_greeting_peeker())
                 .await
+                .map_err(Socks5Error::from_decode_error)
                 .and_then(|msg_opt| match msg_opt {
                     Some(msg) => Ok(msg),
                     None => Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into()),
@@ -242,6 +261,7 @@ pub mod agent {
                 .stream_read
                 .read_next(msg::client_request_peeker())
                 .await
+                .map_err(Socks5Error::from_decode_error)
                 .and_then(|msg_opt| match msg_opt {
                     Some(msg) => Ok(msg),
                     None => Err(std::io::Error::other("unexpected eof").into()),
