@@ -8,20 +8,42 @@ use crate::prelude::*;
 
 #[derive(Error, Debug)]
 pub enum ClientSessionError {
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("socks5 error: {0}")]
-    Socks5Error(#[from] socks5::Socks5Error),
+    #[error("Prxyee socks5 error: {0}")]
+    ProxyeeSocks5(#[from] socks5::Socks5Error),
 
     #[error("server write closed")]
     ServerWriteClosed,
+
+    #[error("server read closed")]
+    ServerReadClosed,
+
+    #[error("protocol error: {0}")]
+    Protocol(String),
 }
 
-pub async fn run_task<ProxyeeStream>(
+pub async fn run<ProxyeeStream>(
     proxyee: socks5::agent::Init<ProxyeeStream>,
     mut server_read: impl Stream<Item = msg::ServerMsg> + Unpin,
     mut server_write: impl Sink<msg::ClientMsg, Error = futures::channel::mpsc::SendError> + Unpin,
+) -> Result<(), ClientSessionError>
+where
+    ProxyeeStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let result = run_inner(proxyee, &mut server_read, &mut server_write).await;
+
+    if let Err(ClientSessionError::ProxyeeSocks5(_)) = &result {
+        let _ = server_write
+            .send(msg::ClientMsg::ProxyeeIoError(msg::IoError))
+            .await;
+    }
+
+    return result;
+}
+
+async fn run_inner<ProxyeeStream>(
+    proxyee: socks5::agent::Init<ProxyeeStream>,
+    server_read: &mut (impl Stream<Item = msg::ServerMsg> + Unpin),
+    server_write: &mut (impl Sink<msg::ClientMsg, Error = futures::channel::mpsc::SendError> + Unpin),
 ) -> Result<(), ClientSessionError>
 where
     ProxyeeStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -41,22 +63,22 @@ where
     let reply = match server_read.next().await {
         Some(msg) => match msg {
             msg::ServerMsg::Reply(msg) => msg,
-            _ => {
-                return Err(ClientSessionError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "unexpected msg",
+            msg => {
+                return Err(ClientSessionError::Protocol(format!(
+                    "unexpected server msg: [{:?}], expected reply",
+                    msg
                 )));
             }
         },
         None => {
-            return Err(ClientSessionError::Io(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "unexpected eof",
-            )));
+            return Err(ClientSessionError::ServerReadClosed);
         }
     };
 
-    let (proxyee_read, mut proxyee_write) = proxyee.reply(&reply.bound_addr).await?;
+    let (proxyee_read, mut proxyee_write) = proxyee
+        .reply(&reply.bound_addr)
+        .await
+        .map_err(|err| ClientSessionError::ProxyeeSocks5(err.into()))?;
 
     let proxyee_to_server = {
         async move {
@@ -66,14 +88,18 @@ where
             server_write
                 .send(msg::Data { seq, data: buf }.into())
                 .await
-                .unwrap();
+                .map_err(|_| ClientSessionError::ServerWriteClosed)?;
 
             seq += 1;
 
             loop {
                 // TODO: reuse buf & buf size
                 let mut buf = bytes::BytesMut::with_capacity(1024 * 4);
-                let n = proxyee_read.read_buf(&mut buf).await?;
+                let n = proxyee_read
+                    .read_buf(&mut buf)
+                    .await
+                    .map_err(|err| ClientSessionError::ProxyeeSocks5(err.into()))?;
+
                 if n == 0 {
                     break;
                 }
@@ -81,14 +107,17 @@ where
                 server_write
                     .send(msg::Data { seq, data: buf }.into())
                     .await
-                    .unwrap();
+                    .map_err(|_| ClientSessionError::ServerWriteClosed)?;
 
                 seq += 1;
             }
 
-            server_write.send(msg::Eof { seq }.into()).await.unwrap();
+            server_write
+                .send(msg::Eof { seq }.into())
+                .await
+                .map_err(|_| ClientSessionError::ServerWriteClosed)?;
 
-            Ok::<_, std::io::Error>(())
+            Ok::<_, ClientSessionError>(())
         }
     };
 
@@ -104,7 +133,9 @@ where
                 match msg {
                     msg::ServerMsg::Data(data) => {
                         if heap.len() == heap.capacity() {
-                            panic!("too many data");
+                            return Err(ClientSessionError::Protocol(
+                                "too many data cached".to_string(),
+                            ));
                         }
 
                         heap.push(std::cmp::Reverse(StreamEntry::data(data.seq, data.data)));
@@ -114,12 +145,19 @@ where
                     }
                     msg::ServerMsg::Eof(eof) => {
                         if heap.len() == heap.capacity() {
-                            panic!("too many eof");
+                            return Err(ClientSessionError::Protocol(
+                                "too many data cached".to_string(),
+                            ));
                         }
 
                         heap.push(std::cmp::Reverse(StreamEntry::eof(eof.seq)));
                     }
-                    _ => panic!("unexpected msg"),
+                    msg => {
+                        return Err(ClientSessionError::Protocol(format!(
+                            "unexpected server msg: [{:?}], expected data/eof",
+                            msg
+                        )));
+                    }
                 };
 
                 while heap.peek().map(|e| e.0.0 == next_seq).unwrap_or(false) {
@@ -127,7 +165,10 @@ where
 
                     match entry {
                         StreamEntryValue::Data(data) => {
-                            proxyee_write.write_all(data.as_ref()).await?;
+                            proxyee_write
+                                .write_all(data.as_ref())
+                                .await
+                                .map_err(|err| ClientSessionError::ProxyeeSocks5(err.into()))?;
                         }
                         StreamEntryValue::Eof => {
                             return Ok(());
@@ -138,7 +179,7 @@ where
                 }
             }
 
-            Ok::<_, std::io::Error>(())
+            Ok::<_, ClientSessionError>(())
         }
     };
 
@@ -146,9 +187,7 @@ where
         proxyee_to_server,
         server_to_proxyee,
     }
-    .unwrap();
-
-    Ok(())
+    .map(|_| ())
 }
 
 pub enum StreamEntryValue {

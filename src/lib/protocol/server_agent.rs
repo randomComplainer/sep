@@ -213,6 +213,10 @@ where
                         buf.put_u16(eof.seq);
                         self.stream_write.write_all(&mut buf).await?;
                     }
+                    session::msg::ServerMsg::TargetIoError(_) => {
+                        buf.put_u8(4u8);
+                        self.stream_write.write_all(&mut buf).await?;
+                    }
                 };
             }
         }

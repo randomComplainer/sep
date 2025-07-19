@@ -9,11 +9,19 @@ use crate::prelude::*;
 
 #[derive(Error, Debug)]
 pub enum ServerSessionError {
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
+    // #[error("io error: {0}")]
+    // Io(#[from] std::io::Error),
+    #[error("target io error")]
+    TargetIoError(std::io::Error),
 
     #[error("client write closed")]
     ClientWriteClosed,
+
+    #[error("client read closed")]
+    ClientReadClosed,
+
+    #[error("protocol error: {0}")]
+    Protocol(String),
 }
 
 async fn resolve_addrs(
@@ -56,7 +64,7 @@ async fn connect_target(addrs: Vec<SocketAddr>) -> Result<tokio::net::TcpStream,
     ))
 }
 
-pub async fn create_task(
+pub async fn run(
     mut client_read: impl Stream<Item = msg::ClientMsg> + Unpin,
     mut client_write: impl Sink<msg::ServerMsg, Error = futures::channel::mpsc::SendError> + Unpin,
 ) -> Result<(), ServerSessionError> {
@@ -64,24 +72,26 @@ pub async fn create_task(
         Some(msg) => match msg {
             msg::ClientMsg::Request(msg) => msg,
             _ => {
-                return Err(ServerSessionError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "unexpected msg",
+                return Err(ServerSessionError::Protocol(format!(
+                    "unexpected client msg: [{:?}], expected request",
+                    msg
                 )));
             }
         },
         None => {
-            return Err(ServerSessionError::Io(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "unexpected eof",
-            )));
+            return Err(ServerSessionError::ClientReadClosed);
         }
     };
 
     dbg!(&req.addr);
 
-    let addrs = resolve_addrs(req.addr, req.port).await?;
-    let target_stream = connect_target(addrs).await?;
+    // TODO: needs a special handling for socks5 reply when failed to connect to target
+    let addrs = resolve_addrs(req.addr, req.port)
+        .await
+        .map_err(|err| ServerSessionError::TargetIoError(err))?;
+    let target_stream = connect_target(addrs)
+        .await
+        .map_err(|err| ServerSessionError::TargetIoError(err))?;
 
     client_write
         .send(msg::ServerMsg::Reply(msg::Reply {
@@ -98,8 +108,17 @@ pub async fn create_task(
             loop {
                 // TODO: reuse buf & buf size
                 let mut buf = bytes::BytesMut::with_capacity(1024 * 4);
-                let n = target_read.read_buf(&mut buf).await?;
-                dbg!(n);
+                let n = match target_read.read_buf(&mut buf).await {
+                    Ok(n) => n,
+                    Err(err) => {
+                        client_write
+                            .send(msg::ServerMsg::TargetIoError(msg::IoError))
+                            .await
+                            .map_err(|_| ServerSessionError::ClientWriteClosed)?;
+                        return Err(ServerSessionError::TargetIoError(err));
+                    }
+                };
+
                 if n == 0 {
                     break;
                 }
@@ -107,14 +126,17 @@ pub async fn create_task(
                 client_write
                     .send(msg::Data { seq, data: buf }.into())
                     .await
-                    .unwrap();
+                    .map_err(|_| ServerSessionError::ClientWriteClosed)?;
 
                 seq += 1;
             }
-            dbg!("hit");
 
-            client_write.send(msg::Eof { seq }.into()).await.unwrap();
-            Ok::<_, std::io::Error>(())
+            client_write
+                .send(msg::Eof { seq }.into())
+                .await
+                .map_err(|_| ServerSessionError::ClientWriteClosed)?;
+
+            Ok::<_, ServerSessionError>(())
         }
     };
 
@@ -131,7 +153,9 @@ pub async fn create_task(
                 match msg {
                     msg::ClientMsg::Data(data) => {
                         if heap.len() == heap.capacity() {
-                            panic!("too many data");
+                            return Err(ServerSessionError::Protocol(
+                                "too many data cached".to_string(),
+                            ));
                         }
 
                         heap.push(std::cmp::Reverse(super::client::StreamEntry::data(
@@ -143,12 +167,19 @@ pub async fn create_task(
                     }
                     msg::ClientMsg::Eof(eof) => {
                         if heap.len() == heap.capacity() {
-                            panic!("too many eof");
+                            return Err(ServerSessionError::Protocol(
+                                "too many data cached".to_string(),
+                            ));
                         }
 
                         heap.push(std::cmp::Reverse(super::client::StreamEntry::eof(eof.seq)));
                     }
-                    _ => panic!("unexpected msg"),
+                    _ => {
+                        return Err(ServerSessionError::Protocol(format!(
+                            "unexpected client msg: [{:?}], expected data/eof",
+                            msg
+                        )));
+                    }
                 };
 
                 while heap.peek().map(|e| e.0.0 == next_seq).unwrap_or(false) {
@@ -156,14 +187,12 @@ pub async fn create_task(
 
                     match entry {
                         super::client::StreamEntryValue::Data(data) => {
-                            dbg!(data.as_ref());
-                            dbg!(format!("data to target [{}]", data.len()));
-                            target_write.write_all(data.as_ref()).await?;
+                            target_write
+                                .write_all(data.as_ref())
+                                .await
+                                .map_err(|err| ServerSessionError::TargetIoError(err))?;
                         }
                         super::client::StreamEntryValue::Eof => {
-                            dbg!("eof");
-                            target_write.flush().await?;
-                            drop(target_write);
                             return Ok(());
                         }
                     }
@@ -172,7 +201,7 @@ pub async fn create_task(
                 }
             }
 
-            Ok::<_, std::io::Error>(())
+            Ok::<_, ServerSessionError>(())
         }
     };
 
@@ -180,7 +209,5 @@ pub async fn create_task(
         target_to_client,
         client_to_target,
     }
-    .unwrap();
-
-    Ok(())
+    .map(|_| ())
 }

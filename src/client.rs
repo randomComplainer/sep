@@ -56,7 +56,7 @@ async fn main() {
         Ok::<_, std::io::Error>(())
     };
 
-    let main_task = sep_lib::proxyee_conn_group::run_task(new_proxee_rx, move || {
+    let main_task = sep_lib::client_main_task::run(new_proxee_rx, move || {
         let key = key.clone();
         let server_addr = server_addr.clone();
 

@@ -65,7 +65,7 @@ async fn main() {
         Ok::<_, std::io::Error>(())
     };
 
-    let main_task = sep_lib::client_conn_group::run_task(new_client_conn_rx);
+    let main_task = sep_lib::client_conn_group::run(new_client_conn_rx);
 
     tokio::try_join! {
         main_task,
