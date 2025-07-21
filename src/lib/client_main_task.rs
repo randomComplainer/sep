@@ -9,6 +9,7 @@ use crate::prelude::*;
 pub async fn run<ProxyeeStream, ServerStream, Cipher, ConnectServerFut>(
     mut new_proxee_rx: impl Stream<Item = (u16, socks5::agent::Init<ProxyeeStream>)> + Unpin,
     connect_to_server: impl Fn() -> ConnectServerFut + Unpin,
+    max_server_conn: usize,
 ) -> Result<(), std::io::Error>
 where
     ProxyeeStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -71,10 +72,68 @@ where
     };
 
     let sending_msg_to_server = {
-        let server_write_tx = server_write_tx.clone();
+        let mut server_write_tx = server_write_tx.clone();
+        let session_server_msg_senders = Arc::clone(&session_server_msg_senders);
         async move {
+            let mut server_conn_count = 0;
+
             while let Some((session_id, client_msg)) = client_msg_rx.next().await {
-                let mut server_write = server_write_rx.next().await.unwrap();
+                let mut server_write = {
+                    match server_write_rx.try_next() {
+                        Ok(Some(server_write)) => server_write,
+                        _ => {
+                            if server_conn_count < max_server_conn {
+                                let session_server_msg_senders =
+                                    Arc::clone(&session_server_msg_senders);
+                                let (server_write, mut server_read) = connect_to_server().await?;
+
+                                let reciving_msg_from_server = {
+                                    async move {
+                                        // TODO: proper error handling
+                                        while let Some(agent_msg) =
+                                            server_read.recv_msg().await.unwrap()
+                                        {
+                                            dbg!(format!("message from server: {:?}", &agent_msg));
+                                            let (session_id, session_msg): (
+                                                u16,
+                                                session::msg::ServerMsg,
+                                            ) = match agent_msg {
+                                                protocol::msg::ServerMsg::SessionMsg(
+                                                    session_id,
+                                                    session_msg,
+                                                ) => (session_id, session_msg),
+                                            };
+
+                                            if let Some(mut session_server_msg_sender) =
+                                                session_server_msg_senders.get_mut(&session_id)
+                                            {
+                                                let _ = session_server_msg_sender
+                                                    .send(session_msg)
+                                                    .await;
+                                            }
+                                        }
+
+                                        Ok::<_, std::io::Error>(())
+                                    }
+                                };
+
+                                tokio::spawn(async move {
+                                    match reciving_msg_from_server.await {
+                                        Ok(_) => {}
+                                        Err(err) => {
+                                            dbg!(err);
+                                        }
+                                    }
+                                });
+
+                                server_write_tx.send(server_write).await.unwrap();
+                                server_conn_count += 1;
+                            }
+                            server_write_rx.next().await.unwrap()
+                        }
+                    }
+                };
+
                 dbg!(format!("message to server: {:?}", &client_msg));
 
                 tokio::spawn({
@@ -95,60 +154,9 @@ where
         }
     };
 
-    let connect_to_server = {
-        let mut server_write_tx = server_write_tx.clone();
-        let session_server_msg_senders = Arc::clone(&session_server_msg_senders);
-        async move {
-            let mut i = 0;
-            while i < 4 {
-                let session_server_msg_senders = Arc::clone(&session_server_msg_senders);
-                let (server_write, mut server_read) = connect_to_server().await?;
-
-                let reciving_msg_from_server = {
-                    async move {
-                        // TODO: proper error handling
-                        while let Some(agent_msg) = server_read.recv_msg().await.unwrap() {
-                            dbg!(format!("message from server: {:?}", &agent_msg));
-                            let (session_id, session_msg): (u16, session::msg::ServerMsg) =
-                                match agent_msg {
-                                    protocol::msg::ServerMsg::SessionMsg(
-                                        session_id,
-                                        session_msg,
-                                    ) => (session_id, session_msg),
-                                };
-
-                            if let Some(mut session_server_msg_sender) =
-                                session_server_msg_senders.get_mut(&session_id)
-                            {
-                                let _ = session_server_msg_sender.send(session_msg).await;
-                            }
-                        }
-
-                        Ok::<_, std::io::Error>(())
-                    }
-                };
-
-                tokio::spawn(async move {
-                    match reciving_msg_from_server.await {
-                        Ok(_) => {}
-                        Err(err) => {
-                            dbg!(err);
-                        }
-                    }
-                });
-
-                server_write_tx.send(server_write).await.unwrap();
-                i += 1;
-            }
-
-            Ok::<_, std::io::Error>(())
-        }
-    };
-
     tokio::try_join! {
         accepting_proxyee,
         sending_msg_to_server,
-        connect_to_server,
     }
     .map(|_| ())
 }

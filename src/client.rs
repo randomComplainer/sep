@@ -56,27 +56,31 @@ async fn main() {
         Ok::<_, std::io::Error>(())
     };
 
-    let main_task = sep_lib::client_main_task::run(new_proxee_rx, move || {
-        let key = key.clone();
-        let server_addr = server_addr.clone();
+    let main_task = sep_lib::client_main_task::run(
+        new_proxee_rx,
+        move || {
+            let key = key.clone();
+            let server_addr = server_addr.clone();
 
-        Box::pin(async move {
-            let server = protocol::client_agent::Init::new(
-                key,
-                protocol::rand_nonce(),
-                tokio::net::TcpStream::connect(server_addr.as_ref())
+            Box::pin(async move {
+                let server = protocol::client_agent::Init::new(
+                    key,
+                    protocol::rand_nonce(),
+                    tokio::net::TcpStream::connect(server_addr.as_ref())
+                        .await
+                        .unwrap(),
+                );
+
+                let conn = server
+                    .send_greeting(protocol::get_timestamp())
                     .await
-                    .unwrap(),
-            );
+                    .unwrap();
 
-            let conn = server
-                .send_greeting(protocol::get_timestamp())
-                .await
-                .unwrap();
-
-            Ok::<_, std::io::Error>(conn)
-        })
-    });
+                Ok::<_, std::io::Error>(conn)
+            })
+        },
+        4,
+    );
 
     tokio::try_join! {
         main_task,
