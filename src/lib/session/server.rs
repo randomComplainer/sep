@@ -85,13 +85,18 @@ pub async fn run(
 
     dbg!(&req.addr);
 
-    // TODO: needs a special handling for socks5 reply when failed to connect to target
-    let addrs = resolve_addrs(req.addr, req.port)
+    let target_stream = match resolve_addrs(req.addr, req.port)
+        .and_then(connect_target)
         .await
-        .map_err(|err| ServerSessionError::TargetIoError(err))?;
-    let target_stream = connect_target(addrs)
-        .await
-        .map_err(|err| ServerSessionError::TargetIoError(err))?;
+    {
+        Ok(stream) => stream,
+        Err(err) => {
+            let _ = client_write
+                .send(msg::ServerMsg::ReplyError(err.into()))
+                .await;
+            return Ok(());
+        }
+    };
 
     client_write
         .send(msg::ServerMsg::Reply(msg::Reply {
@@ -111,10 +116,9 @@ pub async fn run(
                 let n = match target_read.read_buf(&mut buf).await {
                     Ok(n) => n,
                     Err(err) => {
-                        client_write
+                        let _ = client_write
                             .send(msg::ServerMsg::TargetIoError(msg::IoError))
-                            .await
-                            .map_err(|_| ServerSessionError::ClientWriteClosed)?;
+                            .await;
                         return Err(ServerSessionError::TargetIoError(err));
                     }
                 };

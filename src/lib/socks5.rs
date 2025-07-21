@@ -309,6 +309,22 @@ pub mod agent {
 
             Ok((self.stream_read, self.stream_write))
         }
+
+        pub async fn reply_error(mut self, err_code: u8) -> Result<(), std::io::Error> {
+            let buf = msg::encode_reply(&msg::Reply {
+                ver: 5,
+                rep: err_code,
+                rsv: 0,
+                addr: &SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)),
+                    0,
+                ),
+            })?;
+
+            self.stream_write.write_all(buf.as_ref()).await?;
+
+            Ok(())
+        }
     }
 
     pub struct Socks5Listener {

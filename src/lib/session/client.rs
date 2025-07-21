@@ -63,9 +63,22 @@ where
     let reply = match server_read.next().await {
         Some(msg) => match msg {
             msg::ServerMsg::Reply(msg) => msg,
+            msg::ServerMsg::ReplyError(err) => {
+                use session::msg::ConnectionError::*;
+                let _ = proxyee
+                    .reply_error(match err {
+                        General => 1,
+                        NetworkUnreachable => 3,
+                        HostUnreachable => 4,
+                        ConnectionRefused => 5,
+                        TtlExpired => 6,
+                    })
+                    .await;
+                return Ok(());
+            }
             msg => {
                 return Err(ClientSessionError::Protocol(format!(
-                    "unexpected server msg: [{:?}], expected reply",
+                    "unexpected server msg: [{:?}], expected reply/reply_error",
                     msg
                 )));
             }

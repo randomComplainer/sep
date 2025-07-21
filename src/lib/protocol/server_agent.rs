@@ -196,25 +196,37 @@ where
                         buf.put_u16(reply.bound_addr.port());
                         self.stream_write.write_all(&mut buf).await?;
                     }
-                    session::msg::ServerMsg::Data(mut data) => {
+                    session::msg::ServerMsg::ReplyError(err) => {
                         buf.put_u8(1u8);
+                        use session::msg::ConnectionError::*;
+                        buf.put_u8(match err {
+                            General => 0,
+                            NetworkUnreachable => 1,
+                            HostUnreachable => 2,
+                            ConnectionRefused => 3,
+                            TtlExpired => 4,
+                        });
+                        self.stream_write.write_all(&mut buf).await?;
+                    }
+                    session::msg::ServerMsg::Data(mut data) => {
+                        buf.put_u8(2u8);
                         buf.put_u16(data.seq);
                         buf.put_u16(data.data.len().try_into().unwrap());
                         self.stream_write.write_all(&mut buf).await?;
                         self.stream_write.write_all(&mut data.data).await?;
                     }
                     session::msg::ServerMsg::Ack(ack) => {
-                        buf.put_u8(2u8);
+                        buf.put_u8(3u8);
                         buf.put_u16(ack.seq);
                         self.stream_write.write_all(&mut buf).await?;
                     }
                     session::msg::ServerMsg::Eof(eof) => {
-                        buf.put_u8(3u8);
+                        buf.put_u8(4u8);
                         buf.put_u16(eof.seq);
                         self.stream_write.write_all(&mut buf).await?;
                     }
                     session::msg::ServerMsg::TargetIoError(_) => {
-                        buf.put_u8(4u8);
+                        buf.put_u8(5u8);
                         self.stream_write.write_all(&mut buf).await?;
                     }
                 };

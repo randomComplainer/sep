@@ -210,9 +210,70 @@ pub fn client_msg_peeker() -> impl Peeker<ClientMsg, Reader = ClientMsgReader> {
     })
 }
 
+#[derive(Debug)]
+pub enum ConnectionError {
+    General,
+    NetworkUnreachable,
+    HostUnreachable,
+    ConnectionRefused,
+    TtlExpired,
+}
+
+impl From<std::io::Error> for ConnectionError {
+    fn from(err: std::io::Error) -> Self {
+        use ConnectionError::*;
+        use std::io::ErrorKind;
+
+        match err.kind() {
+            ErrorKind::NetworkUnreachable => NetworkUnreachable,
+            ErrorKind::HostUnreachable => HostUnreachable,
+            ErrorKind::ConnectionRefused => ConnectionRefused,
+            _ => General,
+        }
+    }
+}
+
+pub enum ConnectionErrorReader {
+    General,
+    NetworkUnreachable,
+    HostUnreachable,
+    ConnectionRefused,
+    TtlExpired,
+}
+
+impl Reader for ConnectionErrorReader {
+    type Value = ConnectionError;
+    fn read(&self, buf: &mut BytesMut) -> ConnectionError {
+        buf.split_to(1)[0];
+        match self {
+            Self::General => ConnectionError::General,
+            Self::NetworkUnreachable => ConnectionError::NetworkUnreachable,
+            Self::HostUnreachable => ConnectionError::HostUnreachable,
+            Self::ConnectionRefused => ConnectionError::ConnectionRefused,
+            Self::TtlExpired => ConnectionError::TtlExpired,
+        }
+    }
+}
+
+pub fn connection_error_peeker() -> impl Peeker<ConnectionError, Reader = ConnectionErrorReader> {
+    peek::peek_enum(|_cursor, enum_code| {
+        Ok(Some(match enum_code {
+            0 => ConnectionErrorReader::General,
+            1 => ConnectionErrorReader::NetworkUnreachable,
+            2 => ConnectionErrorReader::HostUnreachable,
+            3 => ConnectionErrorReader::ConnectionRefused,
+            4 => ConnectionErrorReader::TtlExpired,
+            x => {
+                return Err(decode::unknown_enum_code("connection error", x).into());
+            }
+        }))
+    })
+}
+
 #[derive(Debug, From)]
 pub enum ServerMsg {
     Reply(#[from] Reply),
+    ReplyError(#[from] ConnectionError),
     Data(#[from] Data),
     Ack(#[from] Ack),
     Eof(#[from] Eof),
@@ -221,6 +282,7 @@ pub enum ServerMsg {
 
 pub enum ServerMsgReader {
     Reply(ReplyReader),
+    ReplyError(ConnectionErrorReader),
     Data(DataReader),
     Ack(AckReader),
     Eof(EofReader),
@@ -233,6 +295,7 @@ impl Reader for ServerMsgReader {
         buf.split_to(1)[0];
         match self {
             Self::Reply(reader) => ServerMsg::Reply(reader.read(buf)),
+            Self::ReplyError(reader) => ServerMsg::ReplyError(reader.read(buf)),
             Self::Data(reader) => ServerMsg::Data(reader.read(buf)),
             Self::Ack(reader) => ServerMsg::Ack(reader.read(buf)),
             Self::Eof(reader) => ServerMsg::Eof(reader.read(buf)),
@@ -245,10 +308,11 @@ pub fn server_msg_peeker() -> impl Peeker<ServerMsg, Reader = ServerMsgReader> {
     peek::peek_enum(|cursor, enum_code| {
         Ok(Some(match enum_code {
             0 => ServerMsgReader::Reply(crate::peek!(reply_peeker().peek(cursor))),
-            1 => ServerMsgReader::Data(crate::peek!(data_peeker().peek(cursor))),
-            2 => ServerMsgReader::Ack(crate::peek!(ack_peeker().peek(cursor))),
-            3 => ServerMsgReader::Eof(crate::peek!(eof_peeker().peek(cursor))),
-            4 => ServerMsgReader::TargetIoError(crate::peek!(error_peeker().peek(cursor))),
+            1 => ServerMsgReader::ReplyError(crate::peek!(connection_error_peeker().peek(cursor))),
+            2 => ServerMsgReader::Data(crate::peek!(data_peeker().peek(cursor))),
+            3 => ServerMsgReader::Ack(crate::peek!(ack_peeker().peek(cursor))),
+            4 => ServerMsgReader::Eof(crate::peek!(eof_peeker().peek(cursor))),
+            5 => ServerMsgReader::TargetIoError(crate::peek!(error_peeker().peek(cursor))),
             x => {
                 return Err(decode::unknown_enum_code("server session message", x).into());
             }
