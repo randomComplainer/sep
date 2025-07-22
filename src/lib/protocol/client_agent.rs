@@ -12,6 +12,7 @@ pub struct Init<Stream>
 where
     Stream: AsyncRead + AsyncWrite + 'static + Unpin,
 {
+    id: u16,
     key: Arc<Key>,
     nonce: Box<Nonce>,
     stream: Stream,
@@ -21,8 +22,13 @@ impl<Stream> Init<Stream>
 where
     Stream: StaticStream,
 {
-    pub fn new(key: Arc<Key>, nonce: Box<Nonce>, stream: Stream) -> Self {
-        Self { key, nonce, stream }
+    pub fn new(id: u16, key: Arc<Key>, nonce: Box<Nonce>, stream: Stream) -> Self {
+        Self {
+            key,
+            nonce,
+            stream,
+            id,
+        }
     }
 
     pub async fn send_greeting(
@@ -59,7 +65,7 @@ where
         stream_write.write_all(buf.as_mut()).await?;
 
         Ok((
-            GreetedWrite::new(stream_write),
+            GreetedWrite::new(self.id, stream_write),
             GreetedRead::new(BufDecoder::new(EncryptedRead::new(
                 stream_read,
                 ChaCha20::new(self.key.as_slice().into(), self.nonce.as_slice().into()),
@@ -69,6 +75,7 @@ where
 }
 
 pub struct GreetedWrite<Stream, Cipher> {
+    id: u16,
     stream_write: WriteEncrypted<Stream, Cipher>,
 }
 
@@ -77,8 +84,8 @@ where
     Stream: AsyncWrite + Unpin,
     Cipher: StaticCipher,
 {
-    pub fn new(stream_write: WriteEncrypted<Stream, Cipher>) -> Self {
-        Self { stream_write }
+    pub fn new(id: u16, stream_write: WriteEncrypted<Stream, Cipher>) -> Self {
+        Self { id, stream_write }
     }
 
     pub async fn send_msg(&mut self, msg: protocol::msg::ClientMsg) -> Result<(), std::io::Error> {

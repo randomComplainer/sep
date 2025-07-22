@@ -63,12 +63,15 @@ async fn main() {
             let server_addr = server_addr.clone();
 
             Box::pin(async move {
+                let stream = tokio::net::TcpStream::connect(server_addr.as_ref())
+                    .await
+                    .unwrap();
+
                 let server = protocol::client_agent::Init::new(
+                    stream.local_addr().unwrap().port(),
                     key,
                     protocol::rand_nonce(),
-                    tokio::net::TcpStream::connect(server_addr.as_ref())
-                        .await
-                        .unwrap(),
+                    stream,
                 );
 
                 let conn = server
