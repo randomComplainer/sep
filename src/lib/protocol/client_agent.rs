@@ -145,6 +145,10 @@ where
 
         Ok(())
     }
+
+    pub async fn close(self) -> Result<(), std::io::Error> {
+        self.stream_write.close().await
+    }
 }
 
 pub struct GreetedRead<Stream, Cipher>

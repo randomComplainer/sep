@@ -51,6 +51,8 @@ where
                 futures::future::Either::Left(_) => {
                     client_msg_rx.close();
 
+                    server_write.close().await.unwrap();
+
                     return Ok::<_, std::io::Error>(client_msg_rx.collect::<Vec<_>>().await);
                 }
                 futures::future::Either::Right((client_msg_opt, not_yet_closed)) => {
@@ -167,6 +169,7 @@ where
                 )
                 .await
                 {
+                    dbg!(format!("server connection lifetime task ended"));
                     for client_msg in client_msgs {
                         // TODO: error handling
                         let _ = client_msg_tx.send(client_msg).await;
@@ -207,14 +210,23 @@ where
 
                 tokio::spawn({
                     let mut server_write_tx = server_write_tx.clone();
+                    let mut client_msg_tx = client_msg_tx.clone();
 
                     async move {
                         // if connection server write is closed,
                         // don't queue it back
-                        if let Ok(_) = server_write.send(client_msg).await {
-                            // TODO: do I care about error?
-                            let _ = server_write_tx.send(server_write).await;
-                        }
+                        match server_write.try_send(client_msg) {
+                            Ok(_) => {
+                                let _ = server_write_tx.send(server_write).await;
+                            }
+                            Err(err) => {
+                                dbg!(format!(
+                                    "failed to send message through server write: {:?}",
+                                    err
+                                ));
+                                client_msg_tx.send(err.into_inner()).await.unwrap();
+                            }
+                        };
                     }
                 });
             }

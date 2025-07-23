@@ -160,7 +160,7 @@ where
     Stream: StaticStream,
     Cipher: StaticCipher,
 {
-    stream_write: WriteEncrypted<Stream, Cipher>,
+    pub stream_write: WriteEncrypted<Stream, Cipher>,
 }
 
 impl<Stream, Cipher> GreetedWrite<Stream, Cipher>
@@ -234,6 +234,10 @@ where
         }
 
         Ok(())
+    }
+
+    pub async fn close(self) -> Result<(), std::io::Error> {
+        self.stream_write.close().await
     }
 }
 
