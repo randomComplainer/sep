@@ -20,7 +20,7 @@ where
     //TODO: error handling
 
     let mut time_limit_task = Box::pin(tokio::time::sleep(std::time::Duration::from_mins(
-         rand::rng().random_range(..=5u64) + 10,
+        rand::rng().random_range(..=5u64) + 10,
     )));
 
     // let mut time_limit_task = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
@@ -66,7 +66,7 @@ where
 pub async fn run<ClientStream, Cipher>(
     mut new_conn_rx: impl Stream<
         Item = (
-            u16,
+            Box<[u8; 16]>,
             protocol::server_agent::GreetedRead<ClientStream, Cipher>,
             protocol::server_agent::GreetedWrite<ClientStream, Cipher>,
         ),

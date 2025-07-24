@@ -43,7 +43,7 @@ async fn main() {
             tokio::spawn({
                 let mut new_client_conn_tx = new_client_conn_tx.clone();
                 async move {
-                    let (client_read, client_write) =
+                    let (client_id, client_read, client_write) =
                         match agent.recv_greeting(protocol::get_timestamp()).await {
                             Ok(agent) => agent,
                             Err(err) => {
@@ -55,7 +55,7 @@ async fn main() {
                         };
 
                     new_client_conn_tx
-                        .send((socket_addr.port(), client_read, client_write))
+                        .send((client_id, client_read, client_write))
                         .await
                         .unwrap();
                 }

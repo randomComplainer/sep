@@ -12,7 +12,8 @@ pub struct Init<Stream>
 where
     Stream: AsyncRead + AsyncWrite + 'static + Unpin,
 {
-    id: u16,
+    client_id: Arc<[u8; 16]>,
+    conn_id: u16,
     key: Arc<Key>,
     nonce: Box<Nonce>,
     stream: Stream,
@@ -22,12 +23,19 @@ impl<Stream> Init<Stream>
 where
     Stream: StaticStream,
 {
-    pub fn new(id: u16, key: Arc<Key>, nonce: Box<Nonce>, stream: Stream) -> Self {
+    pub fn new(
+        client_id: Arc<[u8; 16]>,
+        conn_id: u16,
+        key: Arc<Key>,
+        nonce: Box<Nonce>,
+        stream: Stream,
+    ) -> Self {
         Self {
+            client_id,
             key,
             nonce,
             stream,
-            id,
+            conn_id,
         }
     }
 
@@ -56,16 +64,18 @@ where
         rand::rng().fill_bytes(&mut rand_bytes);
 
         let buf_size = 8 // timestamp
-            + rand_byte_len;
+            + rand_byte_len
+            + 16; // client_id
 
         let mut buf = BytesMut::with_capacity(buf_size);
         buf.put_u64(timestamp);
         buf.put_slice(&rand_bytes);
+        buf.put_slice(self.client_id.as_ref());
 
         stream_write.write_all(buf.as_mut()).await?;
 
         Ok((
-            GreetedWrite::new(self.id, stream_write),
+            GreetedWrite::new(self.conn_id, stream_write),
             GreetedRead::new(BufDecoder::new(EncryptedRead::new(
                 stream_read,
                 ChaCha20::new(self.key.as_slice().into(), self.nonce.as_slice().into()),

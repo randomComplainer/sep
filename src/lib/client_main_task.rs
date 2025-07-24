@@ -157,7 +157,7 @@ where
             let server_conn_count = Arc::clone(&server_conn_count);
             server_conn_count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
-            let (conn_client_msg_tx, conn_client_msg_rx) = futures::channel::mpsc::channel(1);
+            let (conn_client_msg_tx, conn_client_msg_rx) = futures::channel::mpsc::channel(0);
             let connect_to_server = connect_to_server.clone();
 
             tokio::spawn(async move {

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use clap::Parser;
 use futures::prelude::*;
 use rand::Rng;
+use rand::RngCore as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use sep_lib::prelude::*;
@@ -40,6 +41,10 @@ async fn main() {
 
     println!("Listening at {}...", bound_addr);
 
+    let mut client_id: Box<[u8; 16]> = [0u8; 16].into();
+    rand::rng().fill_bytes(client_id.as_mut());
+    let client_id: Arc<[u8; 16]> = client_id.into();
+
     let key: Arc<protocol::Key> = protocol::key_from_string(&args.key).into();
     let server_addr = Arc::new(args.server_addr);
 
@@ -62,24 +67,28 @@ async fn main() {
             let key = key.clone();
             let server_addr = server_addr.clone();
 
-            Box::pin(async move {
-                let stream = tokio::net::TcpStream::connect(server_addr.as_ref())
-                    .await
-                    .unwrap();
+            Box::pin({
+                let client_id = client_id.clone();
+                async move {
+                    let stream = tokio::net::TcpStream::connect(server_addr.as_ref())
+                        .await
+                        .unwrap();
 
-                let server = protocol::client_agent::Init::new(
-                    stream.local_addr().unwrap().port(),
-                    key,
-                    protocol::rand_nonce(),
-                    stream,
-                );
+                    let server = protocol::client_agent::Init::new(
+                        client_id,
+                        stream.local_addr().unwrap().port(),
+                        key,
+                        protocol::rand_nonce(),
+                        stream,
+                    );
 
-                let conn = server
-                    .send_greeting(protocol::get_timestamp())
-                    .await
-                    .unwrap();
+                    let conn = server
+                        .send_greeting(protocol::get_timestamp())
+                        .await
+                        .unwrap();
 
-                Ok::<_, std::io::Error>(conn)
+                    Ok::<_, std::io::Error>(conn)
+                }
             })
         },
         4,

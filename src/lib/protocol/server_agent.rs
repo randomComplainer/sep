@@ -50,6 +50,7 @@ where
         server_timestamp: u64,
     ) -> Result<
         (
+            Box<[u8; 16]>,
             GreetedRead<Stream, ChaCha20>,
             GreetedWrite<Stream, ChaCha20>,
         ),
@@ -68,6 +69,7 @@ where
         server_timestamp: u64,
     ) -> Result<
         (
+            Box<[u8; 16]>,
             GreetedRead<Stream, ChaCha20>,
             GreetedWrite<Stream, ChaCha20>,
         ),
@@ -117,7 +119,7 @@ where
             ));
         }
 
-        let _ = stream_read
+        let _rand_bytes = stream_read
             .read_next(slice_peeker_fixed_len(rand_byte_len.try_into().unwrap()))
             .await
             .map_err(InitError::from_decode_error)
@@ -125,7 +127,19 @@ where
                 opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
             })?;
 
+        let client_id: Box<[u8; 16]> = stream_read
+            .read_next(slice_peeker_fixed_len(16))
+            .await
+            .map_err(InitError::from_decode_error)
+            .and_then(|opt| {
+                opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
+            })?
+            .to_vec() //TODO: no copy
+            .try_into()
+            .unwrap();
+
         Ok((
+            client_id,
             GreetedRead::new(stream_read),
             GreetedWrite::new(EncryptedWrite::new(
                 stream_write,
