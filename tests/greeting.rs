@@ -10,10 +10,12 @@ fn create_pair() -> (
 ) {
     let key: Arc<protocol::Key> = protocol::key_from_string("000").into();
     let nonce: Box<protocol::Nonce> = vec![1u8; 12].try_into().unwrap();
+    let client_id: Arc<[u8; 16]> = [1u8; 16].into();
 
     let (client_steam, server_stream) = duplex(8 * 1024);
 
-    let client_agent = protocol::client_agent::Init::new(key.clone(), nonce, client_steam);
+    let client_agent =
+        protocol::client_agent::Init::new(client_id, 0, key.clone(), nonce, client_steam);
     let server_agent = protocol::server_agent::Init::new(key, server_stream);
 
     (client_agent, server_agent)
@@ -34,7 +36,8 @@ async fn wrong_key() {
     let nonce: Box<protocol::Nonce> = vec![1u8; 12].try_into().unwrap();
 
     let (client_steam, server_stream) = duplex(8 * 1024);
-    let client_agent = protocol::client_agent::Init::new(key1.clone(), nonce, client_steam);
+    let client_agent =
+        protocol::client_agent::Init::new([1u8; 16].into(), 0, key1.clone(), nonce, client_steam);
     let server_agent = protocol::server_agent::Init::new(key2, server_stream);
 
     client_agent.send_greeting(12).await.unwrap();

@@ -2,7 +2,6 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use clap::Parser;
 use futures::prelude::*;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use sep_lib::prelude::*;
 
@@ -39,7 +38,7 @@ async fn main() {
 
     let channeling_new_client = async move {
         loop {
-            let (agent, socket_addr) = listener.accept().await.unwrap();
+            let (agent, _socket_addr) = listener.accept().await.unwrap();
             tokio::spawn({
                 let mut new_client_conn_tx = new_client_conn_tx.clone();
                 async move {
@@ -65,7 +64,7 @@ async fn main() {
         Ok::<_, std::io::Error>(())
     };
 
-    let main_task = sep_lib::client_conn_group::run(new_client_conn_rx);
+    let main_task = sep_lib::server_main_task::run(new_client_conn_rx);
 
     tokio::try_join! {
         main_task,

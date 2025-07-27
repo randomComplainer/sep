@@ -1,13 +1,7 @@
-use std::{
-    cell::UnsafeCell,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::{cell::UnsafeCell, sync::Arc};
 
 use futures::FutureExt;
-use tokio::sync::{Notify, watch};
+use tokio::sync::watch;
 
 // simple 1-to-1 channel
 // both sender and receiver cannot be cloned
@@ -19,28 +13,49 @@ where
     T: Send,
 {
     let shared = Arc::new(Shared {
-        sender_drop_notify: Notify::new(),
-        sender_dropped: AtomicBool::new(false),
-        receiver_drop_notify: Notify::new(),
-        receiver_dropped: AtomicBool::new(false),
         item: UnsafeCell::new(None),
     });
 
     let (item_watch_tx, item_watch_rx) = watch::channel(false);
-    item_watch_tx.send(false).unwrap();
+
+    let (sender_closed_tx, sender_closed_rx) = watch::channel(false);
+    let (receiver_closed_tx, receiver_closed_rx) = watch::channel(false);
 
     let sender = Sender {
         shared: shared.clone(),
         item_watch_rx: item_watch_rx.clone(),
         item_watch_tx: item_watch_tx.clone(),
+        sender_closed_tx,
+        receiver_closed_rx,
     };
     let receiver = Receiver {
         shared,
         item_watch_rx,
         item_watch_tx,
+        receiver_closed_tx,
+        sender_closed_rx,
     };
 
     (sender, receiver)
+}
+
+pub trait Channel<T: Send> {
+    fn shared(&self) -> &Arc<Shared<T>>;
+}
+
+pub trait ChannelExt<T: Send> {
+    fn is_connected_to<Other: Channel<T>>(&self, other: &Other) -> bool;
+    fn create_channel_ref(&self) -> ChannelRef<T>;
+}
+
+impl<T: Send, C: Channel<T>> ChannelExt<T> for C {
+    fn is_connected_to<Other: Channel<T>>(&self, other: &Other) -> bool {
+        Arc::ptr_eq(&self.shared(), &other.shared())
+    }
+
+    fn create_channel_ref(&self) -> ChannelRef<T> {
+        ChannelRef::new(self.shared().clone())
+    }
 }
 
 pub struct Sender<T>
@@ -50,7 +65,11 @@ where
     shared: Arc<Shared<T>>,
     item_watch_rx: watch::Receiver<bool>,
     item_watch_tx: watch::Sender<bool>,
+    sender_closed_tx: watch::Sender<bool>,
+    receiver_closed_rx: watch::Receiver<bool>,
 }
+
+unsafe impl<T: Send> Send for Sender<T> {}
 
 impl<T> Sender<T>
 where
@@ -60,7 +79,7 @@ where
     // cause item_watch is not in correct state(empty=false)
     // and you lose the item anyway
     pub async fn send(&mut self, t: T) -> Result<(), T> {
-        if self.shared.receiver_dropped.load(Ordering::SeqCst) {
+        if *self.receiver_closed_rx.borrow() {
             return Err(t);
         }
 
@@ -73,7 +92,7 @@ where
         let _ = self.item_watch_tx.send_replace(true);
 
         match futures::future::select(
-            self.shared.receiver_drop_notify.notified().boxed(),
+            self.receiver_closed_rx.wait_for(|x| *x).boxed(),
             self.item_watch_rx.wait_for(|x| !x).boxed(),
         )
         .await
@@ -91,6 +110,14 @@ where
             futures::future::Either::Right(_) => Ok(()),
         }
     }
+
+    pub fn close(&self) {
+        self.sender_closed_tx.send_replace(true);
+    }
+
+    pub fn is_connected_to(&self, receiver: &Receiver<T>) -> bool {
+        Arc::ptr_eq(&self.shared, &receiver.shared)
+    }
 }
 
 impl<T> Drop for Sender<T>
@@ -98,10 +125,17 @@ where
     T: Send,
 {
     fn drop(&mut self) {
-        self.shared.sender_dropped.store(true, Ordering::SeqCst);
-        self.shared.sender_drop_notify.notify_one();
+        self.close();
     }
 }
+
+impl<T: Send> Channel<T> for Sender<T> {
+    fn shared(&self) -> &Arc<Shared<T>> {
+        &self.shared
+    }
+}
+
+unsafe impl<T: Send> Send for Receiver<T> {}
 
 pub struct Receiver<T>
 where
@@ -110,6 +144,8 @@ where
     shared: Arc<Shared<T>>,
     item_watch_rx: watch::Receiver<bool>,
     item_watch_tx: watch::Sender<bool>,
+    receiver_closed_tx: watch::Sender<bool>,
+    sender_closed_rx: watch::Receiver<bool>,
 }
 
 impl<T> Receiver<T>
@@ -117,12 +153,12 @@ where
     T: Send,
 {
     pub async fn recv(&mut self) -> Option<T> {
-        if self.shared.sender_dropped.load(Ordering::SeqCst) {
+        if *self.sender_closed_rx.borrow() {
             return None;
         }
 
         match futures::future::select(
-            self.shared.sender_drop_notify.notified().boxed(),
+            self.sender_closed_rx.wait_for(|x| *x).boxed(),
             self.item_watch_rx.wait_for(|x| *x).boxed(),
         )
         .await
@@ -140,6 +176,14 @@ where
             }
         }
     }
+
+    pub fn close(&self) {
+        self.receiver_closed_tx.send_replace(true);
+    }
+
+    pub fn is_connected_to(&self, sender: &Sender<T>) -> bool {
+        sender.is_connected_to(self)
+    }
 }
 
 impl<T> Drop for Receiver<T>
@@ -147,17 +191,44 @@ where
     T: Send,
 {
     fn drop(&mut self) {
-        self.shared.receiver_drop_notify.notify_one();
-        self.shared.receiver_dropped.store(true, Ordering::SeqCst);
+        self.close();
     }
 }
 
-struct Shared<T> {
-    pub sender_drop_notify: Notify,
-    pub sender_dropped: AtomicBool,
-    pub receiver_drop_notify: Notify,
-    pub receiver_dropped: AtomicBool,
+impl<T: Send> Channel<T> for Receiver<T> {
+    fn shared(&self) -> &Arc<Shared<T>> {
+        &self.shared
+    }
+}
+
+pub struct Shared<T> {
     pub item: UnsafeCell<Option<T>>,
+}
+
+pub struct ChannelRef<T: Send> {
+    shared: Arc<Shared<T>>,
+}
+
+impl<T: Send> Clone for ChannelRef<T> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: self.shared.clone(),
+        }
+    }
+}
+
+impl<T: Send> ChannelRef<T> {
+    pub fn new(shared: Arc<Shared<T>>) -> Self {
+        Self { shared }
+    }
+}
+
+unsafe impl<T: Send> Send for ChannelRef<T> {}
+
+impl<T: Send> Channel<T> for ChannelRef<T> {
+    fn shared(&self) -> &Arc<Shared<T>> {
+        &self.shared
+    }
 }
 
 #[cfg(test)]

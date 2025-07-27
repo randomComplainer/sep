@@ -14,16 +14,19 @@ async fn create_pair() -> (
         client_agent::GreetedRead<DuplexStream, ChaCha20>,
     ),
     (
+        Box<[u8; 16]>,
         server_agent::GreetedRead<DuplexStream, ChaCha20>,
         server_agent::GreetedWrite<DuplexStream, ChaCha20>,
     ),
 ) {
     let key: Arc<protocol::Key> = protocol::key_from_string("000").into();
     let nonce: Box<protocol::Nonce> = vec![1u8; 12].try_into().unwrap();
+    let client_id: Arc<[u8; 16]> = [1u8; 16].into();
 
     let (client_steam, server_stream) = duplex(8 * 1024);
 
-    let client_agent = protocol::client_agent::Init::new(key.clone(), nonce, client_steam);
+    let client_agent =
+        protocol::client_agent::Init::new(client_id, 0, key.clone(), nonce, client_steam);
     let server_agent = protocol::server_agent::Init::new(key, server_stream);
 
     let client_agent = client_agent.send_greeting(12).await.unwrap();
@@ -37,7 +40,8 @@ async fn client_req_v4() {
     let req_ip = std::net::Ipv4Addr::new(129, 0, 0, 1);
     let req_port = 1234;
 
-    let ((mut client_write, _client_read), (mut server_read, _server_write)) = create_pair().await;
+    let ((mut client_write, _client_read), (_, mut server_read, _server_write)) =
+        create_pair().await;
 
     let client = async move {
         client_write
@@ -81,7 +85,8 @@ async fn client_req_domain() {
     let req_domain = "example.com";
     let req_port = 1234;
 
-    let ((mut client_write, _client_read), (mut server_read, _server_write)) = create_pair().await;
+    let ((mut client_write, _client_read), (_, mut server_read, _server_write)) =
+        create_pair().await;
 
     let client = async move {
         client_write
@@ -125,7 +130,8 @@ async fn server_reply_v4() {
     let reply_ip = std::net::Ipv4Addr::new(129, 0, 0, 1);
     let reply_port = 1234;
 
-    let ((_client_write, mut client_read), (_server_read, mut server_write)) = create_pair().await;
+    let ((_client_write, mut client_read), (_, _server_read, mut server_write)) =
+        create_pair().await;
 
     let client = async move {
         let msg = client_read.recv_msg().await.unwrap().unwrap();
@@ -166,7 +172,8 @@ async fn server_reply_v4() {
 async fn client_data() {
     let data = vec![0x01, 0x02, 0x03, 0x04].into_boxed_slice();
 
-    let ((mut client_write, _client_read), (mut server_read, _server_write)) = create_pair().await;
+    let ((mut client_write, _client_read), (_, mut server_read, _server_write)) =
+        create_pair().await;
 
     let client = {
         let data = data.clone();
@@ -211,7 +218,8 @@ async fn client_data() {
 #[tokio::test]
 async fn server_data() {
     let data = vec![0x01, 0x02, 0x03, 0x04].into_boxed_slice();
-    let ((_client_write, mut client_read), (_server_read, mut server_write)) = create_pair().await;
+    let ((_client_write, mut client_read), (_, _server_read, mut server_write)) =
+        create_pair().await;
 
     let client = {
         let data = data.clone();
@@ -256,7 +264,8 @@ async fn server_data() {
 
 #[tokio::test]
 async fn client_ack() {
-    let ((mut client_write, _client_read), (mut server_read, _server_write)) = create_pair().await;
+    let ((mut client_write, _client_read), (_, mut server_read, _server_write)) =
+        create_pair().await;
 
     let client = {
         async move {
@@ -291,7 +300,8 @@ async fn client_ack() {
 
 #[tokio::test]
 async fn server_ack() {
-    let ((_client_write, mut client_read), (_server_read, mut server_write)) = create_pair().await;
+    let ((_client_write, mut client_read), (_, _server_read, mut server_write)) =
+        create_pair().await;
 
     let client = {
         async move {
@@ -324,7 +334,8 @@ async fn server_ack() {
 
 #[tokio::test]
 async fn client_eof() {
-    let ((mut client_write, _client_read), (mut server_read, _server_write)) = create_pair().await;
+    let ((mut client_write, _client_read), (_, mut server_read, _server_write)) =
+        create_pair().await;
 
     let client = {
         async move {
@@ -359,7 +370,8 @@ async fn client_eof() {
 
 #[tokio::test]
 async fn server_eof() {
-    let ((_client_write, mut client_read), (_server_read, mut server_write)) = create_pair().await;
+    let ((_client_write, mut client_read), (_, _server_read, mut server_write)) =
+        create_pair().await;
 
     let client = {
         async move {

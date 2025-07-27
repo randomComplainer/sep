@@ -22,6 +22,7 @@ const RAND_BYTE_LEN_MAX: usize = 1024;
 
 pub type Key = [u8; 32];
 pub type Nonce = [u8; 12];
+pub type ClientId = [u8; 16];
 
 #[derive(Error, Debug)]
 #[error("protocol error: {0}")]

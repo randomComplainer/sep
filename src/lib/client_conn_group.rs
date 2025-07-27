@@ -5,7 +5,34 @@ use dashmap::DashMap;
 use futures::prelude::*;
 use rand::prelude::*;
 
+use crate::handover;
 use crate::prelude::*;
+
+pub struct ClientConnGroupHandle<ClientStream, Cipher>
+where
+    ClientStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    Cipher: StreamCipher + Unpin + Send + 'static,
+{
+    pub client_id: Arc<[u8; 16]>,
+    pub client_conn_tx: futures::channel::mpsc::Sender<(
+        protocol::server_agent::GreetedRead<ClientStream, Cipher>,
+        protocol::server_agent::GreetedWrite<ClientStream, Cipher>,
+    )>,
+}
+
+impl<ClientStream, Cipher> ClientConnGroupHandle<ClientStream, Cipher>
+where
+    ClientStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    Cipher: StreamCipher + Unpin + Send + 'static,
+{
+    pub async fn add_client_conn<ConnClientStream, ConnCipher>(
+        &self,
+        client_read: protocol::server_agent::GreetedRead<ClientStream, Cipher>,
+        client_write: protocol::server_agent::GreetedWrite<ClientStream, Cipher>,
+    ) -> Result<(), std::io::Error> {
+        todo!()
+    }
+}
 
 async fn client_connection_lifetime_task<ClientStream, Cipher>(
     mut client_read: protocol::server_agent::GreetedRead<ClientStream, Cipher>,
@@ -63,19 +90,25 @@ where
     .map(|(msgs, _)| msgs)
 }
 
+type Greeted<ClientStream, Cipher> = (
+    protocol::server_agent::GreetedRead<ClientStream, Cipher>,
+    protocol::server_agent::GreetedWrite<ClientStream, Cipher>,
+);
+type GreetedReciver<ClientStream, Cipher> = handover::Receiver<Greeted<ClientStream, Cipher>>;
+type GreetedChannelRef<ClientStream, Cipher> = handover::ChannelRef<Greeted<ClientStream, Cipher>>;
+
 pub async fn run<ClientStream, Cipher>(
-    mut new_conn_rx: impl Stream<
-        Item = (
-            Box<[u8; 16]>,
-            protocol::server_agent::GreetedRead<ClientStream, Cipher>,
-            protocol::server_agent::GreetedWrite<ClientStream, Cipher>,
-        ),
-    > + Unpin,
-) -> Result<(), std::io::Error>
+    mut new_conn_rx: GreetedReciver<ClientStream, Cipher>,
+) -> Result<
+    GreetedChannelRef<ClientStream, Cipher>,
+    (GreetedChannelRef<ClientStream, Cipher>, std::io::Error),
+>
 where
     ClientStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     Cipher: StreamCipher + Unpin + Send + 'static,
 {
+    let channel_ref = new_conn_rx.create_channel_ref();
+
     let session_client_msg_senders = Arc::new(DashMap::<
         u16,
         futures::channel::mpsc::Sender<session::msg::ClientMsg>,
@@ -160,8 +193,9 @@ where
         let server_msg_tx = server_msg_tx.clone();
         let client_msg_tx = client_msg_tx.clone();
         let client_write_tx = client_write_tx.clone();
+
         async move {
-            while let Some((_, client_read, client_write)) = new_conn_rx.next().await {
+            while let Some((client_read, client_write)) = new_conn_rx.recv().await {
                 let (conn_server_msg_tx, conn_server_msg_rx) = futures::channel::mpsc::channel(1);
 
                 tokio::spawn({
@@ -226,5 +260,6 @@ where
         sending_msg_to_client,
         receiving_msg_from_client,
     }
-    .map(|_| ())
+    .map(|_| channel_ref.clone())
+    .map_err(|err| (channel_ref, err))
 }
