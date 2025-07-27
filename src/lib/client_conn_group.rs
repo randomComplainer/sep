@@ -4,6 +4,7 @@ use chacha20::cipher::StreamCipher;
 use dashmap::DashMap;
 use futures::prelude::*;
 use rand::prelude::*;
+use tokio::sync::watch;
 
 use crate::handover;
 use crate::prelude::*;
@@ -47,7 +48,7 @@ where
     //TODO: error handling
 
     let mut time_limit_task = Box::pin(tokio::time::sleep(std::time::Duration::from_mins(
-        rand::rng().random_range(..=5u64) + 10,
+        rand::rng().random_range(..=10u64) + 5,
     )));
 
     // let mut time_limit_task = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
@@ -125,9 +126,19 @@ where
     let (client_msg_tx, mut client_msg_rx) =
         futures::channel::mpsc::channel::<protocol::msg::ClientMsg>(4);
 
+    struct State {
+        conn_num: usize,
+        session_num: usize,
+    }
+    let (state_tx, mut state_rx) = watch::channel(State {
+        conn_num: 0,
+        session_num: 0,
+    });
+
     let receiving_msg_from_client = {
         let server_msg_tx = server_msg_tx.clone();
         let session_client_msg_senders = Arc::clone(&session_client_msg_senders);
+        let state_tx = state_tx.clone();
         async move {
             while let Some(client_msg) = client_msg_rx.next().await {
                 match client_msg {
@@ -146,12 +157,21 @@ where
                             }),
                         );
 
+                        if session_client_msg_senders.contains_key(&session_id) {
+                            panic!("session already exists");
+                        }
+
                         // It's fine if session fails,
                         // log and continue
                         tokio::spawn({
                             let session_client_msg_senders =
                                 Arc::clone(&session_client_msg_senders);
+                            let state_tx = state_tx.clone();
                             async move {
+                                state_tx.send_modify(|state| {
+                                    state.session_num += 1;
+                                });
+
                                 match session_task.await {
                                     Ok(_) => (),
                                     Err(err) => {
@@ -159,13 +179,15 @@ where
                                     }
                                 };
 
+                                dbg!("session task ended");
+
+                                state_tx.send_modify(|state| {
+                                    state.session_num -= 1;
+                                });
+
                                 session_client_msg_senders.remove(&session_id);
                             }
                         });
-
-                        if session_client_msg_senders.contains_key(&session_id) {
-                            panic!("session already exists");
-                        }
 
                         session_client_msg_senders.insert(session_id, client_msg_tx);
                     }
@@ -201,7 +223,12 @@ where
                 tokio::spawn({
                     let mut server_msg_tx = server_msg_tx.clone();
                     let client_msg_tx = client_msg_tx.clone();
+                    let state_tx = state_tx.clone();
                     async move {
+                        state_tx.send_modify(|state| {
+                            state.conn_num += 1;
+                        });
+
                         // TODO: error handling
                         if let Ok(server_msgs) = client_connection_lifetime_task(
                             client_read,
@@ -212,6 +239,11 @@ where
                         .await
                         {
                             dbg!(format!("client connection lifetime task ended"));
+
+                            state_tx.send_modify(|state| {
+                                state.conn_num -= 1;
+                            });
+
                             for server_msg in server_msgs {
                                 // TODO: error handling
                                 let _ = server_msg_tx.send(server_msg).await;
@@ -255,11 +287,29 @@ where
         Ok::<_, std::io::Error>(())
     };
 
-    tokio::try_join! {
-        accepting_client_conns,
-        sending_msg_to_client,
-        receiving_msg_from_client,
+    let checking_ending_condition = async move {
+        // wait for initial state set
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+        let _ = state_rx
+            .wait_for(|state| state.conn_num == 0 && state.session_num == 0)
+            .await;
+    };
+
+    let loop_tasks = async move {
+        tokio::try_join! {
+            accepting_client_conns,
+            sending_msg_to_client,
+            receiving_msg_from_client,
+        }
+        .map(|_| ())
+    };
+
+    match futures::future::select(checking_ending_condition.boxed(), loop_tasks.boxed()).await {
+        future::Either::Left(_) => Ok(channel_ref.clone()),
+        future::Either::Right((loop_tasks_result, _)) => {
+            let err = loop_tasks_result.unwrap_err();
+            Err((channel_ref, err))
+        }
     }
-    .map(|_| channel_ref.clone())
-    .map_err(|err| (channel_ref, err))
 }
