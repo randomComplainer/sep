@@ -9,8 +9,6 @@ use crate::prelude::*;
 
 #[derive(Error, Debug)]
 pub enum ServerSessionError {
-    // #[error("io error: {0}")]
-    // Io(#[from] std::io::Error),
     #[error("target io error")]
     TargetIoError(std::io::Error),
 
@@ -116,9 +114,8 @@ pub async fn run(
                 let n = match target_read.read_buf(&mut buf).await {
                     Ok(n) => n,
                     Err(err) => {
-                        let _ = client_write
-                            .send(msg::ServerMsg::TargetIoError(msg::IoError))
-                            .await;
+                        dbg!(format!("target read error: {:?}", err));
+                        let _ = client_write.send(msg::Eof { seq }.into()).await;
                         return Err(ServerSessionError::TargetIoError(err));
                     }
                 };
@@ -194,6 +191,9 @@ pub async fn run(
                             target_write
                                 .write_all(data.as_ref())
                                 .await
+                                .inspect_err(|err| {
+                                    dbg!(format!("target write error: {:?}", err));
+                                })
                                 .map_err(|err| ServerSessionError::TargetIoError(err))?;
                         }
                         super::client::StreamEntryValue::Eof => {

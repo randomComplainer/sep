@@ -4,43 +4,26 @@ use chacha20::cipher::StreamCipher;
 use dashmap::DashMap;
 use futures::prelude::*;
 use rand::prelude::*;
+use thiserror::Error;
 use tokio::sync::watch;
 
 use crate::handover;
 use crate::prelude::*;
 
-pub struct ClientConnGroupHandle<ClientStream, Cipher>
-where
-    ClientStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-    Cipher: StreamCipher + Unpin + Send + 'static,
-{
-    pub client_id: Arc<[u8; 16]>,
-    pub client_conn_tx: futures::channel::mpsc::Sender<(
-        protocol::server_agent::GreetedRead<ClientStream, Cipher>,
-        protocol::server_agent::GreetedWrite<ClientStream, Cipher>,
-    )>,
-}
-
-impl<ClientStream, Cipher> ClientConnGroupHandle<ClientStream, Cipher>
-where
-    ClientStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-    Cipher: StreamCipher + Unpin + Send + 'static,
-{
-    pub async fn add_client_conn<ConnClientStream, ConnCipher>(
-        &self,
-        client_read: protocol::server_agent::GreetedRead<ClientStream, Cipher>,
-        client_write: protocol::server_agent::GreetedWrite<ClientStream, Cipher>,
-    ) -> Result<(), std::io::Error> {
-        todo!()
-    }
+#[derive(Error, Debug)]
+pub enum ConnectionGroupError {
+    #[error("session protocol error: session id {0}: {1}")]
+    SessionProtocol(u16, String),
+    #[error("lost connection to client")]
+    LostConnection,
 }
 
 async fn client_connection_lifetime_task<ClientStream, Cipher>(
     mut client_read: protocol::server_agent::GreetedRead<ClientStream, Cipher>,
     mut client_write: protocol::server_agent::GreetedWrite<ClientStream, Cipher>,
     mut client_msg_tx: futures::channel::mpsc::Sender<protocol::msg::ClientMsg>,
-    mut server_msg_rx: futures::channel::mpsc::Receiver<protocol::msg::ServerMsg>,
-) -> Result<Vec<protocol::msg::ServerMsg>, std::io::Error>
+    mut server_msg_rx: handover::Receiver<protocol::msg::ServerMsg>,
+) -> Result<(), std::io::Error>
 where
     ClientStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     Cipher: StreamCipher + Unpin + Send + 'static,
@@ -63,21 +46,20 @@ where
 
     let sending_msg_to_client = async move {
         loop {
-            match futures::future::select(time_limit_task, server_msg_rx.next()).await {
-                futures::future::Either::Left(_) => {
+            match futures::future::select(time_limit_task, server_msg_rx.recv().boxed()).await {
+                futures::future::Either::Left(x) => {
                     dbg!("hit time limit");
-                    server_msg_rx.close();
-
+                    drop(x);
                     let _ = client_write.close().await;
 
-                    return Ok::<_, std::io::Error>(server_msg_rx.collect::<Vec<_>>().await);
+                    return Ok::<_, std::io::Error>(());
                 }
                 futures::future::Either::Right((server_msg_opt, not_yet)) => {
                     if let Some(server_msg) = server_msg_opt {
                         time_limit_task = not_yet;
                         client_write.send_msg(server_msg).await.unwrap();
                     } else {
-                        return Ok::<_, std::io::Error>(Default::default());
+                        return Ok::<_, std::io::Error>(());
                     }
                 }
             }
@@ -88,7 +70,7 @@ where
         sending_msg_to_client,
         reciving_msg_from_client,
     }
-    .map(|(msgs, _)| msgs)
+    .map(|_| ())
 }
 
 type Greeted<ClientStream, Cipher> = (
@@ -102,7 +84,10 @@ pub async fn run<ClientStream, Cipher>(
     mut new_conn_rx: GreetedReciver<ClientStream, Cipher>,
 ) -> Result<
     GreetedChannelRef<ClientStream, Cipher>,
-    (GreetedChannelRef<ClientStream, Cipher>, std::io::Error),
+    (
+        GreetedChannelRef<ClientStream, Cipher>,
+        ConnectionGroupError,
+    ),
 >
 where
     ClientStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -118,13 +103,13 @@ where
     let (server_msg_tx, mut server_msg_rx) =
         futures::channel::mpsc::channel::<protocol::msg::ServerMsg>(4);
 
-    let (client_write_tx, mut client_write_rx) = futures::channel::mpsc::channel::<
-        futures::channel::mpsc::Sender<protocol::msg::ServerMsg>,
-        // protocol::server_agent::GreetedWrite<ClientStream, Cipher>,
-    >(16);
+    let (client_write_tx, mut client_write_rx) =
+        futures::channel::mpsc::channel::<handover::Sender<protocol::msg::ServerMsg>>(16);
 
     let (client_msg_tx, mut client_msg_rx) =
         futures::channel::mpsc::channel::<protocol::msg::ClientMsg>(4);
+
+    let (err_tx, mut err_rx) = futures::channel::mpsc::channel::<ConnectionGroupError>(1);
 
     struct State {
         conn_num: usize,
@@ -139,6 +124,7 @@ where
         let server_msg_tx = server_msg_tx.clone();
         let session_client_msg_senders = Arc::clone(&session_client_msg_senders);
         let state_tx = state_tx.clone();
+        let err_tx = err_tx.clone();
         async move {
             while let Some(client_msg) = client_msg_rx.next().await {
                 match client_msg {
@@ -158,7 +144,10 @@ where
                         );
 
                         if session_client_msg_senders.contains_key(&session_id) {
-                            panic!("session already exists");
+                            return Err(ConnectionGroupError::SessionProtocol(
+                                session_id,
+                                "duplicated session id".to_string(),
+                            ));
                         }
 
                         // It's fine if session fails,
@@ -167,6 +156,7 @@ where
                             let session_client_msg_senders =
                                 Arc::clone(&session_client_msg_senders);
                             let state_tx = state_tx.clone();
+                            let mut err_tx = err_tx.clone();
                             async move {
                                 state_tx.send_modify(|state| {
                                     state.session_num += 1;
@@ -176,6 +166,15 @@ where
                                     Ok(_) => (),
                                     Err(err) => {
                                         dbg!(format!("session task failed: {:?}", err));
+                                        if let session::server::ServerSessionError::Protocol(err) =
+                                            err
+                                        {
+                                            let _ = err_tx
+                                                .send(ConnectionGroupError::SessionProtocol(
+                                                    session_id, err,
+                                                ))
+                                                .await;
+                                        }
                                     }
                                 };
 
@@ -207,30 +206,31 @@ where
                 };
             }
 
-            Ok::<_, std::io::Error>(())
+            Ok::<_, ConnectionGroupError>(())
         }
     };
 
     let accepting_client_conns = {
-        let server_msg_tx = server_msg_tx.clone();
         let client_msg_tx = client_msg_tx.clone();
         let client_write_tx = client_write_tx.clone();
+        let err_tx = err_tx.clone();
 
         async move {
             while let Some((client_read, client_write)) = new_conn_rx.recv().await {
-                let (conn_server_msg_tx, conn_server_msg_rx) = futures::channel::mpsc::channel(1);
+                let (conn_server_msg_tx, conn_server_msg_rx) =
+                    handover::channel::<protocol::msg::ServerMsg>();
 
                 tokio::spawn({
-                    let mut server_msg_tx = server_msg_tx.clone();
                     let client_msg_tx = client_msg_tx.clone();
                     let state_tx = state_tx.clone();
+                    let mut err_tx = err_tx.clone();
                     async move {
                         state_tx.send_modify(|state| {
                             state.conn_num += 1;
                         });
 
                         // TODO: error handling
-                        if let Ok(server_msgs) = client_connection_lifetime_task(
+                        match client_connection_lifetime_task(
                             client_read,
                             client_write,
                             client_msg_tx.clone(),
@@ -238,15 +238,15 @@ where
                         )
                         .await
                         {
-                            dbg!(format!("client connection lifetime task ended"));
+                            Ok(_) => {
+                                dbg!(format!("client connection lifetime task ended"));
 
-                            state_tx.send_modify(|state| {
-                                state.conn_num -= 1;
-                            });
-
-                            for server_msg in server_msgs {
-                                // TODO: error handling
-                                let _ = server_msg_tx.send(server_msg).await;
+                                state_tx.send_modify(|state| {
+                                    state.conn_num -= 1;
+                                });
+                            }
+                            Err(_) => {
+                                let _ = err_tx.send(ConnectionGroupError::LostConnection).await;
                             }
                         }
                     }
@@ -255,7 +255,7 @@ where
                 let _ = client_write_tx.clone().send(conn_server_msg_tx).await;
             }
 
-            Ok::<_, std::io::Error>(())
+            Ok::<_, ConnectionGroupError>(())
         }
     };
 
@@ -268,32 +268,50 @@ where
                 async move {
                     dbg!(format!("message to client: {:?}", &server_msg));
 
-                    match client_write.try_send(server_msg) {
+                    match client_write.send(server_msg).await {
                         Ok(_) => {
                             // TODO: do I care about error?
                             let _ = client_write_tx.send(client_write).await.unwrap();
                         }
-                        Err(err) => {
-                            dbg!(format!(
-                                "failed to send message through server write: {:?}",
-                                err
-                            ));
-                            server_msg_tx.send(err.into_inner()).await.unwrap();
+                        Err(server_msg) => {
+                            // TODO: piroritize resending?
+                            server_msg_tx.send(server_msg).await.unwrap();
                         }
                     }
                 }
             });
         }
-        Ok::<_, std::io::Error>(())
+        Ok::<_, ConnectionGroupError>(())
     };
 
-    let checking_ending_condition = async move {
+    let checking_state_ending_condition = async move {
         // wait for initial state set
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
         let _ = state_rx
             .wait_for(|state| state.conn_num == 0 && state.session_num == 0)
             .await;
+
+        return Ok::<_, ConnectionGroupError>(());
+    };
+
+    let checking_err = async move {
+        let err = err_rx.next().await.unwrap();
+        dbg!(format!("connection group error: {:?}", err));
+
+        return err;
+    };
+
+    let ending_conditions = async move {
+        match future::select(
+            checking_state_ending_condition.boxed(),
+            checking_err.boxed(),
+        )
+        .await
+        {
+            future::Either::Left(_) => Ok::<_, ConnectionGroupError>(()),
+            future::Either::Right((err, _)) => Err(err),
+        }
     };
 
     let loop_tasks = async move {
@@ -305,8 +323,11 @@ where
         .map(|_| ())
     };
 
-    match futures::future::select(checking_ending_condition.boxed(), loop_tasks.boxed()).await {
-        future::Either::Left(_) => Ok(channel_ref.clone()),
+    match futures::future::select(ending_conditions.boxed(), loop_tasks.boxed()).await {
+        future::Either::Left((r, _)) => match r {
+            Ok(_) => Ok(channel_ref.clone()),
+            Err(err) => Err((channel_ref, err)),
+        },
         future::Either::Right((loop_tasks_result, _)) => {
             let err = loop_tasks_result.unwrap_err();
             Err((channel_ref, err))
