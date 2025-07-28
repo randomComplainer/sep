@@ -3,9 +3,18 @@ use std::sync::{Arc, atomic::AtomicUsize};
 use chacha20::cipher::StreamCipher;
 use dashmap::DashMap;
 use futures::prelude::*;
+use thiserror::Error;
 
 use crate::handover;
 use crate::prelude::*;
+
+#[derive(Error, Debug)]
+pub enum ClientError {
+    #[error("session protocol error: session id {0}: {1}")]
+    SessionProtocol(u16, String),
+    #[error("lost connection to server")]
+    LostConnection,
+}
 
 // TODO: error handling
 // for io/messging errors, need to close entire connection group, since stream is dirty
@@ -77,10 +86,10 @@ where
 // Server Io Error for retry
 // Protpcol Error for exit
 pub async fn run<ProxyeeStream, ServerStream, Cipher, ConnectServerFut>(
-    mut new_proxee_rx: impl Stream<Item = (u16, socks5::agent::Init<ProxyeeStream>)> + Unpin,
-    connect_to_server: impl (Fn() -> ConnectServerFut) + Clone + Send + Unpin + 'static,
+    mut new_proxee_rx: impl Stream<Item = (u16, socks5::agent::Init<ProxyeeStream>)> + Unpin + Send,
+    connect_to_server: impl (Fn() -> ConnectServerFut) + Clone + Send + Sync + Unpin + 'static,
     max_server_conn: usize,
-) -> Result<(), std::io::Error>
+) -> Result<(), ClientError>
 where
     ProxyeeStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     ServerStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -113,9 +122,12 @@ where
 
     let server_conn_count = Arc::new(AtomicUsize::new(0));
 
+    let (err_tx, mut err_rx) = futures::channel::mpsc::channel::<ClientError>(1);
+
     let accepting_proxyee = {
         let client_msg_tx = client_msg_tx.clone();
         let session_server_msg_senders = Arc::clone(&session_server_msg_senders);
+        let err_tx = err_tx.clone();
         async move {
             while let Some((session_id, proxyee)) = new_proxee_rx.next().await {
                 let (session_server_msg_tx, session_server_msg_rx) =
@@ -130,11 +142,17 @@ where
 
                 tokio::spawn({
                     let session_server_msg_senders = Arc::clone(&session_server_msg_senders);
+                    let mut err_tx = err_tx.clone();
                     async move {
                         match session_task.await {
                             Ok(_) => {}
                             Err(err) => {
                                 dbg!(format!("session task failed: {:?}", err));
+                                if let session::client::ClientSessionError::Protocol(err) = err {
+                                    let _ = err_tx
+                                        .send(ClientError::SessionProtocol(session_id, err))
+                                        .await;
+                                }
                             }
                         }
 
@@ -143,7 +161,7 @@ where
                 });
             }
 
-            Ok::<_, std::io::Error>(())
+            Ok::<_, ClientError>(())
         }
     };
 
@@ -177,11 +195,9 @@ where
                 }
 
                 server_conn_count.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-
-                Ok::<_, std::io::Error>(())
             });
 
-            Ok::<_, std::io::Error>(conn_client_msg_tx)
+            Ok::<_, ClientError>(conn_client_msg_tx)
         }
     };
 
@@ -228,7 +244,7 @@ where
                 });
             }
 
-            Ok::<_, std::io::Error>(())
+            Ok::<_, ClientError>(())
         }
     };
 
@@ -242,20 +258,30 @@ where
                         if let Some(mut session_server_msg_sender) =
                             session_server_msg_senders.get_mut(&session_id)
                         {
+                            // sessiion could be ended, dont care about error
                             let _ = session_server_msg_sender.send(server_msg).await;
                         }
                     }
                 };
             }
 
-            Ok::<_, std::io::Error>(())
+            Ok::<_, ClientError>(())
         }
     };
 
-    tokio::try_join! {
-        accepting_proxyee,
-        sending_msg_to_server,
-        receiving_msg_from_server,
+    let checking_err = async move { err_rx.next().await.unwrap() };
+
+    let looping_task = async move {
+        tokio::try_join! {
+            accepting_proxyee,
+            sending_msg_to_server,
+            receiving_msg_from_server,
+        }
+        .map(|_| ())
+    };
+
+    match futures::future::select(checking_err.boxed(), looping_task.boxed()).await {
+        future::Either::Left((err, _)) => Err(err),
+        future::Either::Right((r, _)) => r,
     }
-    .map(|_| ())
 }
