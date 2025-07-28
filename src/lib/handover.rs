@@ -1,4 +1,4 @@
-use std::{cell::UnsafeCell, sync::Arc};
+use std::{cell::UnsafeCell, ptr::NonNull, sync::Arc};
 
 use futures::FutureExt;
 use tokio::sync::watch;
@@ -86,7 +86,7 @@ where
         unsafe {
             debug_assert!(!*self.item_watch_rx.borrow());
             debug_assert!((&*self.shared.item.get()).is_none());
-            (&mut *self.shared.item.get()).replace(t);
+            (*self.shared.item.get()) = NonNull::new(Box::leak(Box::new(t)));
         }
 
         let _ = self.item_watch_tx.send_replace(true);
@@ -103,7 +103,10 @@ where
                 unsafe {
                     debug_assert!((&*self.shared.item.get()).is_some());
                     let _ = self.item_watch_tx.send_replace(false);
-                    Err((&mut *self.shared.item.get()).take().unwrap())
+
+                    Err(*Box::from_raw(
+                        (*self.shared.item.get()).take().unwrap().as_ptr(),
+                    ))
                 }
             }
             // consumed
@@ -169,7 +172,9 @@ where
                 drop(x);
                 unsafe {
                     debug_assert!((&*self.shared.item.get()).is_some());
-                    let result = (&mut *self.shared.item.get()).take();
+                    let result = (*self.shared.item.get())
+                        .take()
+                        .map(|p| *Box::from_raw(p.as_ptr()));
                     let _ = self.item_watch_tx.send_replace(false);
                     result
                 }
@@ -202,7 +207,7 @@ impl<T: Send> Channel<T> for Receiver<T> {
 }
 
 pub struct Shared<T> {
-    pub item: UnsafeCell<Option<T>>,
+    pub item: UnsafeCell<Option<NonNull<T>>>,
 }
 
 pub struct ChannelRef<T: Send> {
