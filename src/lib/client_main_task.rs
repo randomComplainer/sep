@@ -1,12 +1,10 @@
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex, atomic::AtomicUsize},
-};
+use std::sync::{Arc, atomic::AtomicUsize};
 
 use chacha20::cipher::StreamCipher;
 use dashmap::DashMap;
 use futures::prelude::*;
 
+use crate::handover;
 use crate::prelude::*;
 
 // TODO: error handling
@@ -14,9 +12,9 @@ use crate::prelude::*;
 // returns remaining client messages when server connection is closed
 async fn server_connection_lifetime_task<ServerStream, Cipher, ConnectServerFut>(
     connect_to_server: impl Fn() -> ConnectServerFut + Unpin,
-    mut client_msg_rx: futures::channel::mpsc::Receiver<protocol::msg::ClientMsg>,
+    mut client_msg_rx: handover::Receiver<protocol::msg::ClientMsg>,
     mut server_msg_tx: futures::channel::mpsc::Sender<protocol::msg::ServerMsg>,
-) -> Result<Vec<protocol::msg::ClientMsg>, std::io::Error>
+) -> Result<(), std::io::Error>
 where
     ServerStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     Cipher: StreamCipher + Unpin + Send + 'static,
@@ -47,13 +45,13 @@ where
 
     let sending_msg_to_server = async move {
         loop {
-            match futures::future::select(close_notify_rx, client_msg_rx.next()).await {
-                futures::future::Either::Left(_) => {
-                    client_msg_rx.close();
-
+            match futures::future::select(close_notify_rx, client_msg_rx.recv().boxed()).await {
+                futures::future::Either::Left(x) => {
+                    drop(x);
+                    // TODO: error handling
                     server_write.close().await.unwrap();
 
-                    return Ok::<_, std::io::Error>(client_msg_rx.collect::<Vec<_>>().await);
+                    return Ok::<_, std::io::Error>(());
                 }
                 futures::future::Either::Right((client_msg_opt, not_yet_closed)) => {
                     if let Some(client_msg) = client_msg_opt {
@@ -72,9 +70,12 @@ where
         sending_msg_to_server,
         reciving_msg_from_server,
     }
-    .map(|(msgs, _)| msgs)
+    .map(|_| ())
 }
 
+//TODO: Error types
+// Server Io Error for retry
+// Protpcol Error for exit
 pub async fn run<ProxyeeStream, ServerStream, Cipher, ConnectServerFut>(
     mut new_proxee_rx: impl Stream<Item = (u16, socks5::agent::Init<ProxyeeStream>)> + Unpin,
     connect_to_server: impl (Fn() -> ConnectServerFut) + Clone + Send + Unpin + 'static,
@@ -99,7 +100,7 @@ where
         futures::channel::mpsc::channel::<protocol::msg::ClientMsg>(max_server_conn);
 
     let (server_write_tx, mut server_write_rx) = futures::channel::mpsc::channel::<
-        futures::channel::mpsc::Sender<protocol::msg::ClientMsg>,
+        handover::Sender<protocol::msg::ClientMsg>,
     >(max_server_conn);
 
     let (server_msg_tx, mut server_msg_rx) =
@@ -148,31 +149,30 @@ where
 
     let register_new_server_conn = {
         let server_msg_tx = server_msg_tx.clone();
-        let client_msg_tx = client_msg_tx.clone();
         let server_conn_count = Arc::clone(&server_conn_count);
 
         async move || {
             let server_msg_tx = server_msg_tx.clone();
-            let mut client_msg_tx = client_msg_tx.clone();
             let server_conn_count = Arc::clone(&server_conn_count);
             server_conn_count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
-            let (conn_client_msg_tx, conn_client_msg_rx) = futures::channel::mpsc::channel(0);
+            let (conn_client_msg_tx, conn_client_msg_rx) = handover::channel();
             let connect_to_server = connect_to_server.clone();
 
             tokio::spawn(async move {
                 // TODO: error handling
-                if let Ok(client_msgs) = server_connection_lifetime_task(
+                match server_connection_lifetime_task(
                     connect_to_server,
                     conn_client_msg_rx,
                     server_msg_tx,
                 )
                 .await
                 {
-                    dbg!(format!("server connection lifetime task ended"));
-                    for client_msg in client_msgs {
-                        // TODO: error handling
-                        let _ = client_msg_tx.send(client_msg).await;
+                    Ok(_) => {
+                        dbg!(format!("server connection lifetime task ended"));
+                    }
+                    Err(err) => {
+                        dbg!(format!("server connection lifetime task failed: {:?}", err));
                     }
                 }
 
@@ -215,16 +215,13 @@ where
                     async move {
                         // if connection server write is closed,
                         // don't queue it back
-                        match server_write.try_send(client_msg) {
+                        match server_write.send(client_msg).await {
                             Ok(_) => {
                                 let _ = server_write_tx.send(server_write).await;
                             }
-                            Err(err) => {
-                                dbg!(format!(
-                                    "failed to send message through server write: {:?}",
-                                    err
-                                ));
-                                client_msg_tx.send(err.into_inner()).await.unwrap();
+                            Err(server_msg) => {
+                                // TODO: Err?
+                                client_msg_tx.send(server_msg).await.unwrap();
                             }
                         };
                     }
