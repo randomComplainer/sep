@@ -124,8 +124,9 @@ pub async fn run(
         async move {
             let mut seq = 0;
             loop {
+                // TODO: magic number
                 max_client_acked_rx
-                    .wait_for(|acked| seq - acked < 6)
+                    .wait_for(|acked| seq - acked < 14)
                     .await
                     .unwrap();
 
@@ -172,7 +173,7 @@ pub async fn run(
             // TODO: magic capacity
             let mut heap = std::collections::BinaryHeap::<
                 std::cmp::Reverse<super::client::StreamEntry>,
-            >::with_capacity(8);
+            >::with_capacity(16);
 
             let mut next_seq = 0u16;
 

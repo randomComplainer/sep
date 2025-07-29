@@ -125,8 +125,9 @@ where
             seq += 1;
 
             loop {
+                // TODO: magic number
                 max_server_acked_rx
-                    .wait_for(|acked| seq - acked < 6)
+                    .wait_for(|acked| seq - acked < 14)
                     .await
                     .unwrap();
 
@@ -162,7 +163,7 @@ where
         async move {
             // TODO: magic capacity
             let mut heap =
-                std::collections::BinaryHeap::<std::cmp::Reverse<StreamEntry>>::with_capacity(8);
+                std::collections::BinaryHeap::<std::cmp::Reverse<StreamEntry>>::with_capacity(16);
 
             let mut next_seq = 0u16;
 
