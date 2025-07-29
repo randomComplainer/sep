@@ -81,8 +81,6 @@ pub async fn run(
         }
     };
 
-    dbg!(&req.addr);
-
     let target_stream = match resolve_addrs(req.addr, req.port)
         .and_then(connect_target)
         .await
@@ -130,6 +128,12 @@ pub async fn run(
                     .wait_for(|acked| seq - acked < 6)
                     .await
                     .unwrap();
+
+                dbg!(format!(
+                    "next seq: {}, acked: {}",
+                    seq,
+                    *max_client_acked_rx.borrow()
+                ));
 
                 // TODO: reuse buf & buf size
                 let mut buf = bytes::BytesMut::with_capacity(1024 * 8);
@@ -197,9 +201,12 @@ pub async fn run(
 
                         heap.push(std::cmp::Reverse(super::client::StreamEntry::eof(eof.seq)));
                     }
+                    msg::ClientMsg::ProxyeeIoError(_) => {
+                        return Ok(());
+                    }
                     _ => {
                         return Err(ServerSessionError::Protocol(format!(
-                            "unexpected client msg: [{:?}], expected data/eof",
+                            "unexpected client msg: [{:?}], expected data/eof/err",
                             msg
                         )));
                     }

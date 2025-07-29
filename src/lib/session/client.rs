@@ -189,9 +189,12 @@ where
 
                         heap.push(std::cmp::Reverse(StreamEntry::eof(eof.seq)));
                     }
+                    msg::ServerMsg::TargetIoError(_) => {
+                        return Ok(());
+                    }
                     msg => {
                         return Err(ClientSessionError::Protocol(format!(
-                            "unexpected server msg: [{:?}], expected data/eof",
+                            "unexpected server msg: [{:?}], expected data/eof/err",
                             msg
                         )));
                     }

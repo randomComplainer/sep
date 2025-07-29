@@ -277,6 +277,7 @@ pub enum ServerMsg {
     Data(#[from] Data),
     Ack(#[from] Ack),
     Eof(#[from] Eof),
+    TargetIoError(#[from] IoError),
 }
 
 pub enum ServerMsgReader {
@@ -285,6 +286,7 @@ pub enum ServerMsgReader {
     Data(DataReader),
     Ack(AckReader),
     Eof(EofReader),
+    TargetIoError(IoErrorReader),
 }
 
 impl Reader for ServerMsgReader {
@@ -297,6 +299,7 @@ impl Reader for ServerMsgReader {
             Self::Data(reader) => ServerMsg::Data(reader.read(buf)),
             Self::Ack(reader) => ServerMsg::Ack(reader.read(buf)),
             Self::Eof(reader) => ServerMsg::Eof(reader.read(buf)),
+            Self::TargetIoError(reader) => ServerMsg::TargetIoError(reader.read(buf)),
         }
     }
 }
@@ -309,6 +312,7 @@ pub fn server_msg_peeker() -> impl Peeker<ServerMsg, Reader = ServerMsgReader> {
             2 => ServerMsgReader::Data(crate::peek!(data_peeker().peek(cursor))),
             3 => ServerMsgReader::Ack(crate::peek!(ack_peeker().peek(cursor))),
             4 => ServerMsgReader::Eof(crate::peek!(eof_peeker().peek(cursor))),
+            5 => ServerMsgReader::TargetIoError(crate::peek!(error_peeker().peek(cursor))),
             x => {
                 return Err(decode::unknown_enum_code("server session message", x).into());
             }
