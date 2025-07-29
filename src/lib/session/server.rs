@@ -190,7 +190,7 @@ pub async fn run(
                         )));
                     }
                     msg::ClientMsg::Ack(ack) => {
-                        max_client_acked_tx.send(ack.seq).unwrap();
+                        let _ = max_client_acked_tx.send(ack.seq);
                     }
                     msg::ClientMsg::Eof(eof) => {
                         if heap.len() == heap.capacity() {

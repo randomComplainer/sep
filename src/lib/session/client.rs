@@ -178,7 +178,7 @@ where
                         heap.push(std::cmp::Reverse(StreamEntry::data(data.seq, data.data)));
                     }
                     msg::ServerMsg::Ack(ack) => {
-                        max_server_acked_tx.send(ack.seq).unwrap();
+                        let _ = max_server_acked_tx.send(ack.seq);
                     }
                     msg::ServerMsg::Eof(eof) => {
                         if heap.len() == heap.capacity() {
