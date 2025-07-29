@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytes::BytesMut;
 use futures::prelude::*;
 use thiserror::Error;
@@ -93,12 +95,29 @@ where
         .await
         .map_err(|err| ClientSessionError::ProxyeeSocks5(err.into()))?;
 
+    let (max_server_acked_tx, mut max_server_acked_rx) = tokio::sync::watch::channel(0);
+
+    let (mut server_write_funnel_tx, mut server_write_funnel_rx) =
+        futures::channel::mpsc::channel::<msg::ClientMsg>(1);
+
+    let funneling_client_msg = async move {
+        while let Some(msg) = server_write_funnel_rx.next().await {
+            server_write
+                .send(msg)
+                .await
+                .map_err(|_| ClientSessionError::ServerWriteClosed)?;
+        }
+
+        Ok::<_, ClientSessionError>(())
+    };
+
     let proxyee_to_server = {
+        let mut server_write_funnel_tx = server_write_funnel_tx.clone();
         async move {
             let (buf, mut proxyee_read) = proxyee_read.into_parts();
             let mut seq = 0;
 
-            server_write
+            server_write_funnel_tx
                 .send(msg::Data { seq, data: buf }.into())
                 .await
                 .map_err(|_| ClientSessionError::ServerWriteClosed)?;
@@ -106,8 +125,13 @@ where
             seq += 1;
 
             loop {
+                max_server_acked_rx
+                    .wait_for(|acked| seq - acked < 6)
+                    .await
+                    .unwrap();
+
                 // TODO: reuse buf & buf size
-                let mut buf = bytes::BytesMut::with_capacity(1024 * 4);
+                let mut buf = bytes::BytesMut::with_capacity(1024 * 8);
                 let n = proxyee_read
                     .read_buf(&mut buf)
                     .await
@@ -117,7 +141,7 @@ where
                     break;
                 }
 
-                server_write
+                server_write_funnel_tx
                     .send(msg::Data { seq, data: buf }.into())
                     .await
                     .map_err(|_| ClientSessionError::ServerWriteClosed)?;
@@ -125,7 +149,7 @@ where
                 seq += 1;
             }
 
-            server_write
+            server_write_funnel_tx
                 .send(msg::Eof { seq }.into())
                 .await
                 .map_err(|_| ClientSessionError::ServerWriteClosed)?;
@@ -154,7 +178,7 @@ where
                         heap.push(std::cmp::Reverse(StreamEntry::data(data.seq, data.data)));
                     }
                     msg::ServerMsg::Ack(ack) => {
-                        // TODO
+                        max_server_acked_tx.send(ack.seq).unwrap();
                     }
                     msg::ServerMsg::Eof(eof) => {
                         if heap.len() == heap.capacity() {
@@ -174,7 +198,7 @@ where
                 };
 
                 while heap.peek().map(|e| e.0.0 == next_seq).unwrap_or(false) {
-                    let StreamEntry(_seq, entry) = heap.pop().unwrap().0;
+                    let StreamEntry(seq, entry) = heap.pop().unwrap().0;
 
                     match entry {
                         StreamEntryValue::Data(data) => {
@@ -182,6 +206,8 @@ where
                                 .write_all(data.as_ref())
                                 .await
                                 .map_err(|err| ClientSessionError::ProxyeeSocks5(err.into()))?;
+
+                            let _ = server_write_funnel_tx.send(msg::Ack { seq }.into()).await;
                         }
                         StreamEntryValue::Eof => {
                             return Ok(());
@@ -197,6 +223,7 @@ where
     };
 
     tokio::try_join! {
+        funneling_client_msg,
         proxyee_to_server,
         server_to_proxyee,
     }

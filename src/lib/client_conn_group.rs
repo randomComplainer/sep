@@ -38,6 +38,7 @@ where
 
     let reciving_msg_from_client = async move {
         while let Some(msg) = client_read.recv_msg().await.unwrap() {
+            dbg!(format!("message from client: {:?}", &msg));
             client_msg_tx.send(msg).await.unwrap();
         }
 
@@ -48,7 +49,7 @@ where
         loop {
             match futures::future::select(time_limit_task, server_msg_rx.recv().boxed()).await {
                 futures::future::Either::Left(x) => {
-                    dbg!("hit time limit");
+                    dbg!("hit connection lifetime limit");
                     drop(x);
                     let _ = client_write.close().await;
 
@@ -57,6 +58,7 @@ where
                 futures::future::Either::Right((server_msg_opt, not_yet)) => {
                     if let Some(server_msg) = server_msg_opt {
                         time_limit_task = not_yet;
+                        dbg!(format!("message to client: {:?}", &server_msg));
                         client_write.send_msg(server_msg).await.unwrap();
                     } else {
                         return Ok::<_, std::io::Error>(());
@@ -266,8 +268,6 @@ where
                 let mut client_write_tx = client_write_tx.clone();
                 let mut server_msg_tx = server_msg_tx.clone();
                 async move {
-                    dbg!(format!("message to client: {:?}", &server_msg));
-
                     match client_write.send(server_msg).await {
                         Ok(_) => {
                             // TODO: do I care about error?

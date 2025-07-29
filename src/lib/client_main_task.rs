@@ -42,6 +42,7 @@ where
 
     let reciving_msg_from_server = async move {
         while let Some(msg) = server_read.recv_msg().await.unwrap() {
+            dbg!(format!("message from server: {:?}", &msg));
             server_msg_tx.send(msg).await.unwrap();
         }
 
@@ -65,6 +66,7 @@ where
                 futures::future::Either::Right((client_msg_opt, not_yet_closed)) => {
                     if let Some(client_msg) = client_msg_opt {
                         close_notify_rx = not_yet_closed;
+                        dbg!(format!("message to server: {:?}", &client_msg));
                         // TODO: error handling
                         server_write.send_msg(client_msg).await.unwrap();
                     } else {
@@ -132,6 +134,11 @@ where
             while let Some((session_id, proxyee)) = new_proxee_rx.next().await {
                 let (session_server_msg_tx, session_server_msg_rx) =
                     futures::channel::mpsc::channel(4);
+
+                // For some reason, the Sink return by with() needs the Item to be Clone
+                // for it to be cloneable. Obviously, I'm not going to clone the bytes.
+                // Session task creates a intermidiate channel for this.
+                // TODO: figure out a better way
                 let session_client_msg_tx = client_msg_tx.clone().with(move |msg| {
                     std::future::ready(Ok(protocol::msg::ClientMsg::SessionMsg(session_id, msg)))
                 });
@@ -222,8 +229,6 @@ where
                     }
                 };
 
-                dbg!(format!("message to server: {:?}", &client_msg));
-
                 tokio::spawn({
                     let mut server_write_tx = server_write_tx.clone();
                     let mut client_msg_tx = client_msg_tx.clone();
@@ -252,7 +257,6 @@ where
         let session_server_msg_senders = Arc::clone(&session_server_msg_senders);
         async move {
             while let Some(msg) = server_msg_rx.next().await {
-                dbg!(format!("message from server: {:?}", &msg));
                 match msg {
                     protocol::msg::ServerMsg::SessionMsg(session_id, server_msg) => {
                         if let Some(mut session_server_msg_sender) =

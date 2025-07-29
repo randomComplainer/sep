@@ -105,17 +105,39 @@ pub async fn run(
 
     let (mut target_read, mut target_write) = target_stream.into_split();
 
+    let (max_client_acked_tx, mut max_client_acked_rx) = tokio::sync::watch::channel(0);
+
+    let (mut client_write_funnel_tx, mut client_write_funnel_rx) =
+        futures::channel::mpsc::channel::<msg::ServerMsg>(1);
+
+    let funneling_server_msg = async move {
+        while let Some(msg) = client_write_funnel_rx.next().await {
+            client_write
+                .send(msg)
+                .await
+                .map_err(|_| ServerSessionError::ClientWriteClosed)?;
+        }
+
+        Ok::<_, ServerSessionError>(())
+    };
+
     let target_to_client = {
+        let mut client_write_funnel_tx = client_write_funnel_tx.clone();
         async move {
             let mut seq = 0;
             loop {
+                max_client_acked_rx
+                    .wait_for(|acked| seq - acked < 6)
+                    .await
+                    .unwrap();
+
                 // TODO: reuse buf & buf size
-                let mut buf = bytes::BytesMut::with_capacity(1024 * 4);
+                let mut buf = bytes::BytesMut::with_capacity(1024 * 8);
                 let n = match target_read.read_buf(&mut buf).await {
                     Ok(n) => n,
                     Err(err) => {
                         dbg!(format!("target read error: {:?}", err));
-                        let _ = client_write.send(msg::Eof { seq }.into()).await;
+                        let _ = client_write_funnel_tx.send(msg::Eof { seq }.into()).await;
                         return Err(ServerSessionError::TargetIoError(err));
                     }
                 };
@@ -124,7 +146,7 @@ pub async fn run(
                     break;
                 }
 
-                client_write
+                client_write_funnel_tx
                     .send(msg::Data { seq, data: buf }.into())
                     .await
                     .map_err(|_| ServerSessionError::ClientWriteClosed)?;
@@ -132,7 +154,7 @@ pub async fn run(
                 seq += 1;
             }
 
-            client_write
+            client_write_funnel_tx
                 .send(msg::Eof { seq }.into())
                 .await
                 .map_err(|_| ServerSessionError::ClientWriteClosed)?;
@@ -164,7 +186,7 @@ pub async fn run(
                         )));
                     }
                     msg::ClientMsg::Ack(ack) => {
-                        // TODO
+                        max_client_acked_tx.send(ack.seq).unwrap();
                     }
                     msg::ClientMsg::Eof(eof) => {
                         if heap.len() == heap.capacity() {
@@ -184,7 +206,7 @@ pub async fn run(
                 };
 
                 while heap.peek().map(|e| e.0.0 == next_seq).unwrap_or(false) {
-                    let super::client::StreamEntry(_seq, entry) = heap.pop().unwrap().0;
+                    let super::client::StreamEntry(seq, entry) = heap.pop().unwrap().0;
 
                     match entry {
                         super::client::StreamEntryValue::Data(data) => {
@@ -195,6 +217,8 @@ pub async fn run(
                                     dbg!(format!("target write error: {:?}", err));
                                 })
                                 .map_err(|err| ServerSessionError::TargetIoError(err))?;
+
+                            let _ = client_write_funnel_tx.send(msg::Ack { seq }.into()).await;
                         }
                         super::client::StreamEntryValue::Eof => {
                             return Ok(());
@@ -210,6 +234,7 @@ pub async fn run(
     };
 
     tokio::try_join! {
+        funneling_server_msg,
         target_to_client,
         client_to_target,
     }
