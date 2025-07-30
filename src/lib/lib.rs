@@ -4,6 +4,7 @@
 #![feature(assert_matches)]
 
 pub mod handover;
+pub mod sink_ext;
 
 #[macro_use]
 pub mod decode;
@@ -20,6 +21,7 @@ pub mod prelude {
     pub use crate::decode::*;
     pub use crate::encrypt::{EncryptedRead, EncryptedWrite};
     pub use crate::handover::ChannelExt as _;
+    pub use crate::sink_ext::SinkExt as _;
     pub use crate::{decode, protocol, session, socks5};
 }
 

@@ -135,13 +135,10 @@ where
                 let (session_server_msg_tx, session_server_msg_rx) =
                     futures::channel::mpsc::channel(4);
 
-                // For some reason, the Sink return by with() needs the Item to be Clone
-                // for it to be cloneable. Obviously, I'm not going to clone the bytes.
-                // Session task creates a intermidiate channel for this.
-                // TODO: figure out a better way
-                let session_client_msg_tx = client_msg_tx.clone().with(move |msg| {
-                    std::future::ready(Ok(protocol::msg::ClientMsg::SessionMsg(session_id, msg)))
-                });
+                let session_client_msg_tx = client_msg_tx
+                    .clone()
+                    .with_sync(move |msg| protocol::msg::ClientMsg::SessionMsg(session_id, msg));
+
                 session_server_msg_senders.insert(session_id, session_server_msg_tx);
 
                 let session_task =

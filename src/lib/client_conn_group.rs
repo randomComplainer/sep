@@ -138,10 +138,8 @@ where
                         let (client_msg_tx, client_msg_rx) = futures::channel::mpsc::channel(4);
                         let session_task = session::server::run(
                             client_msg_rx,
-                            server_msg_tx.clone().with(move |msg| {
-                                std::future::ready(Ok(protocol::msg::ServerMsg::SessionMsg(
-                                    session_id, msg,
-                                )))
+                            server_msg_tx.clone().with_sync(move |msg| {
+                                protocol::msg::ServerMsg::SessionMsg(session_id, msg)
                             }),
                         );
 

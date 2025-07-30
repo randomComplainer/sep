@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use bytes::BytesMut;
 use futures::prelude::*;
 use thiserror::Error;
@@ -26,12 +24,14 @@ pub enum ClientSessionError {
 pub async fn run<ProxyeeStream>(
     proxyee: socks5::agent::Init<ProxyeeStream>,
     mut server_read: impl Stream<Item = msg::ServerMsg> + Unpin,
-    mut server_write: impl Sink<msg::ClientMsg, Error = futures::channel::mpsc::SendError> + Unpin,
+    mut server_write: impl Sink<msg::ClientMsg, Error = futures::channel::mpsc::SendError>
+    + Unpin
+    + Clone,
 ) -> Result<(), ClientSessionError>
 where
     ProxyeeStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let result = run_inner(proxyee, &mut server_read, &mut server_write).await;
+    let result = run_inner(proxyee, &mut server_read, server_write.clone()).await;
 
     if let Err(ClientSessionError::ProxyeeSocks5(_)) = &result {
         let _ = server_write
@@ -45,7 +45,9 @@ where
 async fn run_inner<ProxyeeStream>(
     proxyee: socks5::agent::Init<ProxyeeStream>,
     server_read: &mut (impl Stream<Item = msg::ServerMsg> + Unpin),
-    server_write: &mut (impl Sink<msg::ClientMsg, Error = futures::channel::mpsc::SendError> + Unpin),
+    mut server_write: impl Sink<msg::ClientMsg, Error = futures::channel::mpsc::SendError>
+    + Unpin
+    + Clone,
 ) -> Result<(), ClientSessionError>
 where
     ProxyeeStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -97,27 +99,13 @@ where
 
     let (max_server_acked_tx, mut max_server_acked_rx) = tokio::sync::watch::channel(0);
 
-    let (mut server_write_funnel_tx, mut server_write_funnel_rx) =
-        futures::channel::mpsc::channel::<msg::ClientMsg>(1);
-
-    let funneling_client_msg = async move {
-        while let Some(msg) = server_write_funnel_rx.next().await {
-            server_write
-                .send(msg)
-                .await
-                .map_err(|_| ClientSessionError::ServerWriteClosed)?;
-        }
-
-        Ok::<_, ClientSessionError>(())
-    };
-
     let proxyee_to_server = {
-        let mut server_write_funnel_tx = server_write_funnel_tx.clone();
+        let mut server_write = server_write.clone();
         async move {
             let (buf, mut proxyee_read) = proxyee_read.into_parts();
             let mut seq = 0;
 
-            server_write_funnel_tx
+            server_write
                 .send(msg::Data { seq, data: buf }.into())
                 .await
                 .map_err(|_| ClientSessionError::ServerWriteClosed)?;
@@ -142,7 +130,7 @@ where
                     break;
                 }
 
-                server_write_funnel_tx
+                server_write
                     .send(msg::Data { seq, data: buf }.into())
                     .await
                     .map_err(|_| ClientSessionError::ServerWriteClosed)?;
@@ -150,7 +138,7 @@ where
                 seq += 1;
             }
 
-            server_write_funnel_tx
+            server_write
                 .send(msg::Eof { seq }.into())
                 .await
                 .map_err(|_| ClientSessionError::ServerWriteClosed)?;
@@ -211,7 +199,7 @@ where
                                 .await
                                 .map_err(|err| ClientSessionError::ProxyeeSocks5(err.into()))?;
 
-                            let _ = server_write_funnel_tx.send(msg::Ack { seq }.into()).await;
+                            let _ = server_write.send(msg::Ack { seq }.into()).await;
                         }
                         StreamEntryValue::Eof => {
                             return Ok(());
@@ -227,7 +215,6 @@ where
     };
 
     tokio::try_join! {
-        funneling_client_msg,
         proxyee_to_server,
         server_to_proxyee,
     }

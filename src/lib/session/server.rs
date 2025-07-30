@@ -64,7 +64,9 @@ async fn connect_target(addrs: Vec<SocketAddr>) -> Result<tokio::net::TcpStream,
 
 pub async fn run(
     mut client_read: impl Stream<Item = msg::ClientMsg> + Unpin,
-    mut client_write: impl Sink<msg::ServerMsg, Error = futures::channel::mpsc::SendError> + Unpin,
+    mut client_write: impl Sink<msg::ServerMsg, Error = futures::channel::mpsc::SendError>
+    + Unpin
+    + Clone,
 ) -> Result<(), ServerSessionError> {
     let req = match client_read.next().await {
         Some(msg) => match msg {
@@ -105,22 +107,8 @@ pub async fn run(
 
     let (max_client_acked_tx, mut max_client_acked_rx) = tokio::sync::watch::channel(0);
 
-    let (mut client_write_funnel_tx, mut client_write_funnel_rx) =
-        futures::channel::mpsc::channel::<msg::ServerMsg>(1);
-
-    let funneling_server_msg = async move {
-        while let Some(msg) = client_write_funnel_rx.next().await {
-            client_write
-                .send(msg)
-                .await
-                .map_err(|_| ServerSessionError::ClientWriteClosed)?;
-        }
-
-        Ok::<_, ServerSessionError>(())
-    };
-
     let target_to_client = {
-        let mut client_write_funnel_tx = client_write_funnel_tx.clone();
+        let mut client_write = client_write.clone();
         async move {
             let mut seq = 0;
             loop {
@@ -142,7 +130,7 @@ pub async fn run(
                     Ok(n) => n,
                     Err(err) => {
                         dbg!(format!("target read error: {:?}", err));
-                        let _ = client_write_funnel_tx.send(msg::Eof { seq }.into()).await;
+                        let _ = client_write.send(msg::Eof { seq }.into()).await;
                         return Err(ServerSessionError::TargetIoError(err));
                     }
                 };
@@ -151,7 +139,7 @@ pub async fn run(
                     break;
                 }
 
-                client_write_funnel_tx
+                client_write
                     .send(msg::Data { seq, data: buf }.into())
                     .await
                     .map_err(|_| ServerSessionError::ClientWriteClosed)?;
@@ -159,7 +147,7 @@ pub async fn run(
                 seq += 1;
             }
 
-            client_write_funnel_tx
+            client_write
                 .send(msg::Eof { seq }.into())
                 .await
                 .map_err(|_| ServerSessionError::ClientWriteClosed)?;
@@ -226,7 +214,7 @@ pub async fn run(
                                 })
                                 .map_err(|err| ServerSessionError::TargetIoError(err))?;
 
-                            let _ = client_write_funnel_tx.send(msg::Ack { seq }.into()).await;
+                            let _ = client_write.send(msg::Ack { seq }.into()).await;
                         }
                         super::client::StreamEntryValue::Eof => {
                             return Ok(());
@@ -242,7 +230,6 @@ pub async fn run(
     };
 
     tokio::try_join! {
-        funneling_server_msg,
         target_to_client,
         client_to_target,
     }
