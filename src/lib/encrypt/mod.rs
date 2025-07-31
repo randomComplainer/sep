@@ -67,5 +67,12 @@ mod encrypted_write {
             self.cipher.apply_keystream(buf);
             self.inner.write_all(buf).await
         }
+
+        pub async fn close(mut self) -> tokio::io::Result<()> {
+            self.inner.flush().await?;
+            self.inner.shutdown().await?;
+            drop(self.inner);
+            Ok(())
+        }
     }
 }

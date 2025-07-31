@@ -5,39 +5,41 @@ use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
-use crate::decode::*;
+use crate::prelude::*;
+use decode::BufDecoder;
 
 pub mod msg {
     use super::*;
+    use crate::decode::*;
 
-    pub struct RefClientGreeding {
-        pub ver: RefU8,
-        pub methods: RefSlice,
+    #[derive(Debug)]
+    pub struct ClientGreeting {
+        pub ver: u8,
+        pub methods: BytesMut,
     }
 
-    pub fn peek_client_greeding_message(
-        cursor: &mut std::io::Cursor<&[u8]>,
-    ) -> Result<Option<RefClientGreeding>, Socks5Error> {
-        let ver = try_peek!(cursor.peek_u8());
-        let methods = try_peek!(cursor.peek_oct_len_slice());
-
-        Ok(Some(RefClientGreeding { ver, methods }))
+    pub struct ClientGreetingReader {
+        pub ver: U8Reader,
+        pub methods: SliceReader,
     }
 
-    pub struct ViewClientGreeding(RefClientGreeding, BytesMut);
-
-    impl ViewClientGreeding {
-        pub fn new(greeting: RefClientGreeding, msg_bytes: BytesMut) -> Self {
-            Self(greeting, msg_bytes)
+    impl Reader for ClientGreetingReader {
+        type Value = ClientGreeting;
+        fn read(&self, buf: &mut BytesMut) -> ClientGreeting {
+            ClientGreeting {
+                ver: self.ver.read(buf),
+                methods: self.methods.read(buf),
+            }
         }
+    }
 
-        pub fn ver(&self) -> u8 {
-            self.0.ver.read(self.1.as_ref())
-        }
-
-        pub fn methods(&self) -> &[u8] {
-            self.0.methods.read(self.1.as_ref())
-        }
+    pub fn client_greeting_peeker() -> impl Peeker<ClientGreeting, Reader = ClientGreetingReader> {
+        peek::wrap(|cursor| {
+            Ok(Some(ClientGreetingReader {
+                ver: crate::peek!(u8_peeker().peek(cursor)),
+                methods: crate::peek!(slice_peeker_u8_len().peek(cursor)),
+            }))
+        })
     }
 
     pub struct MethodSelection {
@@ -52,63 +54,46 @@ pub mod msg {
         return Ok(buf);
     }
 
-    pub struct RefRequest {
-        pub ver: RefU8,
-        pub cmd: RefU8,
-        pub rsv: RefU8,
-        pub addr: RefAddr,
-        pub port: RefU16,
+    #[derive(Debug)]
+    pub struct ClientRequest {
+        pub ver: u8,
+        pub cmd: u8,
+        pub rsv: u8,
+        pub addr: ReadRequestAddr,
+        pub port: u16,
     }
 
-    pub fn peek_request(
-        cursor: &mut std::io::Cursor<&[u8]>,
-    ) -> Result<Option<RefRequest>, Socks5Error> {
-        let ver = try_peek!(cursor.peek_u8());
-        let cmd = try_peek!(cursor.peek_u8());
-        let rsv = try_peek!(cursor.peek_u8());
-        let addr = try_peek!(peek_addr(cursor)?);
-        let port = try_peek!(cursor.peek_u16());
-
-        Ok(Some(RefRequest {
-            ver,
-            cmd,
-            rsv,
-            addr,
-            port,
-        }))
+    pub struct ClientRequestReader {
+        pub ver: U8Reader,
+        pub cmd: U8Reader,
+        pub rsv: U8Reader,
+        pub addr: ReadRequestAddrReader,
+        pub port: U16Reader,
     }
 
-    pub struct ViewRequest(pub RefRequest, BytesMut);
-    impl ViewRequest {
-        pub fn new(request: RefRequest, msg_bytes: BytesMut) -> Self {
-            Self(request, msg_bytes)
+    impl Reader for ClientRequestReader {
+        type Value = ClientRequest;
+        fn read(&self, buf: &mut BytesMut) -> ClientRequest {
+            ClientRequest {
+                ver: self.ver.read(buf),
+                cmd: self.cmd.read(buf),
+                rsv: self.rsv.read(buf),
+                addr: self.addr.read(buf),
+                port: self.port.read(buf),
+            }
         }
+    }
 
-        pub fn ver(&self) -> u8 {
-            self.0.ver.read(self.1.as_ref())
-        }
-
-        pub fn cmd(&self) -> u8 {
-            self.0.cmd.read(self.1.as_ref())
-        }
-
-        pub fn rsv(&self) -> u8 {
-            self.0.rsv.read(self.1.as_ref())
-        }
-
-        pub fn addr(&self) -> ViewAddr {
-            self.0.addr.read(self.1.as_ref())
-        }
-
-        // in Socks5 format, including port
-        pub fn addr_bytes_mut(&mut self) -> &mut [u8] {
-            self.1[self.0.addr.offset() - 1..self.0.addr.offset() - 1 + self.0.addr.len() + 2]
-                .as_mut()
-        }
-
-        pub fn port(&self) -> u16 {
-            self.0.port.read(self.1.as_ref())
-        }
+    pub fn client_request_peeker() -> impl Peeker<ClientRequest, Reader = ClientRequestReader> {
+        peek::wrap(|cursor| {
+            Ok(Some(ClientRequestReader {
+                ver: crate::peek!(u8_peeker().peek(cursor)),
+                cmd: crate::peek!(u8_peeker().peek(cursor)),
+                rsv: crate::peek!(u8_peeker().peek(cursor)),
+                addr: crate::peek!(request_addr_peeker().peek(cursor)),
+                port: crate::peek!(u16_peeker().peek(cursor)),
+            }))
+        })
     }
 
     pub struct Reply<'a> {
@@ -145,12 +130,30 @@ pub enum Socks5Error {
     #[error("io error")]
     Io(#[from] std::io::Error),
 
+    #[error("protocol error: {0}")]
+    Protocol(String),
+
     #[error("Error at '{context}': {source}")]
     Contextualized {
         context: &'static str,
         #[source]
         source: Box<Socks5Error>,
     },
+}
+
+impl From<String> for Socks5Error {
+    fn from(s: String) -> Self {
+        Self::Protocol(s)
+    }
+}
+
+impl Socks5Error {
+    pub fn from_decode_error(err: DecodeError) -> Self {
+        match err {
+            DecodeError::InvalidStream(str) => Socks5Error::Protocol(str),
+            DecodeError::Io(err) => Socks5Error::Io(err),
+        }
+    }
 }
 
 pub trait Contextualize<Ok> {
@@ -203,19 +206,20 @@ pub mod agent {
 
         pub async fn receive_greeting_message(
             mut self,
-        ) -> Result<(msg::ViewClientGreeding, Greeted<Stream>), Socks5Error> {
-            let (greeting_msg, msg_bytes) = self
+        ) -> Result<(msg::ClientGreeting, Greeted<Stream>), Socks5Error> {
+            let greeting_msg = self
                 .stream_read
-                .try_decode(peek_client_greeding_message)
+                .read_next(msg::client_greeting_peeker())
                 .await
+                .map_err(Socks5Error::from_decode_error)
                 .and_then(|msg_opt| match msg_opt {
                     Some(msg) => Ok(msg),
                     None => Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into()),
                 })
-                .contextualize_err("receving client greeting message")?;
+                .contextualize_err("receving proxyee greeting message")?;
 
             Ok((
-                ViewClientGreeding::new(greeting_msg, msg_bytes),
+                greeting_msg,
                 Greeted::new(self.stream_read, self.stream_write),
             ))
         }
@@ -246,27 +250,25 @@ pub mod agent {
         pub async fn send_method_selection_message(
             mut self,
             method: u8,
-        ) -> Result<(ViewRequest, Requested<Stream>), Socks5Error> {
+        ) -> Result<(ClientRequest, Requested<Stream>), Socks5Error> {
             let buf = msg::encode_method_selection(msg::MethodSelection { ver: 5, method })?;
             self.stream_write
                 .write_all(buf.as_ref())
                 .await
                 .contextualize_err("sending method selection message")?;
 
-            let (req_msg, msg_bytes) = self
+            let req_msg = self
                 .stream_read
-                .try_decode(peek_request)
+                .read_next(msg::client_request_peeker())
                 .await
+                .map_err(Socks5Error::from_decode_error)
                 .and_then(|msg_opt| match msg_opt {
                     Some(msg) => Ok(msg),
                     None => Err(std::io::Error::other("unexpected eof").into()),
                 })
                 .contextualize_err("receving request message")?;
 
-            Ok((
-                ViewRequest::new(req_msg, msg_bytes),
-                Requested::new(self.stream_read, self.stream_write),
-            ))
+            Ok((req_msg, Requested::new(self.stream_read, self.stream_write)))
         }
     }
 
@@ -306,6 +308,22 @@ pub mod agent {
             self.stream_write.write_all(buf.as_ref()).await?;
 
             Ok((self.stream_read, self.stream_write))
+        }
+
+        pub async fn reply_error(mut self, err_code: u8) -> Result<(), std::io::Error> {
+            let buf = msg::encode_reply(&msg::Reply {
+                ver: 5,
+                rep: err_code,
+                rsv: 0,
+                addr: &SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)),
+                    0,
+                ),
+            })?;
+
+            self.stream_write.write_all(buf.as_ref()).await?;
+
+            Ok(())
         }
     }
 

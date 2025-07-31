@@ -23,10 +23,13 @@ path = "src/quick_test.rs"
 bytes = { version = "1.10.1", features = ["std"] }
 chacha20 = "0.9.1"
 clap = { version = "4.5.40", features = ["derive"] }
+dashmap = "6.1.0"
 derive_more = { version = "2.0.1", features = ["from"] }
 futures = "0.3.31"
+moro = "0.4.0"
 rand = "0.9.1"
 sha2 = "0.10.9"
 thiserror = "2.0.12"
 tokio = { version = "1.45.1", features = ["full", "test-util"] }
+tokio-test = "0.4.4"
 
