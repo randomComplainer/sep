@@ -5,6 +5,7 @@ use thiserror::Error;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::msg;
+use super::sequence::*;
 use crate::prelude::*;
 
 #[derive(Error, Debug)]
@@ -159,9 +160,8 @@ pub async fn run(
     let client_to_target = {
         async move {
             // TODO: magic capacity
-            let mut heap = std::collections::BinaryHeap::<
-                std::cmp::Reverse<super::client::StreamEntry>,
-            >::with_capacity(16);
+            let mut heap =
+                std::collections::BinaryHeap::<std::cmp::Reverse<StreamEntry>>::with_capacity(16);
 
             let mut next_seq = 0u16;
 
@@ -174,9 +174,7 @@ pub async fn run(
                             ));
                         }
 
-                        heap.push(std::cmp::Reverse(super::client::StreamEntry::data(
-                            data.seq, data.data,
-                        )));
+                        heap.push(std::cmp::Reverse(StreamEntry::data(data.seq, data.data)));
                     }
                     msg::ClientMsg::Ack(ack) => {
                         let _ = max_client_acked_tx.send(ack.seq);
@@ -188,7 +186,7 @@ pub async fn run(
                             ));
                         }
 
-                        heap.push(std::cmp::Reverse(super::client::StreamEntry::eof(eof.seq)));
+                        heap.push(std::cmp::Reverse(StreamEntry::eof(eof.seq)));
                     }
                     msg::ClientMsg::ProxyeeIoError(_) => {
                         return Ok(());
@@ -202,10 +200,10 @@ pub async fn run(
                 };
 
                 while heap.peek().map(|e| e.0.0 == next_seq).unwrap_or(false) {
-                    let super::client::StreamEntry(seq, entry) = heap.pop().unwrap().0;
+                    let StreamEntry(seq, entry) = heap.pop().unwrap().0;
 
                     match entry {
-                        super::client::StreamEntryValue::Data(data) => {
+                        StreamEntryValue::Data(data) => {
                             target_write
                                 .write_all(data.as_ref())
                                 .await
@@ -216,7 +214,7 @@ pub async fn run(
 
                             let _ = client_write.send(msg::Ack { seq }.into()).await;
                         }
-                        super::client::StreamEntryValue::Eof => {
+                        StreamEntryValue::Eof => {
                             return Ok(());
                         }
                     }
