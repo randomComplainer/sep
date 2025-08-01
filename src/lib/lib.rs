@@ -5,6 +5,7 @@
 
 pub mod handover;
 pub mod sink_ext;
+pub mod task_scope;
 
 #[macro_use]
 pub mod decode;
@@ -23,5 +24,6 @@ pub mod prelude {
     pub use crate::encrypt::{EncryptedRead, EncryptedWrite};
     pub use crate::handover::ChannelExt as _;
     pub use crate::sink_ext::SinkExt as _;
+    pub use crate::task_scope::scope;
     pub use crate::{decode, protocol, session, socks5};
 }
