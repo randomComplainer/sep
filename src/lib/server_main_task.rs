@@ -22,13 +22,11 @@ pub async fn run<ClientStream, Cipher>(
     > + Unpin,
 ) -> Result<(), std::io::Error>
 where
-    ClientStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-    Cipher: StreamCipher + Unpin + Send + 'static,
+    ClientStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Sync + Send + 'static,
+    Cipher: StreamCipher + Unpin + Sync + Send + 'static,
 {
-    let mut conn_senders = HashMap::<
-        Box<protocol::ClientId>,
-        handover::Sender<Greeted<ClientStream, Cipher>>,
-    >::new();
+    let mut conn_senders =
+        HashMap::<Box<protocol::ClientId>, handover::Sender<Greeted<ClientStream, Cipher>>>::new();
 
     let (worker_ending_tx, mut worker_ending_rx) = mpsc::channel::<(
         Box<protocol::ClientId>,
@@ -93,4 +91,3 @@ where
         };
     }
 }
-

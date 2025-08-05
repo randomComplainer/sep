@@ -70,6 +70,7 @@ where
 }
 
 unsafe impl<T: Send> Send for Sender<T> {}
+unsafe impl<T: Send> Sync for Sender<T> {}
 
 impl<T> Sender<T>
 where
@@ -139,6 +140,7 @@ impl<T: Send> Channel<T> for Sender<T> {
 }
 
 unsafe impl<T: Send> Send for Receiver<T> {}
+unsafe impl<T: Send> Sync for Receiver<T> {}
 
 pub struct Receiver<T>
 where

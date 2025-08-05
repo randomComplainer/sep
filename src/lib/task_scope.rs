@@ -7,11 +7,20 @@ use futures::stream::FuturesUnordered;
 
 use drop_guard::DropGuard;
 
-type Fut<E> = Pin<Box<dyn futures::Future<Output = Result<(), E>>>>;
+// TODO: revisit these (Sync + Send + 'static) bounds
 
-#[derive(Clone)]
+type Fut<E> = Pin<Box<dyn futures::Future<Output = Result<(), E>> + Send + 'static>>;
+
 pub struct ScopeHandle<E> {
     task_tx: mpsc::Sender<Fut<E>>,
+}
+
+impl<E> Clone for ScopeHandle<E> {
+    fn clone(&self) -> Self {
+        Self {
+            task_tx: self.task_tx.clone(),
+        }
+    }
 }
 
 impl<E> ScopeHandle<E> {
@@ -23,7 +32,7 @@ impl<E> ScopeHandle<E> {
 impl<E> ScopeHandle<E> {
     pub async fn run_async<F>(&mut self, future: F) -> Result<(), mpsc::SendError>
     where
-        F: Future<Output = Result<(), E>> + 'static,
+        F: Future<Output = Result<(), E>> + Send + 'static,
     {
         self.task_tx.send(Box::pin(future)).await
     }
@@ -39,7 +48,7 @@ impl<E> ScopeHandle<E> {
     }
 }
 
-async fn main_loop<E>(mut task_rx: mpsc::Receiver<Fut<E>>) -> E {
+async fn main_loop<E: Send>(mut task_rx: mpsc::Receiver<Fut<E>>) -> E {
     let mut list: FuturesUnordered<Fut<E>> = FuturesUnordered::new();
     loop {
         match futures::future::select(task_rx.next(), list.next()).await {
@@ -58,7 +67,8 @@ async fn main_loop<E>(mut task_rx: mpsc::Receiver<Fut<E>>) -> E {
                     // internal queue is empty
                     // but we want to wait for more tasks to be pushed
                     None => {
-                        list.push(task_rx.next().await.unwrap());
+                        let next_task = task_rx.next().await.unwrap();
+                        list.push(next_task);
                     }
                 }
             }
@@ -66,8 +76,9 @@ async fn main_loop<E>(mut task_rx: mpsc::Receiver<Fut<E>>) -> E {
     }
 }
 
-pub fn scope<E>() -> (ScopeHandle<E>, impl Future<Output = E>) {
-    let (task_tx, task_rx) = mpsc::channel(1);
+pub fn new_scope<E: Sync + Send>() -> (ScopeHandle<E>, impl Future<Output = E> + Send) {
+    // TODO: unbounded
+    let (task_tx, task_rx) = mpsc::channel(64);
     (ScopeHandle::new(task_tx), main_loop(task_rx))
 }
 
@@ -138,7 +149,7 @@ mod tests {
 
     #[test]
     fn initial_state() {
-        let (handle, task) = scope::<usize>();
+        let (handle, task) = new_scope::<usize>();
         let mut task = tokio_test::task::spawn(task);
         assert_eq!(std::task::Poll::Pending, task.poll());
         drop(handle);
@@ -146,7 +157,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_err() {
-        let (mut handle, task) = scope::<usize>();
+        let (mut handle, task) = new_scope::<usize>();
         handle.run_async(async move { Err(3) }).await.unwrap();
         assert_eq!(3, task.await);
     }
@@ -154,7 +165,7 @@ mod tests {
     #[test]
     fn send_ok() {
         let sied_effect = Arc::new(AtomicBool::new(false));
-        let (mut handle, task) = scope::<usize>();
+        let (mut handle, task) = new_scope::<usize>();
         let mut task = tokio_test::task::spawn(task);
 
         assert_eq!(
@@ -176,7 +187,7 @@ mod tests {
 
     #[tokio::test]
     async fn async_spawn() {
-        let (mut handle, scpoe_task) = scope::<usize>();
+        let (mut handle, scpoe_task) = new_scope::<usize>();
 
         let lock = Arc::new(tokio::sync::Notify::new());
         let task = {
@@ -196,7 +207,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_on_drop() {
         let counter = Arc::new(());
-        let (mut handle, scpoe_task) = scope::<usize>();
+        let (mut handle, scpoe_task) = new_scope::<usize>();
 
         let task = {
             let counter = counter.clone();
@@ -218,4 +229,3 @@ mod tests {
         assert_eq!(1, Arc::strong_count(&counter));
     }
 }
-
