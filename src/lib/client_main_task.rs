@@ -88,7 +88,10 @@ where
 // Server Io Error for retry
 // Protpcol Error for exit
 pub async fn run<ProxyeeStream, ServerStream, Cipher, ConnectServerFut>(
-    mut new_proxee_rx: impl Stream<Item = (u16, socks5::agent::Init<ProxyeeStream>)> + Unpin + Send,
+    mut new_proxee_rx: impl Stream<Item = (u16, socks5::agent::Init<ProxyeeStream>)>
+    + Unpin
+    + Send
+    + 'static,
     connect_to_server: impl (Fn() -> ConnectServerFut) + Clone + Send + Sync + Unpin + 'static,
     max_server_conn: usize,
 ) -> Result<(), ClientError>
@@ -124,165 +127,191 @@ where
 
     let server_conn_count = Arc::new(AtomicUsize::new(0));
 
-    let (err_tx, mut err_rx) = futures::channel::mpsc::channel::<ClientError>(1);
+    let (mut scope_handle, scope_task) = task_scope::new_scope::<ClientError>();
 
-    let accepting_proxyee = {
-        let client_msg_tx = client_msg_tx.clone();
-        let session_server_msg_senders = Arc::clone(&session_server_msg_senders);
-        let err_tx = err_tx.clone();
-        async move {
-            while let Some((session_id, proxyee)) = new_proxee_rx.next().await {
-                let (session_server_msg_tx, session_server_msg_rx) =
-                    futures::channel::mpsc::channel(4);
+    // accepting proxyee
+    scope_handle
+        .run_async({
+            let client_msg_tx = client_msg_tx.clone();
+            let session_server_msg_senders = Arc::clone(&session_server_msg_senders);
+            let mut scope_handle = scope_handle.clone();
+            async move {
+                while let Some((session_id, proxyee)) = new_proxee_rx.next().await {
+                    let (session_server_msg_tx, session_server_msg_rx) =
+                        futures::channel::mpsc::channel(4);
 
-                let session_client_msg_tx = client_msg_tx
-                    .clone()
-                    .with_sync(move |msg| protocol::msg::ClientMsg::SessionMsg(session_id, msg));
+                    let session_client_msg_tx = client_msg_tx.clone().with_sync(move |msg| {
+                        protocol::msg::ClientMsg::SessionMsg(session_id, msg)
+                    });
 
-                session_server_msg_senders.insert(session_id, session_server_msg_tx);
+                    session_server_msg_senders.insert(session_id, session_server_msg_tx);
 
-                let session_task =
-                    session::client::run(proxyee, session_server_msg_rx, session_client_msg_tx);
+                    scope_handle
+                        .run_async({
+                            let session_server_msg_senders =
+                                Arc::clone(&session_server_msg_senders);
+                            async move {
+                                let session_result = session::client::run(
+                                    proxyee,
+                                    session_server_msg_rx,
+                                    session_client_msg_tx,
+                                )
+                                .await;
 
-                tokio::spawn({
-                    let session_server_msg_senders = Arc::clone(&session_server_msg_senders);
-                    let mut err_tx = err_tx.clone();
-                    async move {
-                        match session_task.await {
-                            Ok(_) => {}
-                            Err(err) => {
-                                dbg!(format!("session task failed: {:?}", err));
-                                if let session::client::ClientSessionError::Protocol(err) = err {
-                                    let _ = err_tx
-                                        .send(ClientError::SessionProtocol(session_id, err))
-                                        .await;
+                                session_server_msg_senders.remove(&session_id);
+
+                                match session_result {
+                                    Ok(_) => {
+                                        dbg!(format!("session task ended"));
+                                        Ok(())
+                                    }
+                                    Err(err) => {
+                                        dbg!(format!("session task failed: {:?}", err));
+                                        if let session::client::ClientSessionError::Protocol(err) =
+                                            err
+                                        {
+                                            return Err(ClientError::SessionProtocol(
+                                                session_id, err,
+                                            ));
+                                        } else {
+                                            Ok(())
+                                        }
+                                    }
                                 }
                             }
-                        }
+                        })
+                        .await
+                        .unwrap();
+                }
 
-                        session_server_msg_senders.remove(&session_id);
-                    }
-                });
+                Ok::<_, ClientError>(())
             }
-
-            Ok::<_, ClientError>(())
-        }
-    };
+        })
+        .await
+        .unwrap();
 
     let register_new_server_conn = {
         let server_msg_tx = server_msg_tx.clone();
         let server_conn_count = Arc::clone(&server_conn_count);
+        let scope_handle = scope_handle.clone();
 
         async move || {
             let server_msg_tx = server_msg_tx.clone();
             let server_conn_count = Arc::clone(&server_conn_count);
+            let mut scope_handle = scope_handle.clone();
             server_conn_count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
             let (conn_client_msg_tx, conn_client_msg_rx) = handover::channel();
             let connect_to_server = connect_to_server.clone();
 
-            tokio::spawn(async move {
-                // TODO: error handling
-                match server_connection_lifetime_task(
-                    connect_to_server,
-                    conn_client_msg_rx,
-                    server_msg_tx,
-                )
-                .await
-                {
-                    Ok(_) => {
-                        dbg!(format!("server connection lifetime task ended"));
-                    }
-                    Err(err) => {
-                        dbg!(format!("server connection lifetime task failed: {:?}", err));
-                    }
-                }
+            scope_handle
+                .run_async(async move {
+                    // TODO: error handling
+                    let result = server_connection_lifetime_task(
+                        connect_to_server,
+                        conn_client_msg_rx,
+                        server_msg_tx,
+                    )
+                    .await;
 
-                server_conn_count.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-            });
+                    server_conn_count.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+
+                    match result {
+                        Ok(_) => {
+                            dbg!(format!("server connection lifetime task ended"));
+                            Ok(())
+                        }
+                        Err(err) => {
+                            dbg!(format!("server connection lifetime task failed: {:?}", err));
+                            Err(ClientError::LostConnection)
+                        }
+                    }
+                })
+                .await
+                .unwrap();
 
             Ok::<_, ClientError>(conn_client_msg_tx)
         }
     };
 
-    let sending_msg_to_server = {
-        let mut server_write_tx = server_write_tx.clone();
-        async move {
-            while let Some(client_msg) = client_msg_rx.next().await {
-                let mut server_write = {
-                    match server_write_rx.try_next() {
-                        Ok(Some(server_write)) => server_write,
-                        _ => {
-                            if server_conn_count.load(std::sync::atomic::Ordering::Acquire)
-                                < max_server_conn
+    // sending msg to server
+    scope_handle
+        .run_async({
+            let mut server_write_tx = server_write_tx.clone();
+            let mut scope_handle = scope_handle.clone();
+            async move {
+                while let Some(client_msg) = client_msg_rx.next().await {
+                    let mut server_write = {
+                        match server_write_rx.try_next() {
+                            Ok(Some(server_write)) => server_write,
+                            _ => {
+                                if server_conn_count.load(std::sync::atomic::Ordering::Acquire)
+                                    < max_server_conn
+                                {
+                                    // TODO: error handling
+                                    // maybe don't await?
+                                    let conn_client_msg_tx = register_new_server_conn().await?;
+                                    server_write_tx.send(conn_client_msg_tx).await.unwrap();
+                                }
+                                server_write_rx.next().await.unwrap()
+                            }
+                        }
+                    };
+
+                    scope_handle
+                        .run_async({
+                            let mut server_write_tx = server_write_tx.clone();
+                            let mut client_msg_tx = client_msg_tx.clone();
+
+                            async move {
+                                // if connection server write is closed,
+                                // don't queue it back
+                                match server_write.send(client_msg).await {
+                                    Ok(_) => {
+                                        let _ = server_write_tx.send(server_write).await;
+                                    }
+                                    Err(server_msg) => {
+                                        // TODO: Err?
+                                        client_msg_tx.send(server_msg).await.unwrap();
+                                    }
+                                };
+
+                                Ok::<_, ClientError>(())
+                            }
+                        })
+                        .await
+                        .unwrap();
+                }
+
+                Ok::<_, ClientError>(())
+            }
+        })
+        .await
+        .unwrap();
+
+    // receiving msg from server
+    scope_handle
+        .run_async({
+            let session_server_msg_senders = Arc::clone(&session_server_msg_senders);
+            async move {
+                while let Some(msg) = server_msg_rx.next().await {
+                    match msg {
+                        protocol::msg::ServerMsg::SessionMsg(session_id, server_msg) => {
+                            if let Some(mut session_server_msg_sender) =
+                                session_server_msg_senders.get_mut(&session_id)
                             {
-                                // TODO: error handling
-                                // maybe don't await?
-                                let conn_client_msg_tx = register_new_server_conn().await?;
-                                server_write_tx.send(conn_client_msg_tx).await.unwrap();
+                                // sessiion could be ended, dont care about error
+                                let _ = session_server_msg_sender.send(server_msg).await;
                             }
-                            server_write_rx.next().await.unwrap()
                         }
-                    }
-                };
+                    };
+                }
 
-                tokio::spawn({
-                    let mut server_write_tx = server_write_tx.clone();
-                    let mut client_msg_tx = client_msg_tx.clone();
-
-                    async move {
-                        // if connection server write is closed,
-                        // don't queue it back
-                        match server_write.send(client_msg).await {
-                            Ok(_) => {
-                                let _ = server_write_tx.send(server_write).await;
-                            }
-                            Err(server_msg) => {
-                                // TODO: Err?
-                                client_msg_tx.send(server_msg).await.unwrap();
-                            }
-                        };
-                    }
-                });
+                Ok::<_, ClientError>(())
             }
+        })
+        .await
+        .unwrap();
 
-            Ok::<_, ClientError>(())
-        }
-    };
-
-    let receiving_msg_from_server = {
-        let session_server_msg_senders = Arc::clone(&session_server_msg_senders);
-        async move {
-            while let Some(msg) = server_msg_rx.next().await {
-                match msg {
-                    protocol::msg::ServerMsg::SessionMsg(session_id, server_msg) => {
-                        if let Some(mut session_server_msg_sender) =
-                            session_server_msg_senders.get_mut(&session_id)
-                        {
-                            // sessiion could be ended, dont care about error
-                            let _ = session_server_msg_sender.send(server_msg).await;
-                        }
-                    }
-                };
-            }
-
-            Ok::<_, ClientError>(())
-        }
-    };
-
-    let checking_err = async move { err_rx.next().await.unwrap() };
-
-    let looping_task = async move {
-        tokio::try_join! {
-            accepting_proxyee,
-            sending_msg_to_server,
-            receiving_msg_from_server,
-        }
-        .map(|_| ())
-    };
-
-    match futures::future::select(checking_err.boxed(), looping_task.boxed()).await {
-        future::Either::Left((err, _)) => Err(err),
-        future::Either::Right((r, _)) => r,
-    }
+    Err(scope_task.await)
 }
