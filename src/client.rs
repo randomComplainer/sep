@@ -7,10 +7,10 @@ use std::sync::Arc;
 
 use clap::Parser;
 use futures::prelude::*;
-use rand::Rng;
 use rand::RngCore as _;
 use sep_lib::client_main_task;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tracing::*;
+use tracing_subscriber::prelude::*;
 
 use sep_lib::prelude::*;
 
@@ -32,9 +32,16 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
+    // TODO: configurable pretty
+    let layer = tracing_subscriber::fmt::layer()
+        // .pretty()
+        .json()
+        .with_writer(std::io::stderr);
+    let subscriber = tracing_subscriber::Registry::default().with(layer);
+    tracing::subscriber::set_global_default(subscriber).unwrap();
+
     let args = Args::parse();
-    dbg!(&args);
-    println!("Hello world from client");
+    info!(?args, "starting client");
 
     let bound_addr = SocketAddr::new(args.bound_addr, args.port);
 
