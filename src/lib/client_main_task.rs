@@ -1,9 +1,11 @@
 use std::sync::{Arc, atomic::AtomicUsize};
+use std::time::SystemTime;
 
 use chacha20::cipher::StreamCipher;
 use dashmap::DashMap;
 use futures::prelude::*;
 use thiserror::Error;
+use tracing::*;
 
 use crate::handover;
 use crate::prelude::*;
@@ -137,6 +139,15 @@ where
             let mut scope_handle = scope_handle.clone();
             async move {
                 while let Some((session_id, proxyee)) = new_proxee_rx.next().await {
+                    let socks5_span = info_span!(
+                        "session",
+                        socks5_port = session_id,
+                        start_time = SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs()
+                    );
+
                     let (session_server_msg_tx, session_server_msg_rx) =
                         futures::channel::mpsc::channel(4);
 
@@ -161,12 +172,9 @@ where
                                 session_server_msg_senders.remove(&session_id);
 
                                 match session_result {
-                                    Ok(_) => {
-                                        dbg!(format!("session task ended"));
-                                        Ok(())
-                                    }
+                                    Ok(_) => Ok(()),
                                     Err(err) => {
-                                        dbg!(format!("session task failed: {:?}", err));
+                                        error!("session task failed: {:?}", err);
                                         if let session::client::ClientSessionError::Protocol(err) =
                                             err
                                         {
@@ -179,6 +187,7 @@ where
                                     }
                                 }
                             }
+                            .instrument(socks5_span)
                         })
                         .await
                         .unwrap();

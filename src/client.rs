@@ -10,6 +10,7 @@ use futures::prelude::*;
 use rand::RngCore as _;
 use sep_lib::client_main_task;
 use tracing::*;
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::prelude::*;
 
 use sep_lib::prelude::*;
@@ -34,8 +35,9 @@ struct Args {
 async fn main() {
     // TODO: configurable pretty
     let layer = tracing_subscriber::fmt::layer()
-        // .pretty()
-        .json()
+        .pretty()
+        // .json()
+        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
         .with_writer(std::io::stderr);
     let subscriber = tracing_subscriber::Registry::default().with(layer);
     tracing::subscriber::set_global_default(subscriber).unwrap();
