@@ -62,7 +62,8 @@ async fn main() {
         let listener = socks5::agent::Socks5Listener::bind(bound_addr)
             .await
             .unwrap();
-        println!("Listening at {}...", bound_addr);
+
+        info!("Listening at {}...", bound_addr);
 
         let (mut new_proxee_tx, new_proxee_rx) = futures::channel::mpsc::channel(4);
         let channeling_new_proxee: impl Future<Output = Result<(), client_main_task::ClientError>> = async move {
@@ -116,11 +117,13 @@ async fn main() {
             Err(err) => match err {
                 client_main_task::ClientError::SessionProtocol(session_id, err) => {
                     // protocol error means bug, exit
-                    println!("session protocol error: session id {}: {}", session_id, err);
+                    error!("session protocol error: session id {}: {}", session_id, err);
                     return;
                 }
                 client_main_task::ClientError::LostConnection => {
-                    println!("lost connection to server");
+                    // lost connection to server
+                    // retry later
+                    error!("lost connection to server");
                     tokio::time::sleep(std::time::Duration::from_secs(20)).await;
                     continue;
                 }

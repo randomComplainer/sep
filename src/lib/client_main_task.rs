@@ -44,7 +44,7 @@ where
 
     let reciving_msg_from_server = async move {
         while let Some(msg) = server_read.recv_msg().await.unwrap() {
-            dbg!(format!("message from server: {:?}", &msg));
+            debug!("message from server: {:?}", &msg);
             server_msg_tx.send(msg).await.unwrap();
         }
 
@@ -68,7 +68,7 @@ where
                 futures::future::Either::Right((client_msg_opt, not_yet_closed)) => {
                     if let Some(client_msg) = client_msg_opt {
                         close_notify_rx = not_yet_closed;
-                        dbg!(format!("message to server: {:?}", &client_msg));
+                        debug!("message to server: {:?}", &client_msg);
                         // TODO: error handling
                         server_write.send_msg(client_msg).await.unwrap();
                     } else {
@@ -214,28 +214,32 @@ where
             let connect_to_server = connect_to_server.clone();
 
             scope_handle
-                .run_async(async move {
-                    // TODO: error handling
-                    let result = server_connection_lifetime_task(
-                        connect_to_server,
-                        conn_client_msg_rx,
-                        server_msg_tx,
-                    )
-                    .await;
+                .run_async(
+                    async move {
+                        // TODO: error handling
+                        let result = server_connection_lifetime_task(
+                            connect_to_server,
+                            conn_client_msg_rx,
+                            server_msg_tx,
+                        )
+                        .await;
 
-                    server_conn_count.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                        server_conn_count.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
 
-                    match result {
-                        Ok(_) => {
-                            dbg!(format!("server connection lifetime task ended"));
-                            Ok(())
-                        }
-                        Err(err) => {
-                            dbg!(format!("server connection lifetime task failed: {:?}", err));
-                            Err(ClientError::LostConnection)
+                        match result {
+                            Ok(_) => {
+                                debug!("server connection lifetime task ended");
+                                Ok(())
+                            }
+                            Err(err) => {
+                                debug!("server connection lifetime task failed: {:?}", err);
+                                Err(ClientError::LostConnection)
+                            }
                         }
                     }
-                })
+                    // TODO: record connection identifier in the span
+                    .instrument(info_span!("server connection")),
+                )
                 .await
                 .unwrap();
 

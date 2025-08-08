@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use chacha20::cipher::StreamCipher;
 use futures::channel::mpsc;
 use futures::prelude::*;
+use tracing::*;
 
 use crate::handover;
 use crate::prelude::*;
@@ -65,15 +66,15 @@ where
                             let channel_ref = match worker.await {
                                 Ok(channel_ref) => channel_ref,
                                 Err((channel_ref, err)) => {
-                                    dbg!(format!("worker task failed: {:?}", err));
+                                    error!("worker task failed: {:?}", err);
                                     channel_ref
                                 }
                             };
 
-                            dbg!("worker task ended");
-
                             let _ = worker_ending_tx.send((client_id, channel_ref)).await;
                         }
+                        // TODO: record worker identifier in the span
+                        .instrument(info_span!("worker task"))
                     });
 
                     let _ = worker_conn_tx.send(conn).await;

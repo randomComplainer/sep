@@ -44,7 +44,7 @@ async fn main() {
     .await
     .unwrap();
 
-    println!("Listening at {}...", bound_addr);
+    info!("Listening at {}...", bound_addr);
 
     let (new_client_conn_tx, new_client_conn_rx) = futures::channel::mpsc::channel(4);
 
@@ -58,8 +58,7 @@ async fn main() {
                         match agent.recv_greeting(protocol::get_timestamp()).await {
                             Ok(agent) => agent,
                             Err(err) => {
-                                dbg!(format!("{}", err));
-                                dbg!("failed to receive greeting");
+                                debug!("failed to receive greeting: {}", err);
                                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                                 return;
                             }

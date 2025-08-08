@@ -135,7 +135,7 @@ where
     Cipher: StreamCipher + Unpin + Send + 'static,
 {
     //TODO: error handling
-    dbg!("client connection lifetime task started");
+    debug!("client connection lifetime task started");
 
     let mut time_limit_task = Box::pin(tokio::time::sleep(std::time::Duration::from_mins(
         rand::rng().random_range(..=10u64) + 5,
@@ -145,7 +145,7 @@ where
 
     let reciving_msg_from_client = async move {
         while let Some(msg) = client_read.recv_msg().await.unwrap() {
-            dbg!(format!("message from client: {:?}", &msg));
+            debug!("message from client: {:?}", &msg);
             client_msg_tx.send(msg).await.unwrap();
         }
 
@@ -156,7 +156,7 @@ where
         loop {
             match futures::future::select(time_limit_task, server_msg_rx.recv().boxed()).await {
                 futures::future::Either::Left(x) => {
-                    dbg!("hit connection lifetime limit");
+                    debug!("hit connection lifetime limit");
                     drop(x);
                     let _ = client_write.close().await;
 
@@ -165,7 +165,7 @@ where
                 futures::future::Either::Right((server_msg_opt, not_yet)) => {
                     if let Some(server_msg) = server_msg_opt {
                         time_limit_task = not_yet;
-                        dbg!(format!("message to client: {:?}", &server_msg));
+                        debug!("message to client: {:?}", &server_msg);
                         client_write.send_msg(server_msg).await.unwrap();
                     } else {
                         return Ok::<_, std::io::Error>(());
@@ -242,45 +242,46 @@ where
 
             async move {
                 while let Some((client_read, client_write)) = new_conn_rx.recv().await {
-                    dbg!("new client connection accepted");
+                    debug!("new client connection accepted");
                     let (conn_server_msg_tx, conn_server_msg_rx) =
                         handover::channel::<protocol::msg::ServerMsg>();
 
                     ctx.scope_handle
-                        .run_async({
-                            let client_msg_tx = client_msg_tx.clone();
-                            let ctx = ctx.clone();
-                            async move {
-                                ctx.state_tx.send_modify(|state| {
-                                    state.conn_num += 1;
-                                });
-
-                                {
-                                    let r = client_connection_lifetime_task(
-                                        client_read,
-                                        client_write,
-                                        client_msg_tx.clone(),
-                                        conn_server_msg_rx,
-                                    )
-                                    .await;
+                        .run_async(
+                            {
+                                let client_msg_tx = client_msg_tx.clone();
+                                let ctx = ctx.clone();
+                                async move {
                                     ctx.state_tx.send_modify(|state| {
-                                        state.conn_num -= 1;
+                                        state.conn_num += 1;
                                     });
 
-                                    r
+                                    {
+                                        let r = client_connection_lifetime_task(
+                                            client_read,
+                                            client_write,
+                                            client_msg_tx.clone(),
+                                            conn_server_msg_rx,
+                                        )
+                                        .await;
+                                        ctx.state_tx.send_modify(|state| {
+                                            state.conn_num -= 1;
+                                        });
+
+                                        r
+                                    }
+                                    .inspect_err(|err| {
+                                        error!("client connection lifetime task failed: {:?}", err);
+                                    })
+                                    .inspect(|_| {
+                                        debug!("client connection lifetime task ended");
+                                    })
+                                    .map_err(|_| ConnectionGroupError::LostConnection)
                                 }
-                                .inspect_err(|err| {
-                                    dbg!(format!(
-                                        "client connection lifetime task failed: {:?}",
-                                        err
-                                    ));
-                                })
-                                .inspect(|_| {
-                                    dbg!("client connection lifetime task ended");
-                                })
-                                .map_err(|_| ConnectionGroupError::LostConnection)
                             }
-                        })
+                            // TODO: record connection identifier in the span
+                            .instrument(info_span!("client connection")),
+                        )
                         .await
                         .unwrap();
 

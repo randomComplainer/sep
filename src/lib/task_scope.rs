@@ -213,7 +213,6 @@ mod tests {
             let counter = counter.clone();
             async move {
                 std::future::pending::<()>().await;
-                dbg!(counter);
                 Err::<(), usize>(3)
             }
         };
