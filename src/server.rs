@@ -2,6 +2,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use clap::Parser;
 use futures::prelude::*;
+use tracing::*;
+use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::prelude::*;
 
 use sep_lib::prelude::*;
 
@@ -20,8 +23,17 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
+    // TODO: configurable pretty
+    let layer = tracing_subscriber::fmt::layer()
+        .pretty()
+        // .json()
+        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+        .with_writer(std::io::stderr);
+    let subscriber = tracing_subscriber::Registry::default().with(layer);
+    tracing::subscriber::set_global_default(subscriber).unwrap();
+
     let args = Args::parse();
-    dbg!(&args);
+    info!(?args, "starting server");
 
     let bound_addr = SocketAddr::new(args.bound_addr, args.port);
 

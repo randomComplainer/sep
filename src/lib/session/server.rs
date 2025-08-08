@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use futures::prelude::*;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tracing::*;
 
 use super::msg;
 use super::sequence::*;
@@ -69,10 +70,16 @@ pub async fn run(
     + Unpin
     + Clone,
 ) -> Result<(), ServerSessionError> {
-    let req = match client_read.next().await {
+    let req = match client_read
+        .next()
+        .instrument(info_span!("receive request from client"))
+        .await
+    {
         Some(msg) => match msg {
             msg::ClientMsg::Request(msg) => msg,
             _ => {
+                error!("unexpected client msg: {:?}, expected request", msg);
+
                 return Err(ServerSessionError::Protocol(format!(
                     "unexpected client msg: [{:?}], expected request",
                     msg
@@ -84,14 +91,23 @@ pub async fn run(
         }
     };
 
+    info!(
+        "request received, addr = {:?}, port = {}",
+        req.addr, req.port
+    );
+
     let target_stream = match resolve_addrs(req.addr, req.port)
-        .and_then(connect_target)
+        .instrument(info_span!("resolve target address"))
+        .and_then(|resolved| connect_target(resolved).instrument(info_span!("connect target")))
         .await
     {
         Ok(stream) => stream,
         Err(err) => {
+            error!("connect target failed: {:?}", err);
+
             let _ = client_write
                 .send(msg::ServerMsg::ReplyError(err.into()))
+                .instrument(info_span!("send reply error to client"))
                 .await;
             return Ok(());
         }
@@ -101,6 +117,7 @@ pub async fn run(
         .send(msg::ServerMsg::Reply(msg::Reply {
             bound_addr: target_stream.local_addr().unwrap(),
         }))
+        .instrument(info_span!("send reply to client"))
         .await
         .map_err(|_| ServerSessionError::ClientWriteClosed)?;
 
@@ -116,22 +133,24 @@ pub async fn run(
                 // TODO: magic number
                 max_client_acked_rx
                     .wait_for(|acked| seq - acked < 14)
+                    .instrument(info_span!("wait for ack", current = seq))
                     .await
                     .unwrap();
 
-                dbg!(format!(
-                    "next seq: {}, acked: {}",
-                    seq,
-                    *max_client_acked_rx.borrow()
-                ));
-
                 // TODO: reuse buf & buf size
                 let mut buf = bytes::BytesMut::with_capacity(1024 * 8);
-                let n = match target_read.read_buf(&mut buf).await {
+                let n = match target_read
+                    .read_buf(&mut buf)
+                    .instrument(info_span!("read data from target", seq))
+                    .await
+                {
                     Ok(n) => n,
                     Err(err) => {
-                        dbg!(format!("target read error: {:?}", err));
-                        let _ = client_write.send(msg::Eof { seq }.into()).await;
+                        error!("target read error: {:?}", err);
+                        let _ = client_write
+                            .send(msg::Eof { seq }.into())
+                            .instrument(info_span!("send eof to client"))
+                            .await;
                         return Err(ServerSessionError::TargetIoError(err));
                     }
                 };
@@ -142,6 +161,7 @@ pub async fn run(
 
                 client_write
                     .send(msg::Data { seq, data: buf }.into())
+                    .instrument(info_span!("send data to client", seq, len = n))
                     .await
                     .map_err(|_| ServerSessionError::ClientWriteClosed)?;
 
@@ -150,6 +170,7 @@ pub async fn run(
 
             client_write
                 .send(msg::Eof { seq }.into())
+                .instrument(info_span!("send eof to client", seq))
                 .await
                 .map_err(|_| ServerSessionError::ClientWriteClosed)?;
 
@@ -165,9 +186,18 @@ pub async fn run(
 
             let mut next_seq = 0u16;
 
-            while let Some(msg) = client_read.next().await {
+            while let Some(msg) = client_read
+                .next()
+                .instrument(info_span!("receive message from client"))
+                .await
+            {
                 match msg {
                     msg::ClientMsg::Data(data) => {
+                        info!(
+                            seq = data.seq,
+                            len = data.data.len(),
+                            "data message from client"
+                        );
                         if heap.len() == heap.capacity() {
                             return Err(ServerSessionError::Protocol(
                                 "too many data cached".to_string(),
@@ -177,9 +207,11 @@ pub async fn run(
                         heap.push(std::cmp::Reverse(StreamEntry::data(data.seq, data.data)));
                     }
                     msg::ClientMsg::Ack(ack) => {
+                        info!(seq = ack.seq, "ack message from client");
                         let _ = max_client_acked_tx.send(ack.seq);
                     }
                     msg::ClientMsg::Eof(eof) => {
+                        info!(seq = eof.seq, "eof message from client");
                         if heap.len() == heap.capacity() {
                             return Err(ServerSessionError::Protocol(
                                 "too many data cached".to_string(),
@@ -189,9 +221,11 @@ pub async fn run(
                         heap.push(std::cmp::Reverse(StreamEntry::eof(eof.seq)));
                     }
                     msg::ClientMsg::ProxyeeIoError(_) => {
+                        info!("proxyee io error message from client");
                         return Ok(());
                     }
                     _ => {
+                        error!("unexpected client msg: {:?}", msg);
                         return Err(ServerSessionError::Protocol(format!(
                             "unexpected client msg: [{:?}], expected data/eof/err",
                             msg
@@ -206,13 +240,21 @@ pub async fn run(
                         StreamEntryValue::Data(data) => {
                             target_write
                                 .write_all(data.as_ref())
+                                .instrument(info_span!(
+                                    "send data to target",
+                                    seq,
+                                    len = data.len()
+                                ))
                                 .await
                                 .inspect_err(|err| {
-                                    dbg!(format!("target write error: {:?}", err));
+                                    error!("target write error: {:?}", err);
                                 })
                                 .map_err(|err| ServerSessionError::TargetIoError(err))?;
 
-                            let _ = client_write.send(msg::Ack { seq }.into()).await;
+                            let _ = client_write
+                                .send(msg::Ack { seq }.into())
+                                .instrument(info_span!("send ack to client", seq))
+                                .await;
                         }
                         StreamEntryValue::Eof => {
                             return Ok(());

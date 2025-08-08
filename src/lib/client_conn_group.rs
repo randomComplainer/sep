@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use chacha20::cipher::StreamCipher;
 use dashmap::DashMap;
@@ -7,6 +8,7 @@ use futures::prelude::*;
 use rand::prelude::*;
 use thiserror::Error;
 use tokio::sync::watch;
+use tracing::*;
 
 use crate::handover;
 use crate::prelude::*;
@@ -45,7 +47,6 @@ async fn run_session(
     )
     .await;
 
-    dbg!("session task ended");
     ctx.state_tx.send_modify(|state| {
         state.session_num -= 1;
     });
@@ -54,7 +55,7 @@ async fn run_session(
     match session_task_result {
         Ok(_) => Ok(()),
         Err(err) => {
-            dbg!(format!("session task failed: {:?}", err));
+            error!("session task failed: {:?}", err);
             if let session::server::ServerSessionError::Protocol(err) = err {
                 Err(ConnectionGroupError::SessionProtocol(session_id, err))
             } else {
@@ -74,6 +75,15 @@ async fn receiving_msg_from_client(
             session::msg::ClientMsg::Request(_),
         ) = &client_msg
         {
+            let session_span = info_span!(
+                "session",
+                client_port = session_id,
+                start_time = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            );
+
             // TODO: cache size
             let (client_msg_tx, client_msg_rx) = mpsc::channel(4);
 
@@ -92,7 +102,9 @@ async fn receiving_msg_from_client(
             });
 
             ctx.scope_handle
-                .run_async(run_session(ctx.clone(), *session_id, client_msg_rx))
+                .run_async(
+                    run_session(ctx.clone(), *session_id, client_msg_rx).instrument(session_span),
+                )
                 .await
                 .unwrap();
         };

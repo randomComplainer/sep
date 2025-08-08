@@ -131,10 +131,12 @@ where
                 // TODO: magic number
                 max_server_acked_rx
                     .wait_for(|acked| seq - acked < 14)
+                    .instrument(info_span!("wait for ack", current = seq))
                     .await
                     .unwrap();
 
                 // TODO: reuse buf & buf size
+                // TODO: eof or something to indicate error from proxyee to server
                 let mut buf = bytes::BytesMut::with_capacity(1024 * 8);
                 let n = proxyee_read
                     .read_buf(&mut buf)
