@@ -8,7 +8,7 @@ apt-get install -y \
 
 
 useradd -m -d /srv/ftpdownloads -s /usr/sbin/nologin ftpuser;
-(echo "opensesame"; echo "opensesame") sudo passwd ftpuser;
+(echo "opensesame"; echo "opensesame") passwd ftpuser;
 chmod 555 /srv/ftpdownloads
 chown ftpuser:ftpuser /srv/ftpdownloads
 
