@@ -7,6 +7,12 @@ apt-get update;
 
 if ! dpkg -s vsftpd; then
 	apt-get install -y vsftpd;
+
+	sed -i 's/listen=NO/listen=YES/g' /etc/vsftpd.conf
+	sed -i 's/listen_ipv6=YES/listen_ipv6=NO/g' /etc/vsftpd.conf
+	sed -i 's/#chroot_local_user=YES/chroot_local_user=YES/g' /etc/vsftpd.conf
+	echo "check_shell=NO" >> /etc/vsftpd.conf
+	echo "/usr/sbin/nologin" >> /etc/shells
 fi
 
 if ! id -u ftpuser; then
@@ -16,8 +22,5 @@ if ! id -u ftpuser; then
 	chown ftpuser:ftpuser /srv/ftpdownloads
 fi
 
-sed -i 's/listen=NO/listen=YES/g' /etc/vsftpd.conf
-sed -i 's/listen_ipv6=YES/listen_ipv6=NO/g' /etc/vsftpd.conf
-sed -i 's/#chroot_local_user=YES/chroot_local_user=YES/g' /etc/vsftpd.conf
 
 systemctl restart vsftpd
