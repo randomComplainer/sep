@@ -11,7 +11,7 @@ fi
 
 if ! id -u ftpuser; then
 	useradd -m -d /srv/ftpdownloads -s /usr/sbin/nologin ftpuser;
-	(echo "sep-user"; echo "sep-user") passwd ftpuser;
+	(echo "sep-user"; echo "sep-user") | passwd ftpuser;
 	chmod 555 /srv/ftpdownloads
 	chown ftpuser:ftpuser /srv/ftpdownloads
 fi
