@@ -2,6 +2,17 @@
 
 set -e
 
+service_exists() {
+    local service_name=$1
+    if [[ $(systemctl list-units --all -t service --full --no-legend "$service_name.service" | sed 's/^\s*//g' | cut -f1 -d' ') == $service_name.service ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+KEY=${1:?missing key}
+
 apt-get update;
 
 if ! dpkg -s vsftpd; then
@@ -24,6 +35,7 @@ fi
 systemctl restart vsftpd
 
 if ! -x "$(which rustup)"; then
+	# only available in debian 13+
 	apt-get install -y rustup;
 	rustup update nightly;
 	apt install mingw-w64;
@@ -45,4 +57,20 @@ cp ./target/release/sep-client /srv/ftpdownloads/;
 cp ./target/x86_64-pc-windows-gnu/release/sep-client.exe /srv/ftpdownloads/;
 
 # wget "ftp://ftpuser:sep-user@{}/sep-client" 
+
+SERVICE_NAME=sep-server
+BIN_PATH=/usr/local/bin/$SERVICE_NAME
+
+systemctl stop sep-server || true
+systemctl disable sep-server || true
+
+sed -i "s/{key}/${KEY}/g" ./service/sep-server.service 
+
+install -m 755 target/release/$SERVICE_NAME $BIN_PATH
+install -m 644 ./service/$SERVICE_NAME.service /etc/systemd/system/
+
+systemctl daemon-reexec
+systemctl daemon-reload
+systemctl enable $SERVICE_NAME
+systemctl restart $SERVICE_NAME
 
