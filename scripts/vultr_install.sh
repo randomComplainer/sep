@@ -38,7 +38,7 @@ if ! -x "$(which rustup)"; then
 	# only available in debian 13+
 	apt-get install -y rustup;
 	rustup update nightly;
-	apt install mingw-w64;
+	apt install -y mingw-w64;
 	rustup target add x86_64-pc-windows-gnu;
 	rustup default nightly;
 fi
