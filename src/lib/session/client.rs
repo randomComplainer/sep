@@ -130,14 +130,13 @@ where
             loop {
                 // TODO: magic number
                 max_server_acked_rx
-                    .wait_for(|acked| seq - acked < 14)
+                    .wait_for(|acked| seq - acked < super::MAX_DATA_AHEAD)
                     .instrument(info_span!("wait for ack", current = seq))
                     .await
                     .unwrap();
 
-                // TODO: reuse buf & buf size
-                // TODO: eof or something to indicate error from proxyee to server
-                let mut buf = bytes::BytesMut::with_capacity(1024 * 8);
+                // TODO: reuse buf
+                let mut buf = bytes::BytesMut::with_capacity(super::DATA_BUFF_SIZE);
                 let n = proxyee_read
                     .read_buf(&mut buf)
                     .instrument(info_span!("read data from proxyee", seq))
@@ -174,7 +173,9 @@ where
         async move {
             // TODO: magic capacity
             let mut heap =
-                std::collections::BinaryHeap::<std::cmp::Reverse<StreamEntry>>::with_capacity(16);
+                std::collections::BinaryHeap::<std::cmp::Reverse<StreamEntry>>::with_capacity(
+                    super::MAX_DATA_AHEAD as usize,
+                );
 
             let mut next_seq = 0u16;
 

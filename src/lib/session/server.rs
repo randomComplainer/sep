@@ -130,15 +130,14 @@ pub async fn run(
         async move {
             let mut seq = 0;
             loop {
-                // TODO: magic number
                 max_client_acked_rx
-                    .wait_for(|acked| seq - acked < 14)
+                    .wait_for(|acked| seq - acked < super::MAX_DATA_AHEAD)
                     .instrument(info_span!("wait for ack", current = seq))
                     .await
                     .unwrap();
 
-                // TODO: reuse buf & buf size
-                let mut buf = bytes::BytesMut::with_capacity(1024 * 8);
+                // TODO: reuse buf
+                let mut buf = bytes::BytesMut::with_capacity(super::DATA_BUFF_SIZE);
                 let n = match target_read
                     .read_buf(&mut buf)
                     .instrument(info_span!("read data from target", seq))
@@ -180,9 +179,10 @@ pub async fn run(
 
     let client_to_target = {
         async move {
-            // TODO: magic capacity
             let mut heap =
-                std::collections::BinaryHeap::<std::cmp::Reverse<StreamEntry>>::with_capacity(16);
+                std::collections::BinaryHeap::<std::cmp::Reverse<StreamEntry>>::with_capacity(
+                    super::MAX_DATA_AHEAD as usize,
+                );
 
             let mut next_seq = 0u16;
 
