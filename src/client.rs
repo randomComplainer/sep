@@ -79,22 +79,17 @@ async fn main() {
                 Box::pin({
                     let client_id = client_id.clone();
                     async move {
-                        let stream = tokio::net::TcpStream::connect(server_addr.as_ref())
-                            .await
-                            .unwrap();
+                        let stream = tokio::net::TcpStream::connect(server_addr.as_ref()).await?;
 
                         let server = protocol::client_agent::Init::new(
                             client_id,
-                            stream.local_addr().unwrap().port(),
+                            stream.local_addr()?.port(),
                             key,
                             protocol::rand_nonce(),
                             stream,
                         );
 
-                        let conn = server
-                            .send_greeting(protocol::get_timestamp())
-                            .await
-                            .unwrap();
+                        let conn = server.send_greeting(protocol::get_timestamp()).await?;
 
                         Ok::<_, std::io::Error>(conn)
                     }
