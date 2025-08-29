@@ -15,8 +15,6 @@ use crate::prelude::*;
 
 #[derive(Error, Debug)]
 pub enum ConnectionGroupError {
-    #[error("session protocol error: session id {0}: {1}")]
-    SessionProtocol(u16, String),
     #[error("lost connection to client")]
     LostConnection,
 }
@@ -52,17 +50,10 @@ async fn run_session(
     });
     ctx.session_client_msg_senders.remove(&session_id);
 
-    match session_task_result {
-        Ok(_) => Ok(()),
-        Err(err) => {
-            error!("session task failed: {:?}", err);
-            if let session::server::ServerSessionError::Protocol(err) = err {
-                Err(ConnectionGroupError::SessionProtocol(session_id, err))
-            } else {
-                Ok(())
-            }
-        }
-    }
+    // only known error is client channel broken
+    session_task_result
+        .inspect_err(|err| error!("session task failed: {:?}", err))
+        .map_err(|_| ConnectionGroupError::LostConnection)
 }
 
 async fn receiving_msg_from_client(
@@ -88,10 +79,7 @@ async fn receiving_msg_from_client(
             let (client_msg_tx, client_msg_rx) = mpsc::channel(4);
 
             if ctx.session_client_msg_senders.contains_key(session_id) {
-                return Err(ConnectionGroupError::SessionProtocol(
-                    *session_id,
-                    "duplicated session id".to_string(),
-                ));
+                panic!("duplicated session id: {:?}", session_id);
             }
 
             ctx.session_client_msg_senders

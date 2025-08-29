@@ -175,15 +175,7 @@ where
                                     Ok(_) => Ok(()),
                                     Err(err) => {
                                         error!("session task failed: {:?}", err);
-                                        if let session::client::ClientSessionError::Protocol(err) =
-                                            err
-                                        {
-                                            return Err(ClientError::SessionProtocol(
-                                                session_id, err,
-                                            ));
-                                        } else {
-                                            Ok(())
-                                        }
+                                        Ok(())
                                     }
                                 }
                             }
