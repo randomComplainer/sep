@@ -34,7 +34,7 @@ fi
 
 systemctl restart vsftpd
 
-if ! -x "$(which rustup)"; then
+if [ ! -x "$(which rustup)" ]; then
 	# only available in debian 13+
 	apt-get install -y rustup;
 	rustup update nightly;
@@ -43,7 +43,7 @@ if ! -x "$(which rustup)"; then
 	rustup default nightly;
 fi
 
-if ! -e /swapfile; then
+if [ ! -e /swapfile ]; then
 	fallocate -l 2G /swapfile
 	chmod 600 /swapfile
 	mkswap /swapfile
