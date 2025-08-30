@@ -53,36 +53,50 @@ where
         .await
         .map_err(|_| ())?;
 
-    let reply = match server_read
-        .next()
-        .instrument(info_span!("receive reply from server"))
-        .await
-    {
-        Some(msg) => match msg {
-            msg::ServerMsg::Reply(msg) => msg,
-            msg::ServerMsg::ReplyError(err) => {
-                use session::msg::ConnectionError::*;
-                let _ = proxyee
-                    .reply_error(match err {
-                        General => 1,
-                        NetworkUnreachable => 3,
-                        HostUnreachable => 4,
-                        ConnectionRefused => 5,
-                        TtlExpired => 6,
-                    })
-                    .instrument(info_span!("send reply error to proxyee"))
-                    .await;
-                return Ok(());
-            }
-            msg => {
-                panic!(
-                    "unexpected server msg: [{:?}], expected reply/reply_error",
-                    msg
-                );
-            }
-        },
-        None => {
-            return Err(());
+    let (reply, early_target_cmds) = {
+        // target might start send data as soon as server connected to it.
+        // so we need to buffer it until client receives server reply.
+        let mut early_target_packages: Vec<crate::session::sequenced_to_stream::Command> =
+            Vec::new();
+
+        loop {
+            match server_read
+                .next()
+                .instrument(info_span!("receive reply from server"))
+                .await
+            {
+                Some(msg) => match msg {
+                    msg::ServerMsg::Reply(msg) => {
+                        break (msg, early_target_packages);
+                    }
+                    msg::ServerMsg::ReplyError(err) => {
+                        use session::msg::ConnectionError::*;
+                        let _ = proxyee
+                            .reply_error(match err {
+                                General => 1,
+                                NetworkUnreachable => 3,
+                                HostUnreachable => 4,
+                                ConnectionRefused => 5,
+                                TtlExpired => 6,
+                            })
+                            .instrument(info_span!("send reply error to proxyee"))
+                            .await;
+                        return Ok(());
+                    }
+                    msg::ServerMsg::Data(data) => {
+                        early_target_packages.push(data.into());
+                    }
+                    msg::ServerMsg::Eof(eof) => {
+                        early_target_packages.push(eof.into());
+                    }
+                    msg => {
+                        panic!("unexpected server msg while receiving reply: [{:?}]", msg);
+                    }
+                },
+                None => {
+                    return Err(());
+                }
+            };
         }
     };
 
@@ -115,6 +129,17 @@ where
     let (mut server_to_proxyee_cmd_tx, server_to_proxyee_cmd_rx) =
         futures::channel::mpsc::channel(1);
 
+    let server_to_proxyee_early_packages = {
+        let mut server_to_proxyee_cmd_tx = server_to_proxyee_cmd_tx.clone();
+        async move {
+            for cmd in early_target_cmds {
+                let _ = server_to_proxyee_cmd_tx.send(cmd).await;
+            }
+            Ok::<_, TerminationError>(())
+        }
+    }
+    .instrument(info_span!("server to proxyee early packages"));
+
     let server_to_proxyee = crate::session::sequenced_to_stream::run(
         server_to_proxyee_cmd_rx,
         server_write.clone().with_sync(|evt| match evt {
@@ -124,6 +149,10 @@ where
     )
     .map_err(TerminationError::from)
     .instrument(info_span!("server to proxyee"));
+
+    let server_to_proxyee = async move {
+        tokio::try_join!(server_to_proxyee, server_to_proxyee_early_packages).map(|_| ())
+    };
 
     let server_msg_handling = async move {
         while let Some(msg) = server_read.next().await {
