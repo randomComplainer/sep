@@ -37,7 +37,7 @@ pub mod cli_parameters {
     impl LogParameter {
         pub fn setup_subscriber(&self) {
             let layer = tracing_subscriber::fmt::layer()
-                .with_writer(std::io::stderr)
+                // .with_writer(std::io::stderr)
                 .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
                 .with_ansi(!self.no_color)
                 .with_format(self.format);
