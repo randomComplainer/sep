@@ -1,3 +1,4 @@
+use std::ops::Add;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -125,11 +126,10 @@ where
     //TODO: error handling
     debug!("client connection lifetime task started");
 
-    let mut time_limit_task = Box::pin(tokio::time::sleep(std::time::Duration::from_mins(
-        rand::rng().random_range(..=10u64) + 5,
-    )));
-
-    // let mut time_limit_task = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
+    let duration = std::time::Duration::from_secs(10).add(std::time::Duration::from_mins(
+        rand::rng().random_range(..=10u64),
+    ));
+    let mut time_limit_task = Box::pin(tokio::time::sleep(duration));
 
     let reciving_msg_from_client = async move {
         while let Some(msg) = client_read.recv_msg().await.unwrap() {

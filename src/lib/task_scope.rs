@@ -30,11 +30,14 @@ impl<E> ScopeHandle<E> {
 }
 
 impl<E> ScopeHandle<E> {
-    pub async fn run_async<F>(&mut self, future: F) -> Result<(), mpsc::SendError>
+    pub fn run_async<F>(
+        &mut self,
+        future: F,
+    ) -> impl std::future::Future<Output = Result<(), mpsc::SendError>> + Send
     where
         F: Future<Output = Result<(), E>> + Send + 'static,
     {
-        self.task_tx.send(Box::pin(future)).await
+        self.task_tx.send(Box::pin(future))
     }
 
     pub async fn spawn(

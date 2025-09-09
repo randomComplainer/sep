@@ -60,7 +60,7 @@ async fn main() {
         info!("Listening at {}...", bound_addr);
 
         let (mut new_proxee_tx, new_proxee_rx) = futures::channel::mpsc::channel(4);
-        let channeling_new_proxee: impl Future<Output = Result<(), client_main_task::ClientError>> = async move {
+        let channeling_new_proxee: impl Future<Output = Result<(), std::io::Error>> = async move {
             loop {
                 let (agent, socket_addr) = listener.accept().await.unwrap();
                 new_proxee_tx
@@ -96,27 +96,21 @@ async fn main() {
                 })
             },
             4,
-        );
+        )
+        .map(Err::<(), std::io::Error>);
 
         match tokio::try_join! {
             main_task,
             channeling_new_proxee,
         } {
             Ok(_) => unreachable!(),
-            Err(err) => match err {
-                client_main_task::ClientError::SessionProtocol(session_id, err) => {
-                    // protocol error means bug, exit
-                    error!("session protocol error: session id {}: {}", session_id, err);
-                    return;
-                }
-                client_main_task::ClientError::LostConnection => {
-                    // lost connection to server
-                    // retry later
-                    error!("lost connection to server");
-                    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-                    continue;
-                }
-            },
+            Err(err) => {
+                // lost connection to server
+                // retry later
+                error!("lost connection to server: {}", err);
+                tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                continue;
+            }
         }
     }
 }
