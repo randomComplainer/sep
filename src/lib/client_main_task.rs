@@ -192,6 +192,32 @@ where
         }
     };
 
+    // make sure there are at least one server conn
+    // if there are any session sill running
+    scope_handle
+        .run_async({
+            let mut state_rx = state_rx.clone();
+            let register_new_server_conn = register_new_server_conn.clone();
+            let mut server_write_tx = server_write_tx.clone();
+            async move {
+                loop {
+                    let lock = state_rx
+                        .wait_for(|state| state.server_conn_count == 0 && state.session_count > 0)
+                        .await;
+                    drop(lock);
+                    debug!("register new server conn for running session");
+
+                    let server_write = (register_new_server_conn.clone())().await?;
+                    server_write_tx
+                        .send(server_write)
+                        .await
+                        .expect("server_write_tx is broken");
+                }
+            }
+        })
+        .await
+        .unwrap();
+
     // accepting proxyee
     scope_handle
         .run_async({
@@ -270,23 +296,30 @@ where
 
             async move {
                 while let Some(client_msg) = client_msg_rx.next().await {
-                    let mut server_write = match futures::future::select(
-                        server_write_rx.next(),
-                        state_rx
-                            .wait_for(|state| {
-                                state.server_conn_count == 0 && state.session_count > 0
-                            })
-                            .map(|_| ())
-                            .boxed(),
-                    )
-                    .await
-                    {
-                        futures::future::Either::Left((server_write, _)) => {
-                            server_write.expect("server_write_rx is broken")
-                        }
-                        futures::future::Either::Right(r) => {
-                            drop(r);
-                            (register_new_server_conn.clone())().await?
+                    debug!("find server conn write to send msg");
+
+                    let mut server_write = {
+                        match server_write_rx.try_next() {
+                            Ok(Some(server_write)) => {
+                                debug!("idle server conn write is available");
+                                server_write
+                            }
+                            Ok(None) => {
+                                panic!("server_write_rx is broken");
+                            }
+                            Err(_) => {
+                                debug!("all server write is busy");
+                                if state_rx.borrow().server_conn_count < max_server_conn {
+                                    debug!("register new server conn");
+                                    (register_new_server_conn.clone())().await?
+                                } else {
+                                    debug!("max server conn reached, wait for an idle server conn");
+                                    server_write_rx
+                                        .next()
+                                        .await
+                                        .expect("server_write_rx is broken")
+                                }
+                            }
                         }
                     };
 
