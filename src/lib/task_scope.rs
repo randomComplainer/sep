@@ -70,6 +70,7 @@ async fn main_loop<E: Send>(mut task_rx: mpsc::Receiver<Fut<E>>) -> E {
                     // internal queue is empty
                     // but we want to wait for more tasks to be pushed
                     None => {
+                        dbg!("empty task queue, waiting for new task");
                         let next_task = task_rx.next().await.unwrap();
                         list.push(next_task);
                     }

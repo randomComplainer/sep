@@ -251,6 +251,7 @@ where
                             let state_tx = state_tx.clone();
                             let session_server_msg_senders =
                                 Arc::clone(&session_server_msg_senders);
+
                             async move {
                                 state_tx.send_modify(|state| {
                                     state.session_count += 1;
@@ -322,6 +323,7 @@ where
                             }
                         }
                     };
+                    debug!("server conn write is ready to send msg");
 
                     scope_handle
                         .run_async({

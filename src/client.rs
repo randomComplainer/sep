@@ -32,11 +32,18 @@ struct Args {
     log_parameters: sep_lib::cli_parameters::LogParameter,
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let args = Args::parse();
     args.log_parameters.setup_subscriber();
 
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async_main(args));
+}
+
+async fn async_main(args: Args) {
     info!(?args, "starting client");
 
     let bound_addr = SocketAddr::new(args.bound_addr, args.port);
