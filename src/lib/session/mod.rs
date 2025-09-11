@@ -72,8 +72,6 @@ mod stream_to_sequenced {
         let mut buf = bytes::BytesMut::with_capacity(crate::session::DATA_BUFF_SIZE);
         let n = stream_to_read.read_buf(&mut buf).await?;
 
-        error!(len = n, "bytes read from stream");
-
         if n == 0 {
             return Ok(msg::Eof { seq }.into());
         } else {
