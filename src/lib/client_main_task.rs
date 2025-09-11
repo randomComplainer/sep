@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use chacha20::cipher::StreamCipher;
 use dashmap::DashMap;
 use futures::prelude::*;
 use thiserror::Error;
@@ -9,6 +8,8 @@ use tracing::*;
 
 use crate::handover;
 use crate::prelude::*;
+
+mod server_connection_lifetime;
 
 #[derive(Error, Debug)]
 pub enum ClientError {
@@ -18,76 +19,6 @@ pub enum ClientError {
     LostServerConnection,
 }
 
-fn server_connection_lifetime_task<ServerStream, Cipher, ConnectServerFut>(
-    connect_to_server: impl Fn() -> ConnectServerFut + Send + Unpin,
-    mut client_msg_rx: handover::Receiver<protocol::msg::ClientMsg>,
-    mut server_msg_tx: futures::channel::mpsc::Sender<protocol::msg::ServerMsg>,
-) -> impl Future<Output = Result<(), std::io::Error>> + Send
-where
-    ServerStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-    Cipher: StreamCipher + Unpin + Send + 'static,
-    ConnectServerFut: std::future::Future<
-            Output = Result<
-                (
-                    protocol::client_agent::GreetedWrite<ServerStream, Cipher>,
-                    protocol::client_agent::GreetedRead<ServerStream, Cipher>,
-                ),
-                std::io::Error,
-            >,
-        > + Send
-        + Unpin,
-{
-    async move {
-        let (mut server_write, mut server_read) = connect_to_server().await?;
-        let (close_notify_tx, mut close_notify_rx) = futures::channel::oneshot::channel::<()>();
-
-        let reciving_msg_from_server = async move {
-            while let Some(msg) = server_read.recv_msg().await.unwrap() {
-                debug!("message from server: {:?}", &msg);
-                server_msg_tx.send(msg).await.unwrap();
-            }
-
-            debug!("end of server messages");
-
-            // server_read closed => stop sennding msg to server
-            // it's fine if write stream is already closed
-            let _ = close_notify_tx.send(());
-
-            Ok::<_, std::io::Error>(())
-        };
-
-        let sending_msg_to_server = async move {
-            loop {
-                match futures::future::select(close_notify_rx, client_msg_rx.recv().boxed()).await {
-                    futures::future::Either::Left(x) => {
-                        drop(x);
-                        // TODO: error handling
-                        server_write.close().await.unwrap();
-
-                        return Ok::<_, std::io::Error>(());
-                    }
-                    futures::future::Either::Right((client_msg_opt, not_yet_closed)) => {
-                        if let Some(client_msg) = client_msg_opt {
-                            close_notify_rx = not_yet_closed;
-                            debug!("message to server: {:?}", &client_msg);
-                            // TODO: error handling
-                            server_write.send_msg(client_msg).await.unwrap();
-                        } else {
-                            return Ok::<_, std::io::Error>(Default::default());
-                        }
-                    }
-                }
-            }
-        };
-
-        tokio::try_join! {
-            sending_msg_to_server,
-            reciving_msg_from_server,
-        }
-        .map(|_| ())
-    }
-}
-
 struct State {
     session_count: usize,
     server_conn_count: usize,
@@ -95,28 +26,17 @@ struct State {
 
 // Exits only on server connection io error
 // protocol error panics
-pub async fn run<ProxyeeStream, ServerStream, Cipher, ConnectServerFut>(
+pub async fn run<ProxyeeStream, ServerConnector>(
     mut new_proxee_rx: impl Stream<Item = (u16, socks5::agent::Init<ProxyeeStream>)>
     + Unpin
     + Send
     + 'static,
-    connect_to_server: impl (Fn() -> ConnectServerFut) + Clone + Send + Sync + Unpin + 'static,
+    connect_to_server: ServerConnector,
     max_server_conn: usize,
 ) -> std::io::Error
 where
     ProxyeeStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-    ServerStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-    Cipher: StreamCipher + Unpin + Send + 'static,
-    ConnectServerFut: std::future::Future<
-            Output = Result<
-                (
-                    protocol::client_agent::GreetedWrite<ServerStream, Cipher>,
-                    protocol::client_agent::GreetedRead<ServerStream, Cipher>,
-                ),
-                std::io::Error,
-            >,
-        > + Send
-        + Unpin,
+    ServerConnector: server_connection_lifetime::ServerConnector,
 {
     let (client_msg_tx, mut client_msg_rx) =
         futures::channel::mpsc::channel::<protocol::msg::ClientMsg>(max_server_conn);
@@ -135,7 +55,7 @@ where
         futures::channel::mpsc::Sender<session::msg::ServerMsg>,
     >::new());
 
-    let (state_tx, mut state_rx) = tokio::sync::watch::channel(State {
+    let (state_tx, state_rx) = tokio::sync::watch::channel(State {
         session_count: 0,
         server_conn_count: 0,
     });
@@ -148,7 +68,6 @@ where
         async move || {
             let server_msg_tx = server_msg_tx.clone();
             let mut scope_handle = scope_handle.clone();
-            let connect_to_server = connect_to_server.clone();
 
             let (conn_client_msg_tx, conn_client_msg_rx) = handover::channel();
 
@@ -160,7 +79,7 @@ where
                         });
 
                         // TODO: error handling
-                        let result = server_connection_lifetime_task(
+                        let result = server_connection_lifetime::run(
                             connect_to_server,
                             conn_client_msg_rx,
                             server_msg_tx,
