@@ -44,7 +44,7 @@ where
     let (mut scope_handle, scope_task) = task_scope::new_scope::<std::io::Error>();
 
     let (server_msg_tx, mut server_msg_rx) =
-        futures::channel::mpsc::channel::<protocol::msg::ServerMsg>(max_server_conn);
+        futures::channel::mpsc::channel::<(u16, session::msg::ServerMsg)>(max_server_conn);
 
     let (server_write_tx, mut server_write_rx) = futures::channel::mpsc::channel::<
         handover::Sender<protocol::msg::ClientMsg>,
@@ -280,16 +280,12 @@ where
         .run_async({
             let session_server_msg_senders = Arc::clone(&session_server_msg_senders);
             async move {
-                while let Some(msg) = server_msg_rx.next().await {
-                    match msg {
-                        protocol::msg::ServerMsg::SessionMsg(session_id, server_msg) => {
-                            if let Some(mut session_server_msg_sender) =
-                                session_server_msg_senders.get_mut(&session_id)
-                            {
-                                // sessiion could be ended, dont care about error
-                                let _ = session_server_msg_sender.send(server_msg).await;
-                            }
-                        }
+                while let Some((session_id, msg)) = server_msg_rx.next().await {
+                    if let Some(mut session_server_msg_sender) =
+                        session_server_msg_senders.get_mut(&session_id)
+                    {
+                        // sessiion could be ended, dont care about error
+                        let _ = session_server_msg_sender.send(msg).await;
                     };
                 }
 

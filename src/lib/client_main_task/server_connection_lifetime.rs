@@ -54,7 +54,7 @@ where
 pub fn run<TConnectServer>(
     connect_to_server: TConnectServer,
     mut client_msg_rx: handover::Receiver<protocol::msg::ClientMsg>,
-    mut server_msg_tx: futures::channel::mpsc::Sender<protocol::msg::ServerMsg>,
+    mut server_msg_tx: futures::channel::mpsc::Sender<(u16, session::msg::ServerMsg)>,
 ) -> impl Future<Output = Result<(), std::io::Error>> + Send
 where
     TConnectServer: ServerConnector,
@@ -66,16 +66,19 @@ where
         let reciving_msg_from_server = async move {
             while let Some(msg) = server_read.recv_msg().await.unwrap() {
                 debug!("message from server: {:?}", &msg);
-                server_msg_tx.send(msg).await.unwrap();
+                match msg {
+                    protocol::msg::ServerMsg::SessionMsg(proxyee_id, server_msg) => {
+                        server_msg_tx.send((proxyee_id, server_msg)).await.unwrap();
+                    }
+                    protocol::msg::ServerMsg::EndOfStream => {
+                        debug!("end of server messages");
+                        let _ = close_notify_tx.send(());
+                        return Ok::<_, std::io::Error>(());
+                    }
+                };
             }
 
-            debug!("end of server messages");
-
-            // server_read closed => stop sennding msg to server
-            // it's fine if write stream is already closed
-            let _ = close_notify_tx.send(());
-
-            Ok::<_, std::io::Error>(())
+            panic!("unexpected end of server messages");
         };
 
         let sending_msg_to_server = async move {
@@ -107,5 +110,70 @@ where
             reciving_msg_from_server,
         }
         .map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::RngCore as _;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    // verify that client connection lifetime task can end gracefully
+    // when server closes connection
+    // might not need to test this in the future
+    #[tokio::test]
+    async fn server_close_connection() {
+        let (mut client_stream, mut server_stream) = tokio::io::duplex(1024);
+        let key: Arc<protocol::Key> = protocol::key_from_string("key").into();
+
+        let mut client_stream = Arc::new(Mutex::new(Some(client_stream)));
+
+        let mut client_id: Box<[u8; 16]> = [0u8; 16].into();
+        rand::rng().fill_bytes(client_id.as_mut());
+        let client_id: Arc<[u8; 16]> = client_id.into();
+
+        let timestamp = protocol::get_timestamp();
+
+        let (client_msg_tx, mut client_msg_rx) = handover::channel();
+        let (server_msg_tx, mut server_msg_rx) = futures::channel::mpsc::channel(4);
+
+        let server_agent = protocol::server_agent::Init::new(key.clone(), server_stream);
+
+        let server_conn = move || {
+            let key = key.clone();
+            let client_stream = client_stream.clone();
+            let client_id = client_id.clone();
+
+            Box::pin(async move {
+                let client_stream = client_stream.lock().unwrap().take().unwrap();
+
+                let client_agent = protocol::client_agent::Init::new(
+                    client_id,
+                    1234,
+                    key.clone(),
+                    protocol::rand_nonce(),
+                    client_stream,
+                );
+
+                client_agent.send_greeting(timestamp).await
+            })
+        };
+
+        let client_task = run(server_conn, client_msg_rx, server_msg_tx);
+        let client_task_handle = tokio::spawn(client_task);
+
+        let (_client_id, _client_read, mut client_write) =
+            server_agent.recv_greeting(timestamp).await.unwrap();
+
+        client_write
+            .send_msg(protocol::msg::ServerMsg::EndOfStream)
+            .await
+            .unwrap();
+
+        assert_eq!(client_task_handle.await.unwrap().unwrap(), ());
+
+        drop(client_write);
     }
 }

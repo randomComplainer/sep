@@ -76,3 +76,41 @@ mod encrypted_write {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use chacha20::ChaCha20;
+    use chacha20::cipher::KeyIvInit;
+    use tokio::io::{AsyncReadExt, DuplexStream, ReadHalf, WriteHalf};
+
+    use super::*;
+
+    fn pair() -> (
+        (
+            EncryptedRead<ReadHalf<DuplexStream>, ChaCha20>,
+            EncryptedWrite<WriteHalf<DuplexStream>, ChaCha20>,
+        ),
+        (
+            EncryptedRead<ReadHalf<DuplexStream>, ChaCha20>,
+            EncryptedWrite<WriteHalf<DuplexStream>, ChaCha20>,
+        ),
+    ) {
+        let cipher = || ChaCha20::new(&[0u8; 32].into(), &[0u8; 12].into());
+
+        let (stream_1, stream_2) = tokio::io::duplex(1024);
+
+        let (read_1, write_1) = tokio::io::split(stream_1);
+        let (read_2, write_2) = tokio::io::split(stream_2);
+
+        (
+            (
+                EncryptedRead::new(read_1, cipher()),
+                EncryptedWrite::new(write_1, cipher()),
+            ),
+            (
+                EncryptedRead::new(read_2, cipher()),
+                EncryptedWrite::new(write_2, cipher()),
+            ),
+        )
+    }
+}

@@ -7,6 +7,7 @@ use crate::prelude::*;
 #[derive(Debug, From)]
 pub enum ServerMsg {
     SessionMsg(u16, session::msg::ServerMsg),
+    EndOfStream,
 }
 
 impl session::msg::ServerMsg {
@@ -17,6 +18,7 @@ impl session::msg::ServerMsg {
 
 pub enum ServerMsgReader {
     SessionMsg(U16Reader, session::msg::ServerMsgReader),
+    EndOfStream,
 }
 
 impl Reader for ServerMsgReader {
@@ -26,8 +28,9 @@ impl Reader for ServerMsgReader {
         buf.split_to(1)[0];
         match self {
             Self::SessionMsg(u16, session_msg) => {
-                ServerMsg::SessionMsg(u16.read(buf), session_msg.read(buf))
-            }
+                        ServerMsg::SessionMsg(u16.read(buf), session_msg.read(buf))
+                    }
+            Self::EndOfStream => ServerMsg::EndOfStream,
         }
     }
 }
@@ -39,6 +42,7 @@ pub fn server_msg_peeker() -> impl Peeker<ServerMsg, Reader = ServerMsgReader> {
                 crate::peek!(u16_peeker().peek(cursor)),
                 crate::peek!(session::msg::server_msg_peeker().peek(cursor)),
             ),
+            1 => ServerMsgReader::EndOfStream,
             x => {
                 return Err(decode::unknown_enum_code("server message", x).into());
             }

@@ -42,11 +42,10 @@ pub mod cli_parameters {
                 .with_ansi(!self.no_color)
                 .with_format(self.format);
 
-            let console_layer = console_subscriber::spawn();
+            let subscriber = tracing_subscriber::Registry::default().with(layer);
 
-            let subscriber = tracing_subscriber::Registry::default()
-                .with(layer)
-                .with(console_layer);
+            // #[cfg(debug_assertions)]
+            // let subscriber = subscriber.with(console_subscriber::spawn());
 
             tracing::subscriber::set_global_default(subscriber).unwrap();
         }

@@ -245,6 +245,10 @@ where
                     }
                 };
             }
+            msg::ServerMsg::EndOfStream => {
+                buf.put_u8(1u8);
+                self.stream_write.write_all(&mut buf).await?;
+            }
         }
 
         Ok(())
