@@ -146,6 +146,10 @@ where
                 futures::future::Either::Left(x) => {
                     debug!("hit connection lifetime limit");
                     drop(x);
+                    client_write
+                        .send_msg(protocol::msg::ServerMsg::EndOfStream)
+                        .await
+                        .unwrap();
                     let _ = client_write.close().await;
 
                     return Ok::<_, std::io::Error>(());
