@@ -79,6 +79,7 @@ mod stream_to_sequenced {
         }
     }
 
+    #[derive(Debug)]
     struct State {
         // stored value is actual max acked + 1
         // 0 is reserved for no ack yet
@@ -144,7 +145,7 @@ mod stream_to_sequenced {
                                 .wait_for(|state| {
                                     state
                                         .eof_seq
-                                        .map(|eof_seq| eof_seq == state.max_acked + 1)
+                                        .map(|eof_seq| eof_seq == state.max_acked - 1)
                                         .unwrap_or(false)
                                 })
                                 .boxed(),
