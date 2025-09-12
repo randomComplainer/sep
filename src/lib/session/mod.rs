@@ -79,6 +79,14 @@ mod stream_to_sequenced {
         }
     }
 
+    struct State {
+        // stored value is actual max acked + 1
+        // 0 is reserved for no ack yet
+        max_acked: u16,
+
+        eof_seq: Option<u16>,
+    }
+
     // sends eof on stream error
     pub async fn run(
         mut cmd_rx: impl Stream<Item = Command> + Unpin,
@@ -92,6 +100,11 @@ mod stream_to_sequenced {
             // stored value is actual max acked + 1
             // 0 is reserved for no ack yet
             let (max_acked_tx, mut max_acked_rx) = tokio::sync::watch::channel(0u16);
+
+            let (state_tx, mut state_rx) = tokio::sync::watch::channel(State {
+                max_acked: 0,
+                eof_seq: None,
+            });
 
             macro_rules! try_emit_evt {
             ($evt:ident) => {
@@ -120,62 +133,92 @@ mod stream_to_sequenced {
                 seq += 1;
             }
 
-            let receving_cmds = async move {
-                loop {
-                    if let Some(cmd) = cmd_rx
-                        .next()
-                        .instrument(debug_span!("receive command"))
+            let receving_acks = {
+                let state_tx = state_tx.clone();
+                let mut state_rx = state_rx.clone();
+                async move {
+                    loop {
+                        match futures::future::select(
+                            cmd_rx.next(),
+                            state_rx
+                                .wait_for(|state| {
+                                    state
+                                        .eof_seq
+                                        .map(|eof_seq| eof_seq == state.max_acked + 1)
+                                        .unwrap_or(false)
+                                })
+                                .boxed(),
+                        )
                         .await
-                    {
-                        match cmd {
-                            Command::Ack(ack) => {
-                                max_acked_tx.send_if_modified(|old| {
-                                    let new = ack.seq + 1;
-                                    if new > *old {
-                                        *old = new;
-                                        true
-                                    } else {
-                                        false
+                        {
+                            future::Either::Left((cmd, _)) => {
+                                if let Some(cmd) = cmd {
+                                    match cmd {
+                                        Command::Ack(ack) => {
+                                            state_tx.send_if_modified(|old| {
+                                                let new = ack.seq + 1;
+                                                if new > old.max_acked {
+                                                    old.max_acked = new;
+                                                    true
+                                                } else {
+                                                    false
+                                                }
+                                            });
+                                        }
                                     }
-                                });
+                                } else {
+                                    error!("sequenced channel is broken");
+                                    return Err::<(), _>(SequencingError::SequencedBroken);
+                                }
                             }
-                        }
-                    } else {
-                        error!("sequenced channel is broken");
-                        return Err::<(), _>(SequencingError::SequencedBroken);
+                            future::Either::Right(_) => {
+                                debug!("ack of eof reached");
+                                return Ok(());
+                            }
+                        };
                     }
                 }
-            };
+            }
+            .instrument(info_span!("receive acks"));
 
-            let stream_reading = async move {
-                loop {
-                    max_acked_rx
-                        .wait_for(|max| seq - max < crate::session::MAX_DATA_AHEAD + 1)
-                        .await
-                        .expect("command receiving task is aborted");
+            let stream_reading = {
+                let mut state_rx = state_rx.clone();
+                async move {
+                    loop {
+                        state_rx
+                            .wait_for(|state| {
+                                seq - state.max_acked < crate::session::MAX_DATA_AHEAD + 1
+                            })
+                            .await
+                            .expect("command receiving task is aborted");
 
-                    let evt = read_from_stream(seq, &mut stream_to_read)
-                        .instrument(info_span!("read from stream", seq))
-                        .await?;
+                        let evt = read_from_stream(seq, &mut stream_to_read)
+                            .instrument(info_span!("read from stream", seq))
+                            .await?;
 
-                    match &evt {
-                        Event::Data(_) => {
-                            try_emit_evt!(evt);
-                        }
-                        Event::Eof(_) => {
-                            try_emit_evt!(evt);
-                            info!(seq = seq, "eof reached, streaming exits");
+                        match &evt {
+                            Event::Data(_) => {
+                                try_emit_evt!(evt);
+                            }
+                            Event::Eof(_) => {
+                                try_emit_evt!(evt);
+                                state_tx.send_modify(|old| {
+                                    old.eof_seq = Some(seq);
+                                });
+                                info!(seq = seq, "eof reached, streaming exits");
 
-                            // TODO: do I need to wait for remaining acks before exiting?
-                            return Ok(());
-                        }
-                    };
+                                // TODO: do I need to wait for remaining acks before exiting?
+                                return Ok(());
+                            }
+                        };
 
-                    seq += 1;
+                        seq += 1;
+                    }
                 }
-            };
+            }
+            .instrument(info_span!("read from stream"));
 
-            tokio::try_join!(receving_cmds, stream_reading).map(|_| ())
+            tokio::try_join!(receving_acks, stream_reading).map(|_| ())
         }
     }
 }
@@ -275,6 +318,9 @@ mod sequenced_to_stream {
                         try_emit_evt!(evt);
                     }
                     StreamEntryValue::Eof => {
+                        let evt = msg::Ack { seq }.into();
+                        try_emit_evt!(evt);
+
                         info!(seq = seq, "eof reached, streaming exits");
                         return Ok(());
                     }

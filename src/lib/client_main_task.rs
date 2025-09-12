@@ -19,6 +19,7 @@ pub enum ClientError {
     LostServerConnection,
 }
 
+#[derive(Debug)]
 struct State {
     session_count: usize,
     server_conn_count: usize,
@@ -213,6 +214,7 @@ where
         .run_async({
             let server_write_tx = server_write_tx.clone();
             let mut scope_handle = scope_handle.clone();
+            let state_rx = state_rx.clone();
 
             async move {
                 while let Some(client_msg) = client_msg_rx.next().await {
@@ -290,6 +292,20 @@ where
                 }
 
                 Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+    // log state
+    scope_handle
+        .run_async({
+            let mut state_rx = state_rx.clone();
+            async move {
+                loop {
+                    state_rx.changed().await.unwrap();
+                    debug!("state changed: {:?}", *state_rx.borrow());
+                }
             }
         })
         .await

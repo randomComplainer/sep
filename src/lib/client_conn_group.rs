@@ -69,7 +69,7 @@ async fn receiving_msg_from_client(
         {
             let session_span = info_span!(
                 "session",
-                client_port = session_id,
+                session_id = session_id,
                 start_time = SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .unwrap()
