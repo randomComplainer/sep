@@ -231,4 +231,45 @@ mod tests {
         tokio::task::yield_now().await;
         assert_eq!(1, Arc::strong_count(&counter));
     }
+
+    #[tokio::test]
+    async fn drop_finished_task() {
+        struct SideEffectOnDrop(Arc<()>, Option<tokio::sync::oneshot::Sender<()>>);
+        impl std::future::Future for SideEffectOnDrop {
+            type Output = ();
+            fn poll(
+                self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Self::Output> {
+                std::task::Poll::Ready(())
+            }
+        }
+        impl Drop for SideEffectOnDrop {
+            fn drop(&mut self) {
+                self.1.take().unwrap().send(()).unwrap();
+            }
+        }
+
+        let counter = Arc::new(());
+        let (task_end_tx, task_end_rx) = tokio::sync::oneshot::channel();
+        let (mut handle, scpoe_task) = new_scope::<usize>();
+
+        assert_eq!(1, Arc::strong_count(&counter));
+
+        let task = {
+            let counter = counter.clone();
+            async move {
+                let owner = SideEffectOnDrop(counter, Some(task_end_tx));
+                Ok::<(), usize>(owner.await)
+            }
+        };
+
+        assert_eq!(2, Arc::strong_count(&counter));
+        handle.spawn(task).await.unwrap();
+        let scpoe_task = tokio::spawn(scpoe_task);
+
+        task_end_rx.await.unwrap();
+        assert_eq!(1, Arc::strong_count(&counter));
+        tokio_test::assert_pending!(tokio_test::task::spawn(scpoe_task).poll());
+    }
 }

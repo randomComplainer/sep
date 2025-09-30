@@ -148,15 +148,6 @@ where
 
             async move {
                 while let Some((session_id, proxyee)) = new_proxee_rx.next().await {
-                    let socks5_span = info_span!(
-                        "session",
-                        socks5_port = session_id,
-                        start_time = SystemTime::now()
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs()
-                    );
-
                     let (session_server_msg_tx, session_server_msg_rx) =
                         futures::channel::mpsc::channel(4);
 
@@ -198,7 +189,14 @@ where
                                     }
                                 }
                             }
-                            .instrument(socks5_span)
+                            .instrument(info_span!(
+                                "session",
+                                session_id = session_id,
+                                start_time = SystemTime::now()
+                                    .duration_since(SystemTime::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs()
+                            ))
                         })
                         .await
                         .unwrap();
@@ -218,22 +216,30 @@ where
 
             async move {
                 while let Some(client_msg) = client_msg_rx.next().await {
-                    debug!("find server conn write to send msg");
+                    let state_rx = state_rx.clone();
+                    let register_new_server_conn = register_new_server_conn.clone();
+                    let server_write_rx = &mut server_write_rx;
 
-                    let mut server_write = {
-                        match server_write_rx.try_next() {
+                    let msg_seeding_span =debug_span!(
+                        "send msg to server",
+                        ?client_msg,
+                    );
+
+                    let mut server_write = async move {
+                        Ok::<handover::Sender<protocol::msg::ClientMsg>,std::io::Error>(match server_write_rx.try_next() {
                             Ok(Some(server_write)) => {
                                 debug!("idle server conn write is available");
                                 server_write
                             }
                             Ok(None) => {
+                                error!("server_write_rx is broken");
                                 panic!("server_write_rx is broken");
                             }
                             Err(_) => {
                                 debug!("all server write is busy");
                                 if state_rx.borrow().server_conn_count < max_server_conn {
                                     debug!("register new server conn");
-                                    (register_new_server_conn.clone())().await?
+                                    register_new_server_conn().await?
                                 } else {
                                     debug!("max server conn reached, wait for an idle server conn");
                                     server_write_rx
@@ -242,9 +248,13 @@ where
                                         .expect("server_write_rx is broken")
                                 }
                             }
-                        }
-                    };
-                    debug!("server conn write is ready to send msg");
+                        })
+                    }
+                    .instrument(debug_span!(
+                            "find server conn write to send msg",
+                            ?client_msg,
+                            ))
+                    .await?;
 
                     scope_handle
                         .run_async({
@@ -256,16 +266,19 @@ where
                                 // don't queue it back
                                 match server_write.send(client_msg).await {
                                     Ok(_) => {
-                                        let _ = server_write_tx.send(server_write).await;
+                                        debug!("sucessfully send msg to server, queue server write back");
+                                        server_write_tx.send(server_write).await.unwrap();
                                     }
                                     Err(server_msg) => {
                                         // TODO: Err?
+                                        error!("failed to send msg to server, queue client message back");
                                         client_msg_tx.send(server_msg).await.unwrap();
                                     }
                                 };
 
                                 Ok(())
                             }
+                            .instrument(msg_seeding_span)
                         })
                         .await
                         .unwrap();
