@@ -78,7 +78,7 @@ where
                 };
             }
 
-            panic!("unexpected end of server messages");
+            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "unexpected end of server messages"));
         };
 
         let sending_msg_to_server = async move {
