@@ -8,7 +8,6 @@ use std::sync::Arc;
 use clap::Parser;
 use futures::prelude::*;
 use rand::RngCore as _;
-use sep_lib::client_main_task;
 use tracing::*;
 
 use sep_lib::prelude::*;
@@ -34,7 +33,7 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    args.log_parameters.setup_subscriber();
+    args.log_parameters.setup_subscriber(3080);
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()

@@ -22,10 +22,18 @@ struct Args {
     log_parameters: sep_lib::cli_parameters::LogParameter,
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let args = Args::parse();
-    args.log_parameters.setup_subscriber();
+    args.log_parameters.setup_subscriber(3081);
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async_main(args));
+}
+
+async fn async_main(args: Args) {
     info!(?args, "starting server");
 
     let bound_addr = SocketAddr::new(args.bound_addr, args.port);
@@ -66,7 +74,8 @@ async fn main() {
         }
 
         Ok::<_, std::io::Error>(())
-    };
+    }
+    .instrument(info_span!("channeling new client"));
 
     let main_task = sep_lib::server_main_task::run(new_client_conn_rx);
 
