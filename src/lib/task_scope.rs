@@ -11,6 +11,7 @@ use drop_guard::DropGuard;
 
 type Fut<E> = Pin<Box<dyn futures::Future<Output = Result<(), E>> + Send + 'static>>;
 
+#[derive(Debug)]
 pub struct ScopeHandle<E> {
     task_tx: mpsc::Sender<Fut<E>>,
 }

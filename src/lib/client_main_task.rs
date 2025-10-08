@@ -9,7 +9,7 @@ use tracing::*;
 use crate::handover;
 use crate::prelude::*;
 
-mod server_connection_lifetime;
+pub mod server_connection_lifetime;
 
 #[derive(Error, Debug)]
 pub enum ClientError {
@@ -25,6 +25,65 @@ struct State {
     server_conn_count: usize,
 }
 
+fn register_new_server_conn_fn<ServerConnector>(
+    connect_to_server: ServerConnector,
+    server_msg_tx: futures::channel::mpsc::Sender<(u16, session::msg::ServerMsg)>,
+    scope_handle: task_scope::ScopeHandle<std::io::Error>,
+    state_tx: tokio::sync::watch::Sender<State>,
+) -> impl (Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<
+handover::Sender<protocol::msg::ClientMsg>,
+std::io::Error>> + Send + 'static>>)  + Clone
+where 
+    ServerConnector: server_connection_lifetime::ServerConnector + Send,
+{
+    move || { 
+        let connect_to_server = connect_to_server.clone();
+        let server_msg_tx = server_msg_tx.clone();
+        let mut scope_handle = scope_handle.clone();
+        let state_tx = state_tx.clone();
+
+        async move { 
+            let (conn_client_msg_tx, conn_client_msg_rx) = handover::channel();
+            scope_handle
+                .run_async(
+                    async move {
+                        state_tx.send_modify(|state| {
+                            state.server_conn_count += 1;
+                        });
+
+                        // TODO: error handling
+                        let result = server_connection_lifetime::run(
+                            connect_to_server,
+                            conn_client_msg_rx,
+                            server_msg_tx,
+                        )
+                            .await;
+
+                        state_tx.send_modify(|state| {
+                            state.server_conn_count -= 1;
+                        });
+
+                        match result {
+                            Ok(_) => {
+                                debug!("server connection lifetime task ended");
+                                Ok(())
+                            }
+                            Err(err) => {
+                                debug!("server connection lifetime task failed: {:?}", err);
+                                Err(err)
+                            }
+                        }
+                    }
+            // TODO: record connection identifier in the span
+            .instrument(info_span!("server connection"))
+                )
+                .await
+                .unwrap();
+
+            Ok::<_, std::io::Error>(conn_client_msg_tx) }.boxed()
+    }
+}
+
 // Exits only on server connection io error
 // protocol error panics
 pub async fn run<ProxyeeStream, ServerConnector>(
@@ -37,7 +96,7 @@ pub async fn run<ProxyeeStream, ServerConnector>(
 ) -> std::io::Error
 where
     ProxyeeStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-    ServerConnector: server_connection_lifetime::ServerConnector,
+    ServerConnector: server_connection_lifetime::ServerConnector + Send,
 {
     let (client_msg_tx, mut client_msg_rx) =
         futures::channel::mpsc::channel::<protocol::msg::ClientMsg>(max_server_conn);
@@ -61,56 +120,8 @@ where
         server_conn_count: 0,
     });
 
-    let register_new_server_conn = {
-        let server_msg_tx = server_msg_tx.clone();
-        let scope_handle = scope_handle.clone();
-        let state_tx = state_tx.clone();
-
-        async move || {
-            let server_msg_tx = server_msg_tx.clone();
-            let mut scope_handle = scope_handle.clone();
-
-            let (conn_client_msg_tx, conn_client_msg_rx) = handover::channel();
-
-            scope_handle
-                .run_async(
-                    async move {
-                        state_tx.send_modify(|state| {
-                            state.server_conn_count += 1;
-                        });
-
-                        // TODO: error handling
-                        let result = server_connection_lifetime::run(
-                            connect_to_server,
-                            conn_client_msg_rx,
-                            server_msg_tx,
-                        )
-                        .await;
-
-                        state_tx.send_modify(|state| {
-                            state.server_conn_count -= 1;
-                        });
-
-                        match result {
-                            Ok(_) => {
-                                debug!("server connection lifetime task ended");
-                                Ok(())
-                            }
-                            Err(err) => {
-                                debug!("server connection lifetime task failed: {:?}", err);
-                                Err(err)
-                            }
-                        }
-                    }
-                    // TODO: record connection identifier in the span
-                    .instrument(info_span!("server connection")),
-                )
-                .await
-                .unwrap();
-
-            Ok::<_, std::io::Error>(conn_client_msg_tx)
-        }
-    };
+    let register_new_server_conn = 
+        register_new_server_conn_fn(connect_to_server, server_msg_tx, scope_handle.clone(), state_tx.clone());
 
     // make sure there are at least one server conn
     // if there are any session sill running
@@ -134,7 +145,8 @@ where
                         .expect("server_write_tx is broken");
                 }
             }
-        })
+        }
+        )
         .await
         .unwrap();
 
@@ -142,64 +154,72 @@ where
     scope_handle
         .run_async({
             let session_server_msg_senders = Arc::clone(&session_server_msg_senders);
-            let mut scope_handle = scope_handle.clone();
+            let scope_handle = scope_handle.clone();
             let state_tx = state_tx.clone();
             let client_msg_tx = client_msg_tx.clone();
 
             async move {
                 while let Some((session_id, proxyee)) = new_proxee_rx.next().await {
-                    let (session_server_msg_tx, session_server_msg_rx) =
-                        futures::channel::mpsc::channel(4);
+                    let session_server_msg_senders = Arc::clone(&session_server_msg_senders);
+                    let mut scope_handle = scope_handle.clone();
+                    let state_tx = state_tx.clone();
+                    let client_msg_tx = client_msg_tx.clone();
+                    async move {                     
+                        let (session_server_msg_tx, session_server_msg_rx) =
+                            futures::channel::mpsc::channel(4);
 
-                    let session_client_msg_tx = client_msg_tx.clone().with_sync(move |msg| {
-                        protocol::msg::ClientMsg::SessionMsg(session_id, msg)
-                    });
+                        let session_client_msg_tx = client_msg_tx.clone().with_sync(move |msg| {
+                            protocol::msg::ClientMsg::SessionMsg(session_id, msg)
+                        });
 
-                    session_server_msg_senders.insert(session_id, session_server_msg_tx);
+                        session_server_msg_senders.insert(session_id, session_server_msg_tx);
 
-                    scope_handle
-                        .run_async({
-                            let state_tx = state_tx.clone();
-                            let session_server_msg_senders =
-                                Arc::clone(&session_server_msg_senders);
+                        scope_handle
+                            .spawn({
+                                let state_tx = state_tx.clone();
+                                let session_server_msg_senders =
+                                    Arc::clone(&session_server_msg_senders);
 
-                            async move {
-                                state_tx.send_modify(|state| {
-                                    state.session_count += 1;
-                                });
+                                async move {
+                                    state_tx.send_modify(|state| {
+                                        state.session_count += 1;
+                                    });
 
-                                let session_result = session::client::run(
-                                    proxyee,
-                                    session_server_msg_rx,
-                                    session_client_msg_tx,
-                                )
-                                .await;
+                                    let session_result = session::client::run(
+                                        proxyee,
+                                        session_server_msg_rx,
+                                        session_client_msg_tx,
+                                    )
+                                    .await;
 
-                                session_server_msg_senders.remove(&session_id);
+                                    session_server_msg_senders.remove(&session_id);
 
-                                state_tx.send_modify(|state| {
-                                    state.session_count -= 1;
-                                });
+                                    state_tx.send_modify(|state| {
+                                        state.session_count -= 1;
+                                    });
 
-                                match session_result {
-                                    Ok(_) => Ok(()),
-                                    Err(err) => {
-                                        error!("session task failed: {:?}", err);
-                                        Ok(())
+                                    match session_result {
+                                        Ok(_) => Ok(()),
+                                        Err(err) => {
+                                            error!("session task failed: {:?}", err);
+                                            Ok(())
+                                        }
                                     }
                                 }
-                            }
-                            .instrument(info_span!(
-                                "session",
-                                session_id = session_id,
-                                start_time = SystemTime::now()
-                                    .duration_since(SystemTime::UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_secs()
-                            ))
-                        })
-                        .await
-                        .unwrap();
+                                .instrument(info_span!(
+                                    "session",
+                                    session_id = session_id,
+                                    start_time = SystemTime::now()
+                                        .duration_since(SystemTime::UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_secs()
+                                ))
+                            })
+                            .await
+                            .unwrap(); 
+                    }
+                    .instrument(info_span!("create session for proxyee", session_id = session_id))
+                    .await;
                 }
                 Ok(())
             }
@@ -216,7 +236,7 @@ where
 
             async move {
                 while let Some(client_msg) = client_msg_rx.next().await {
-                    let state_rx = state_rx.clone();
+                    let mut state_rx = state_rx.clone();
                     let register_new_server_conn = register_new_server_conn.clone();
                     let server_write_rx = &mut server_write_rx;
 
@@ -225,31 +245,14 @@ where
                         ?client_msg,
                     );
 
-                    let mut server_write = async move {
-                        Ok::<handover::Sender<protocol::msg::ClientMsg>,std::io::Error>(match server_write_rx.try_next() {
-                            Ok(Some(server_write)) => {
-                                debug!("idle server conn write is available");
-                                server_write
-                            }
-                            Ok(None) => {
-                                error!("server_write_rx is broken");
-                                panic!("server_write_rx is broken");
-                            }
-                            Err(_) => {
-                                debug!("all server write is busy");
-                                if state_rx.borrow().server_conn_count < max_server_conn {
-                                    debug!("register new server conn");
-                                    register_new_server_conn().await?
-                                } else {
-                                    debug!("max server conn reached, wait for an idle server conn");
-                                    server_write_rx
-                                        .next()
-                                        .await
-                                        .expect("server_write_rx is broken")
+                    let mut server_write = tokio::select!{
+                            server_write = server_write_rx.next() => 
+                                std::future::ready(Ok::<_,std::io::Error>(server_write.expect("server_write_rx is broken"))).boxed(),
+                                _ = state_rx.wait_for(|state| state.server_conn_count < max_server_conn) => {
+                                    debug!("no server conn present, create new one");
+                                    register_new_server_conn().boxed()
                                 }
-                            }
-                        })
-                    }
+                        }
                     .instrument(debug_span!(
                             "find server conn write to send msg",
                             ?client_msg,
@@ -299,8 +302,12 @@ where
                     if let Some(mut session_server_msg_sender) =
                         session_server_msg_senders.get_mut(&session_id)
                     {
+                        let span = info_span!("send server msg to session", session_id = session_id, ?msg);
+
                         // sessiion could be ended, dont care about error
-                        let _ = session_server_msg_sender.send(msg).await;
+                        let _ = session_server_msg_sender.send(msg)
+                            .instrument(span)
+                            .await;
                     };
                 }
 
