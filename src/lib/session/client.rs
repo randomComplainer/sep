@@ -122,6 +122,10 @@ where
         }),
         proxyee_read,
         Some(buf),
+        crate::session::stream_to_sequenced::Config {
+            max_package_ahead: crate::session::MAX_DATA_AHEAD,
+            max_package_size: crate::session::DATA_BUFF_SIZE,
+        },
     )
     .map_err(TerminationError::from)
     .instrument(info_span!("proxyee to server"));
