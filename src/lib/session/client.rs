@@ -56,7 +56,7 @@ where
     let (reply, early_target_cmds) = {
         // target might start send data as soon as server connected to it.
         // so we need to buffer it until client receives server reply.
-        let mut early_target_packages: Vec<crate::session::sequenced_to_stream::Command> =
+        let mut early_target_packages: Vec<session::sequenced_to_stream::Command> =
             Vec::new();
 
         loop {
@@ -114,17 +114,17 @@ where
         futures::channel::mpsc::channel(1);
 
     let (buf, proxyee_read) = proxyee_read.into_parts();
-    let proxyee_to_server = crate::session::stream_to_sequenced::run(
+    let proxyee_to_server = session::stream_to_sequenced::run(
         proxyee_to_server_cmd_rx,
         server_write.clone().with_sync(|evt| match evt {
-            crate::session::stream_to_sequenced::Event::Data(data) => data.into(),
-            crate::session::stream_to_sequenced::Event::Eof(eof) => eof.into(),
+            session::stream_to_sequenced::Event::Data(data) => data.into(),
+            session::stream_to_sequenced::Event::Eof(eof) => eof.into(),
         }),
         proxyee_read,
         Some(buf),
-        crate::session::stream_to_sequenced::Config {
-            max_package_ahead: crate::session::MAX_DATA_AHEAD,
-            max_package_size: crate::session::DATA_BUFF_SIZE,
+        session::stream_to_sequenced::Config {
+            max_package_ahead: session::MAX_DATA_AHEAD,
+            max_package_size: session::DATA_BUFF_SIZE,
         },
     )
     .map_err(TerminationError::from)
@@ -144,12 +144,15 @@ where
     }
     .instrument(info_span!("server to proxyee early packages"));
 
-    let server_to_proxyee = crate::session::sequenced_to_stream::run(
+    let server_to_proxyee = session::sequenced_to_stream::run(
         server_to_proxyee_cmd_rx,
         server_write.clone().with_sync(|evt| match evt {
-            crate::session::sequenced_to_stream::Event::Ack(ack) => ack.into(),
+            session::sequenced_to_stream::Event::Ack(ack) => ack.into(),
         }),
         proxyee_write,
+        session::sequenced_to_stream::Config {
+            max_data_ahead: session::MAX_DATA_AHEAD,
+        },
     )
     .map_err(TerminationError::from)
     .instrument(info_span!("server to proxyee"));

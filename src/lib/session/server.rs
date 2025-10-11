@@ -109,29 +109,32 @@ pub async fn run(
     let (mut target_to_client_cmd_tx, cmd_target_to_client_cmd_rx) =
         futures::channel::mpsc::channel(1);
 
-    let target_to_client = crate::session::stream_to_sequenced::run(
+    let target_to_client = session::stream_to_sequenced::run(
         cmd_target_to_client_cmd_rx,
         client_write.clone().with_sync(|evt| match evt {
-            crate::session::stream_to_sequenced::Event::Data(data) => data.into(),
-            crate::session::stream_to_sequenced::Event::Eof(eof) => eof.into(),
+            session::stream_to_sequenced::Event::Data(data) => data.into(),
+            session::stream_to_sequenced::Event::Eof(eof) => eof.into(),
         }),
         target_read,
         None,
-        crate::session::stream_to_sequenced::Config {
-            max_package_ahead: crate::session::MAX_DATA_AHEAD,
-            max_package_size: crate::session::DATA_BUFF_SIZE,
+        session::stream_to_sequenced::Config {
+            max_package_ahead: session::MAX_DATA_AHEAD,
+            max_package_size: session::DATA_BUFF_SIZE,
         },
     )
     .map_err(TerminationError::from)
     .instrument(info_span!("target to client"));
 
     let (mut client_to_target_cmd_tx, client_to_target_cmd_rx) = futures::channel::mpsc::channel(1);
-    let client_to_target = crate::session::sequenced_to_stream::run(
+    let client_to_target = session::sequenced_to_stream::run(
         client_to_target_cmd_rx,
         client_write.clone().with_sync(|evt| match evt {
-            crate::session::sequenced_to_stream::Event::Ack(ack) => ack.into(),
+            session::sequenced_to_stream::Event::Ack(ack) => ack.into(),
         }),
         target_write,
+        session::sequenced_to_stream::Config {
+            max_data_ahead: session::MAX_DATA_AHEAD,
+        },
     )
     .map_err(TerminationError::from)
     .instrument(info_span!("client to target"));

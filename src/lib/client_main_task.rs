@@ -305,9 +305,17 @@ where
                         let span = info_span!("send server msg to session", session_id = session_id, ?msg);
 
                         // sessiion could be ended, dont care about error
-                        let _ = session_server_msg_sender.send(msg)
+                        match session_server_msg_sender.send(msg)
                             .instrument(span)
-                            .await;
+                            .await {
+                                Ok(_) => {
+                                }
+                                Err(_) => {
+                                    dbg!("session already ended, drop server msg");
+                                }
+                            }
+                    } else {
+                        debug!("session server msg receiver is dropped, drop server msg");
                     };
                 }
 
