@@ -176,7 +176,7 @@ mod tests {
         tokio_test::assert_pending!(main_task.poll());
 
         match tokio_test::block_on(event_rx.next()).unwrap() {
-            Event::Data(msg::Data { seq, data }) => {
+            super::Event::Data(msg::Data { seq, data }) => {
                 assert_eq!(seq, 0);
                 assert_eq!(data.as_ref(), &[1]);
             }
@@ -184,7 +184,7 @@ mod tests {
         };
 
         match tokio_test::block_on(event_rx.next()).unwrap() {
-            Event::Data(msg::Data { seq, data }) => {
+            super::Event::Data(msg::Data { seq, data }) => {
                 assert_eq!(seq, 1);
                 assert_eq!(data.as_ref(), &[2]);
             }

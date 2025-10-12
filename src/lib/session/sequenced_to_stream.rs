@@ -101,7 +101,7 @@ pub async fn run(
                         info!(cmd = ?cmd, "command received");
 
                         buffed_count += 1;
-                        if buffed_count > super::MAX_DATA_AHEAD {
+                        if buffed_count > config.max_data_ahead {
                             panic!("too many data cached");
                         }
 
@@ -155,4 +155,64 @@ pub async fn run(
             .instrument(debug_span!("streaming loop")),
     )
     .map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::BytesMut;
+    use tokio::io::AsyncReadExt;
+
+    use super::*;
+
+    #[test]
+    fn dont_block_on_stream() {
+        let (mut cmd_tx, cmd_rx) = futures::channel::mpsc::channel(1);
+        let (stream_write, mut stream_read) = tokio::io::duplex(1);
+        let (event_tx, mut event_rx) = futures::channel::mpsc::channel(100);
+
+        let mut main_task = tokio_test::task::spawn(
+            run(
+                cmd_rx,
+                event_tx,
+                stream_write,
+                Config { max_data_ahead: 10 },
+            )
+            .boxed(),
+        );
+
+        for i in 0..10 {
+            // let i = 10 - 1 - i;
+            let mut cmd_sending = tokio_test::task::spawn(cmd_tx.send(Command::Data(msg::Data {
+                seq: i.try_into().unwrap(),
+                data: BytesMut::from([i.try_into().unwrap()].as_ref()),
+            })));
+            tokio_test::assert_ready!(cmd_sending.poll()).unwrap();
+            tokio_test::assert_pending!(main_task.poll());
+        }
+
+        let mut buf = BytesMut::with_capacity(9);
+
+        for i in 0..10 {
+            // forward event
+            tokio_test::assert_pending!(main_task.poll());
+            let e =
+                tokio_test::assert_ready!(tokio_test::task::spawn(event_rx.next()).poll()).unwrap();
+
+            match e {
+                super::Event::Ack(msg::Ack { seq }) => {
+                    assert_eq!(seq, i);
+                }
+            };
+
+            let n = tokio_test::assert_ready!(
+                tokio_test::task::spawn(stream_read.read_buf(&mut buf)).poll()
+            )
+            .unwrap();
+            assert_eq!(n, 1);
+
+            tokio_test::assert_pending!(main_task.poll());
+        }
+
+        assert_eq!(buf.as_ref(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].as_ref());
+    }
 }
