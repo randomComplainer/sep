@@ -77,8 +77,7 @@ where
             // TODO: record connection identifier in the span
             .instrument(info_span!("server connection"))
                 )
-                .await
-                .unwrap();
+                .await ;
 
             Ok::<_, std::io::Error>(conn_client_msg_tx) }.boxed()
     }
@@ -147,8 +146,7 @@ where
             }
         }
         )
-        .await
-        .unwrap();
+        .await ;
 
     // accepting proxyee
     scope_handle
@@ -215,8 +213,7 @@ where
                                         .as_secs()
                                 ))
                             })
-                            .await
-                            .unwrap(); 
+                            .await; 
                     }
                     .instrument(info_span!("create session for proxyee", session_id = session_id))
                     .await;
@@ -224,8 +221,7 @@ where
                 Ok(())
             }
         })
-        .await
-        .unwrap();
+        .await ;
 
     // sending msg to server
     scope_handle
@@ -283,15 +279,13 @@ where
                             }
                             .instrument(msg_seeding_span)
                         })
-                        .await
-                        .unwrap();
+                        .await;
                 }
 
                 Ok(())
             }
         })
-        .await
-        .unwrap();
+        .await;
 
     // receiving msg from server
     scope_handle
@@ -322,8 +316,7 @@ where
                 Ok(())
             }
         })
-        .await
-        .unwrap();
+        .await ;
 
     // log state
     scope_handle
@@ -336,8 +329,7 @@ where
                 }
             }
         })
-        .await
-        .unwrap();
+        .await ;
 
     scope_task.await
 }

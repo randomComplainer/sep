@@ -31,24 +31,21 @@ impl<E> ScopeHandle<E> {
 }
 
 impl<E> ScopeHandle<E> {
-    pub fn run_async<F>(
-        &mut self,
-        future: F,
-    ) -> impl std::future::Future<Output = Result<(), mpsc::SendError>> + Send
+    pub fn run_async<F>(&mut self, future: F) -> impl std::future::Future<Output = ()> + Send
     where
         F: Future<Output = Result<(), E>> + Send + 'static,
     {
-        self.task_tx.send(Box::pin(future))
+        self.task_tx.send(Box::pin(future)).map(|x| x.unwrap())
     }
 
-    pub async fn spawn(
-        &mut self,
-        future: impl Future<Output = Result<(), E>> + Send + 'static,
-    ) -> Result<(), mpsc::SendError>
+    pub async fn spawn(&mut self, future: impl Future<Output = Result<(), E>> + Send + 'static)
     where
         E: Send + 'static,
     {
-        self.task_tx.send(Box::pin(DropGuard::new(future))).await
+        self.task_tx
+            .send(Box::pin(DropGuard::new(future)))
+            .await
+            .unwrap()
     }
 }
 
@@ -162,7 +159,7 @@ mod tests {
     #[tokio::test]
     async fn send_err() {
         let (mut handle, task) = new_scope::<usize>();
-        handle.run_async(async move { Err(3) }).await.unwrap();
+        handle.run_async(async move { Err(3) }).await;
         assert_eq!(3, task.await);
     }
 
@@ -173,7 +170,7 @@ mod tests {
         let mut task = tokio_test::task::spawn(task);
 
         assert_eq!(
-            std::task::Poll::Ready(Ok(())),
+            std::task::Poll::Ready(()),
             tokio_test::task::spawn(handle.run_async({
                 let sied_effect = sied_effect.clone();
                 async move {
@@ -202,7 +199,7 @@ mod tests {
             }
         };
 
-        handle.spawn(task).await.unwrap();
+        handle.spawn(task).await;
 
         assert_eq!((), lock.notified().await);
         assert_eq!(3, scpoe_task.await);
@@ -222,7 +219,7 @@ mod tests {
             }
         };
 
-        handle.spawn(task).await.unwrap();
+        handle.spawn(task).await;
 
         let mut scpoe_task = tokio_test::task::spawn(scpoe_task);
         assert_eq!(std::task::Poll::Pending, scpoe_task.poll());
@@ -266,7 +263,7 @@ mod tests {
         };
 
         assert_eq!(2, Arc::strong_count(&counter));
-        handle.spawn(task).await.unwrap();
+        handle.spawn(task).await;
         let scpoe_task = tokio::spawn(scpoe_task);
 
         task_end_rx.await.unwrap();

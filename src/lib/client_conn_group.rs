@@ -94,8 +94,7 @@ async fn receiving_msg_from_client(
                 .run_async(
                     run_session(ctx.clone(), *session_id, client_msg_rx).instrument(session_span),
                 )
-                .await
-                .unwrap();
+                .await;
         };
 
         match client_msg {
@@ -222,8 +221,7 @@ where
 
     ctx.scope_handle
         .run_async(receiving_msg_from_client(ctx.clone(), client_msg_rx))
-        .await
-        .unwrap();
+        .await;
 
     // accepting client conns
     ctx.scope_handle
@@ -274,8 +272,7 @@ where
                             // TODO: record connection identifier in the span
                             .instrument(info_span!("client connection")),
                         )
-                        .await
-                        .unwrap();
+                        .await;
 
                     let _ = client_write_tx.clone().send(conn_server_msg_tx).await;
                 }
@@ -283,8 +280,7 @@ where
                 Ok::<_, ConnectionGroupError>(())
             }
         })
-        .await
-        .unwrap();
+        .await;
 
     // sending msg to client
     ctx.scope_handle
@@ -312,14 +308,12 @@ where
                                 Ok(())
                             }
                         })
-                        .await
-                        .unwrap();
+                        .await;
                 }
                 Ok::<_, ConnectionGroupError>(())
             }
         })
-        .await
-        .unwrap();
+        .await;
 
     let checking_state_ending_condition = async move {
         // wait for initial state set
