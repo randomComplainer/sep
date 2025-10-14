@@ -64,7 +64,13 @@ where
         let (close_notify_tx, mut close_notify_rx) = futures::channel::oneshot::channel::<()>();
 
         let reciving_msg_from_server = async move {
-            while let Some(msg) = server_read.recv_msg().await.unwrap() {
+            while let Some(msg) = match server_read.recv_msg().await {
+                Ok(msg_opt) => msg_opt,
+                Err(e) => match e {
+                    DecodeError::Io(err) => return Err(err),
+                    DecodeError::InvalidStream(err) => panic!("invalid stream: {:?}", err),
+                },
+            } {
                 debug!("message from server: {:?}", &msg);
                 match msg {
                     protocol::msg::ServerMsg::SessionMsg(proxyee_id, server_msg) => {
@@ -78,7 +84,10 @@ where
                 };
             }
 
-            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "unexpected end of server messages"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "unexpected end of server messages",
+            ));
         };
 
         let sending_msg_to_server = async move {

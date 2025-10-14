@@ -131,7 +131,13 @@ where
     let mut time_limit_task = Box::pin(tokio::time::sleep(duration));
 
     let reciving_msg_from_client = async move {
-        while let Some(msg) = client_read.recv_msg().await.unwrap() {
+        while let Some(msg) = match client_read.recv_msg().await {
+            Ok(msg_opt) => msg_opt,
+            Err(e) => match e {
+                DecodeError::Io(err) => return Err(err),
+                DecodeError::InvalidStream(err) => panic!("invalid stream: {:?}", err),
+            },
+        } {
             debug!("message from client: {:?}", &msg);
             client_msg_tx.send(msg).await.unwrap();
         }
