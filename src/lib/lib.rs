@@ -3,6 +3,7 @@
 #![feature(trait_alias)]
 #![feature(assert_matches)]
 
+pub mod future_ext;
 pub mod handover;
 pub mod sink_ext;
 pub mod task_scope;
@@ -117,6 +118,7 @@ pub mod prelude {
     pub use crate::client_conn_group::*;
     pub use crate::decode::*;
     pub use crate::encrypt::{EncryptedRead, EncryptedWrite};
+    pub use crate::future_ext::FutureExt as _;
     pub use crate::handover::ChannelExt as _;
     pub use crate::sink_ext::SinkExt as _;
     pub use crate::task_scope;
