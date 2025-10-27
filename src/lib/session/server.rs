@@ -56,7 +56,9 @@ pub async fn run(
     mut client_read: impl Stream<Item = msg::ClientMsg> + Unpin,
     mut client_write: impl Sink<msg::ServerMsg, Error = futures::channel::mpsc::SendError>
     + Unpin
-    + Clone,
+    + Clone
+    + Send
+    + 'static,
 ) -> Result<(), ()> {
     let req = match client_read
         .next()

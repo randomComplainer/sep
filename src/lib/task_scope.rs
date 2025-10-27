@@ -49,35 +49,34 @@ impl<E> ScopeHandle<E> {
     }
 }
 
-async fn main_loop<E: Send>(mut task_rx: mpsc::Receiver<Fut<E>>) -> E {
+async fn main_loop<E: Send + 'static>(mut task_rx: mpsc::Receiver<Fut<E>>) -> E {
     let mut list: FuturesUnordered<Fut<E>> = FuturesUnordered::new();
+    list.push(std::future::pending().boxed());
     loop {
-        match futures::future::select(task_rx.next(), list.next()).await {
-            future::Either::Left((task, x)) => {
-                drop(x);
+        tokio::select! {
+            task = task_rx.next() => {
                 list.push(task.unwrap());
-            }
-            future::Either::Right((result_opt, x)) => {
-                drop(x);
+            },
+            result_opt = list.next() => {
                 match result_opt {
                     Some(result) => match result {
                         Ok(()) => continue,
-                        Err(e) => return e,
+                        Err(err) => {
+                            return err;
+                        }
                     },
                     // FuturesUnordered::next() returns None when the
                     // internal queue is empty
-                    // but we want to wait for more tasks to be pushed
                     None => {
-                        let next_task = task_rx.next().await.unwrap();
-                        list.push(next_task);
+                        unreachable!();
                     }
                 }
-            }
+            },
         }
     }
 }
 
-pub fn new_scope<E: Sync + Send>() -> (ScopeHandle<E>, impl Future<Output = E> + Send) {
+pub fn new_scope<E: Sync + Send + 'static>() -> (ScopeHandle<E>, impl Future<Output = E> + Send) {
     // TODO: unbounded
     let (task_tx, task_rx) = mpsc::channel(64);
     (ScopeHandle::new(task_tx), main_loop(task_rx))
@@ -129,6 +128,7 @@ mod drop_guard {
         where
             RawF: Future<Output = Result<(), E>> + Send + 'static,
         {
+            // TODO: inject spawner here so it can be tested with tokio_test
             let task = tokio::spawn(future);
             let abort_handle = task.abort_handle();
             Self(task, abort_handle)

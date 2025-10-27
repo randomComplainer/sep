@@ -55,6 +55,8 @@ where
     fn ready_or<TR>(self, r: TR) -> ReadyOr<TResult, Self, TR>
     where
         TR: Future<Output = TResult>;
+
+    fn poll_once(self) -> impl Future<Output = Option<Self::Output>>;
 }
 
 impl<TResult, TFuture> FutureExt<TResult> for TFuture
@@ -66,6 +68,16 @@ where
         TR: Future<Output = TResult>,
     {
         ReadyOr::new(self, r)
+    }
+
+    fn poll_once(mut self) -> impl Future<Output = Option<Self::Output>> {
+        std::future::poll_fn(move |ctx| {
+            let this = unsafe { Pin::new_unchecked(&mut self) };
+            match this.poll(ctx) {
+                Poll::Ready(x) => Poll::Ready(Some(x)),
+                Poll::Pending => Poll::Ready(None),
+            }
+        })
     }
 }
 

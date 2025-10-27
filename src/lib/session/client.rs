@@ -12,7 +12,7 @@ use crate::prelude::*;
 pub async fn run<ProxyeeStream>(
     proxyee: socks5::agent::Init<ProxyeeStream>,
     mut server_read: impl Stream<Item = msg::ServerMsg> + Send + Unpin + 'static,
-    mut server_write: impl Sink<msg::ClientMsg, Error = futures::channel::mpsc::SendError>
+    mut server_write: impl Sink<msg::ClientMsg, Error = impl std::fmt::Debug>
     + Unpin
     + Send
     + Clone
@@ -56,8 +56,7 @@ where
     let (reply, early_target_cmds) = {
         // target might start send data as soon as server connected to it.
         // so we need to buffer it until client receives server reply.
-        let mut early_target_packages: Vec<session::sequenced_to_stream::Command> =
-            Vec::new();
+        let mut early_target_packages: Vec<session::sequenced_to_stream::Command> = Vec::new();
 
         loop {
             match server_read
@@ -162,20 +161,34 @@ where
     };
 
     let server_msg_handling = async move {
-        while let Some(msg) = server_read.next().await {
+        while let Some(msg) = server_read
+            .next()
+            .instrument(info_span!("read next msg from server"))
+            .await
+        {
+            debug!("server msg: {:?}", msg);
             match msg {
                 msg::ServerMsg::Data(data) => {
-                    if let Err(_) = server_to_proxyee_cmd_tx.send(data.into()).await {
+                    let cmd = data.into();
+                    let span = info_span!("send command to server to proxyee task", cmd = ?cmd);
+                    if let Err(_) = server_to_proxyee_cmd_tx.send(cmd).instrument(span).await {
                         continue;
                     }
                 }
                 msg::ServerMsg::Eof(eof) => {
-                    if let Err(_) = server_to_proxyee_cmd_tx.send(eof.into()).await {
+                    let cmd = eof.into();
+                    let span = info_span!("send command to server to proxyee task", cmd = ?cmd);
+                    if let Err(_) = server_to_proxyee_cmd_tx.send(cmd).instrument(span).await {
                         continue;
                     }
                 }
                 msg::ServerMsg::Ack(ack) => {
-                    if let Err(_) = proxyee_to_server_cmd_tx.send(ack.into()).await {
+                    let span = tracing::debug_span!("forward ack to server", ack = ?ack);
+                    if let Err(_) = proxyee_to_server_cmd_tx
+                        .send(ack.into())
+                        .instrument(span)
+                        .await
+                    {
                         continue;
                     }
                 }
@@ -187,7 +200,8 @@ where
         }
 
         Ok(())
-    };
+    }
+    .instrument(info_span!("server_msg_handling"));
 
     let streaming =
         async move { tokio::try_join!(server_to_proxyee, proxyee_to_server).map(|_| ()) };

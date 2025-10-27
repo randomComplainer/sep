@@ -20,7 +20,7 @@ pub enum Event {
 }
 
 async fn try_emit_evt(
-    evt_tx: &mut (impl Sink<Event, Error = futures::channel::mpsc::SendError> + Unpin),
+    evt_tx: &mut (impl Sink<Event, Error = impl std::fmt::Debug> + Unpin),
     evt: Event,
 ) -> Result<(), SequencingError> {
     let sp = info_span!("emit event:", evt = ?evt);
@@ -54,11 +54,25 @@ async fn streaming_loop(
                     .await?;
 
                 let evt = msg::Ack { seq }.into();
-                try_emit_evt(&mut evt_tx, evt).await?;
+                let sp = info_span!("emit local event", evt = ?evt);
+                // TODO: sould not be Sequencing Error here
+                evt_tx
+                    .send(evt)
+                    .instrument(sp)
+                    .await
+                    .inspect_err(|_| error!("local event channel is broken"))
+                    .map_err(|_| SequencingError::SequencedBroken)?;
             }
             StreamEntryValue::Eof => {
                 let evt = msg::Ack { seq }.into();
-                try_emit_evt(&mut evt_tx, evt).await?;
+                let sp = info_span!("emit local event", evt = ?evt);
+                // TODO: sould not be Sequencing Error here
+                evt_tx
+                    .send(evt)
+                    .instrument(sp)
+                    .await
+                    .inspect_err(|_| error!("local event channel is broken"))
+                    .map_err(|_| SequencingError::SequencedBroken)?;
                 info!(seq = seq, "eof reached, streaming exits");
                 return Ok(());
             }
@@ -69,8 +83,8 @@ async fn streaming_loop(
 }
 
 pub async fn run(
-    mut cmd_rx: impl Stream<Item = Command> + Unpin,
-    mut event_tx: impl Sink<Event, Error = futures::channel::mpsc::SendError> + Unpin,
+    mut cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
+    mut event_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Unpin + Send + 'static,
     stream_to_write: impl AsyncWrite + Unpin + Send + 'static,
     config: Config,
 ) -> Result<(), SequencingError> {
@@ -78,83 +92,94 @@ pub async fn run(
 
     let mut next_seq = 0u16;
     let mut buffed_count = 0u16;
-    let (mut data_tx, data_rx) = futures::channel::mpsc::channel(config.max_data_ahead as usize);
+    let (mut data_tx, data_rx) =
+        futures::channel::mpsc::channel(config.max_data_ahead as usize + 1);
     let (local_evt_tx, mut local_evt_rx) =
-        futures::channel::mpsc::channel(config.max_data_ahead as usize);
+        futures::channel::mpsc::channel(config.max_data_ahead as usize + 1);
 
     let mut heap = std::collections::BinaryHeap::<std::cmp::Reverse<StreamEntry>>::with_capacity(
-        super::MAX_DATA_AHEAD as usize,
+        (super::MAX_DATA_AHEAD + 1) as usize,
     );
 
     let main_loop = async move {
         loop {
             tokio::select! {
-                    cmd = cmd_rx.next().instrument(debug_span!("receive command")) => {
-                        let cmd = match cmd {
-                            Some(cmd) => cmd,
-                            None => {
-                                error!("command channel is broken");
-                                return Ok::<_, SequencingError>(());
-                            }
-                        };
-
-                        info!(cmd = ?cmd, "command received");
-
-                        buffed_count += 1;
-                        if buffed_count > config.max_data_ahead {
-                            panic!("too many data cached");
+                cmd = cmd_rx.next().instrument(debug_span!("receive command")) => {
+                    let cmd = match cmd {
+                        Some(cmd) => cmd,
+                        None => {
+                            error!("command channel is broken");
+                            return Ok::<_, SequencingError>(());
                         }
+                    };
 
-                        match cmd {
-                            Command::Data(data) => {
-                                heap.push(std::cmp::Reverse(StreamEntry::data(data.seq, data.data)));
-                            }
-                            Command::Eof(eof) => {
-                                heap.push(std::cmp::Reverse(StreamEntry::eof(eof.seq)));
-                            }
-                        };
+                    debug!(cmd = ?cmd, "command received");
 
-                        while heap.peek().map(|e| e.0.0 == next_seq).unwrap_or(false) {
-                            if let Err(_) = data_tx
-                                .send(heap.pop().unwrap().0)
-                                    .instrument(debug_span!("send data"))
-                                    .await
-                            {
-                                error!("local stream channel is broken");
-                                return Ok(());
-                            }
-
-                            next_seq += 1;
-                        }
-                    },
-                    evt = local_evt_rx.next().instrument(debug_span!("receive local event")) => {
-                        let evt = match evt {
-                            Some(evt) => evt,
-                            None => {
-                                debug!("end of local event channel, exiting");
-                                return Ok::<_, SequencingError>(());
-                            }
-                        };
-
-                        match &evt {
-                            Event::Ack(_) => {
-                                buffed_count -= 1;
-                            }
-                        };
-
-                        info!(evt = ?evt, "local event received");
-                        try_emit_evt(&mut event_tx, evt).await?;
+                    buffed_count += 1;
+                    if buffed_count > config.max_data_ahead {
+                        panic!("too many data cached");
                     }
+
+                    match cmd {
+                        Command::Data(data) => {
+                            heap.push(std::cmp::Reverse(StreamEntry::data(data.seq, data.data)));
+                        }
+                        Command::Eof(eof) => {
+                            heap.push(std::cmp::Reverse(StreamEntry::eof(eof.seq)));
+                        }
+                    };
+
+                    debug!("buffed count: {}", buffed_count);
+
+                    while heap.peek().map(|e| e.0.0 == next_seq).unwrap_or(false) {
+                        let stream_entry = heap.pop().unwrap();
+                        let span = debug_span!("send stream entry", seq = stream_entry.0.0);
+                        if let Err(_) = data_tx
+                            .send(stream_entry.0)
+                                .instrument(span)
+                                .await
+                        {
+                            error!("local stream channel is broken");
+                            return Ok(());
+                        }
+
+                        next_seq += 1;
+                    }
+                },
+                evt = local_evt_rx.next().instrument(debug_span!("receive local event")) => {
+                    let evt = match evt {
+                        Some(evt) => evt,
+                        None => {
+                            debug!("end of local event channel, exiting");
+                            return Ok::<_, SequencingError>(());
+                        }
+                    };
+
+                    match &evt {
+                        Event::Ack(_) => {
+                            buffed_count -= 1;
+                        }
+                    };
+
+                    info!(evt = ?evt, "local event received");
+                    try_emit_evt(&mut event_tx, evt).await?;
+                }
             }
         }
     };
 
-    tokio::try_join!(
-        main_loop.instrument(debug_span!("main loop")),
-        streaming_loop(stream_to_write, data_rx, local_evt_tx,)
-            .instrument(debug_span!("streaming loop")),
-    )
-    .map(|_| ())
+    // TODO: spawn a separate task for the sake of finding where the blockage is
+    // remove/restructure once the issue is fixed
+    let handle = tokio::spawn(async move {
+        tokio::try_join!(
+            main_loop.instrument(debug_span!("main loop")),
+            streaming_loop(stream_to_write, data_rx, local_evt_tx,)
+                .instrument(debug_span!("streaming loop")),
+        )
+        .map(|_| ())
+    });
+
+    handle.await.unwrap()
 }
 
 #[cfg(test)]

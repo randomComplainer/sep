@@ -42,7 +42,8 @@ impl MaxAcked {
         }
     }
 
-    pub fn behind(&self, next_seq: u16) -> u16 {
+    // unacked count if next_seq is sent
+    pub fn unacked_count_if(&self, next_seq: u16) -> u16 {
         next_seq - self.0
     }
 
@@ -53,7 +54,7 @@ impl MaxAcked {
 }
 
 async fn try_emit_evt(
-    evt_tx: &mut (impl Sink<Event, Error = futures::channel::mpsc::SendError> + Unpin),
+    evt_tx: &mut (impl Sink<Event, Error = impl std::fmt::Debug> + Unpin),
     evt: Event,
 ) -> Result<(), SequencingError> {
     let sp = info_span!("emit event:", evt = ?evt);
@@ -68,15 +69,16 @@ async fn try_emit_evt(
 async fn stream_reading_loop(
     mut seq: u16,
     mut stream_to_read: impl AsyncRead + Unpin + Send + 'static,
-    mut evt_tx: impl Sink<Event, Error = futures::channel::mpsc::SendError> + Unpin,
+    mut evt_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Unpin,
     mut max_acked_rx: tokio::sync::watch::Receiver<MaxAcked>,
     config: Config,
 ) -> Result<(), SequencingError> {
     loop {
-        max_acked_rx
-            .wait_for(|max_acked| max_acked.behind(seq) < config.max_package_ahead)
+        let lock = max_acked_rx
+            .wait_for(|max_acked| max_acked.unacked_count_if(seq) <= config.max_package_ahead)
             .await
             .expect("max_acked_rx is broken");
+        drop(lock);
 
         // TODO: reuse buf
         let mut buf = bytes::BytesMut::with_capacity(config.max_package_size);
@@ -90,10 +92,12 @@ async fn stream_reading_loop(
             try_emit_evt(&mut evt_tx, evt).await?;
             info!(seq = seq, "stream eof reached");
 
-            max_acked_rx
+            let lock = max_acked_rx
                 .wait_for(|max_acked| max_acked.eq(seq))
                 .await
                 .expect("max_acked_rx is broken");
+            drop(lock);
+
             info!(seq = seq, "ack of eof reached");
             return Ok(());
         };
@@ -104,7 +108,7 @@ async fn stream_reading_loop(
 
 pub async fn run(
     mut cmd_rx: impl Stream<Item = Command> + Unpin,
-    mut event_tx: impl Sink<Event, Error = futures::channel::mpsc::SendError> + Unpin,
+    mut event_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Unpin,
     stream_to_read: impl AsyncRead + Unpin + Send + 'static,
     first_pack: Option<BytesMut>,
     config: Config,
@@ -125,6 +129,7 @@ pub async fn run(
 
     let cmd_receiving_task = async move {
         while let Some(cmd) = cmd_rx.next().await {
+            debug!(cmd = ?cmd, "command received");
             match cmd {
                 Command::Ack(ack) => {
                     max_acked_tx.send_if_modified(|old| old.update(ack.seq));

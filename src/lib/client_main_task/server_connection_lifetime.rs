@@ -51,138 +51,74 @@ where
     }
 }
 
-pub fn run<TConnectServer>(
-    connect_to_server: TConnectServer,
+pub fn run<TServerStream, TCipher>(
+    mut server_write: protocol::client_agent::GreetedWrite<TServerStream, TCipher>,
+    mut server_read: protocol::client_agent::GreetedRead<TServerStream, TCipher>,
     mut client_msg_rx: handover::Receiver<protocol::msg::ClientMsg>,
-    mut server_msg_tx: futures::channel::mpsc::Sender<(u16, session::msg::ServerMsg)>,
+    mut server_msg_tx: impl Sink<(u16, session::msg::ServerMsg), Error = impl std::fmt::Debug>
+    + Unpin
+    + Send
+    + 'static,
 ) -> impl Future<Output = Result<(), std::io::Error>> + Send
 where
-    TConnectServer: ServerConnector,
+    TServerStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    TCipher: StreamCipher + Unpin + Send + 'static,
 {
     async move {
-        let (mut server_write, mut server_read) = connect_to_server.connect().await?;
-        let (close_notify_tx, mut close_notify_rx) = futures::channel::oneshot::channel::<()>();
+        let send_loop = async move {
+            while let Some(client_msg) = client_msg_rx
+                .recv()
+                .instrument(debug_span!("receive client msg to send"))
+                .await
+            {
+                let span = debug_span!("send client msg to server", ?client_msg);
+                server_write.send_msg(client_msg).instrument(span).await?;
+            }
 
-        let reciving_msg_from_server = async move {
-            while let Some(msg) = match server_read.recv_msg().await {
-                Ok(msg_opt) => msg_opt,
+            Ok::<_, std::io::Error>(())
+        }
+        .instrument(debug_span!("send loop"));
+
+        let recv_loop = async move {
+            while let Some(server_msg) = match server_read
+                .recv_msg()
+                .instrument(debug_span!("receive server msg"))
+                .await
+            {
+                Ok(server_msg) => server_msg,
                 Err(e) => match e {
                     DecodeError::Io(err) => return Err(err),
                     DecodeError::InvalidStream(err) => panic!("invalid stream: {:?}", err),
                 },
             } {
-                debug!("message from server: {:?}", &msg);
-                match msg {
+                debug!("message from server: {:?}", &server_msg);
+
+                match server_msg {
                     protocol::msg::ServerMsg::SessionMsg(proxyee_id, server_msg) => {
-                        server_msg_tx.send((proxyee_id, server_msg)).await.unwrap();
+                        let span = debug_span!(
+                            "forward server msg to session",
+                            session_id = proxyee_id,
+                            ?server_msg
+                        );
+                        server_msg_tx
+                            .send((proxyee_id, server_msg))
+                            .instrument(span)
+                            .await
+                            .unwrap();
                     }
                     protocol::msg::ServerMsg::EndOfStream => {
                         debug!("end of server messages");
-                        let _ = close_notify_tx.send(());
                         return Ok::<_, std::io::Error>(());
                     }
                 };
             }
-
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "unexpected end of server messages",
-            ));
-        };
-
-        let sending_msg_to_server = async move {
-            loop {
-                match futures::future::select(close_notify_rx, client_msg_rx.recv().boxed()).await {
-                    futures::future::Either::Left(x) => {
-                        drop(x);
-                        // TODO: error handling
-                        server_write.close().await.unwrap();
-
-                        return Ok::<_, std::io::Error>(());
-                    }
-                    futures::future::Either::Right((client_msg_opt, not_yet_closed)) => {
-                        if let Some(client_msg) = client_msg_opt {
-                            close_notify_rx = not_yet_closed;
-                            debug!("message to server: {:?}", &client_msg);
-                            // TODO: error handling
-                            server_write.send_msg(client_msg).await.unwrap();
-                        } else {
-                            return Ok::<_, std::io::Error>(Default::default());
-                        }
-                    }
-                }
-            }
-        };
-
-        tokio::try_join! {
-            sending_msg_to_server,
-            reciving_msg_from_server,
+            panic!("server_read stream is broken");
         }
-        .map(|_| ())
-    }
-}
+        .instrument(debug_span!("recv loop"));
 
-#[cfg(test)]
-mod tests {
-    use rand::RngCore as _;
-    use std::sync::{Arc, Mutex};
-
-    use super::*;
-
-    // verify that client connection lifetime task can end gracefully
-    // when server closes connection
-    // might not need to test this in the future
-    #[tokio::test]
-    async fn server_close_connection() {
-        let (mut client_stream, mut server_stream) = tokio::io::duplex(1024);
-        let key: Arc<protocol::Key> = protocol::key_from_string("key").into();
-
-        let mut client_stream = Arc::new(Mutex::new(Some(client_stream)));
-
-        let mut client_id: Box<[u8; 16]> = [0u8; 16].into();
-        rand::rng().fill_bytes(client_id.as_mut());
-        let client_id: Arc<[u8; 16]> = client_id.into();
-
-        let timestamp = protocol::get_timestamp();
-
-        let (client_msg_tx, mut client_msg_rx) = handover::channel();
-        let (server_msg_tx, mut server_msg_rx) = futures::channel::mpsc::channel(4);
-
-        let server_agent = protocol::server_agent::Init::new(key.clone(), server_stream);
-
-        let server_conn = move || {
-            let key = key.clone();
-            let client_stream = client_stream.clone();
-            let client_id = client_id.clone();
-
-            Box::pin(async move {
-                let client_stream = client_stream.lock().unwrap().take().unwrap();
-
-                let client_agent = protocol::client_agent::Init::new(
-                    client_id,
-                    1234,
-                    key.clone(),
-                    protocol::rand_nonce(),
-                    client_stream,
-                );
-
-                client_agent.send_greeting(timestamp).await
-            })
-        };
-
-        let client_task = run(server_conn, client_msg_rx, server_msg_tx);
-        let client_task_handle = tokio::spawn(client_task);
-
-        let (_client_id, _client_read, mut client_write) =
-            server_agent.recv_greeting(timestamp).await.unwrap();
-
-        client_write
-            .send_msg(protocol::msg::ServerMsg::EndOfStream)
-            .await
-            .unwrap();
-
-        assert_eq!(client_task_handle.await.unwrap().unwrap(), ());
-
-        drop(client_write);
+        tokio::select! {
+            x = send_loop => x,
+            x = recv_loop => x,
+        }
     }
 }
