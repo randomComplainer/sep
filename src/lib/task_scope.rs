@@ -187,6 +187,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn usable_after_all_tasks_finished() {
+        let (mut handle, task) = new_scope::<usize>();
+        let (lock_tx, lock_rx) = tokio::sync::oneshot::channel::<()>();
+
+        handle
+            .run_async(async move {
+                lock_tx.send(()).unwrap();
+                Ok(())
+            })
+            .await;
+
+        let task = match futures::future::select(lock_rx, task.boxed()).await {
+            futures::future::Either::Left((_, task)) => task,
+            futures::future::Either::Right(_) => {
+                unreachable!()
+            }
+        };
+
+        handle.spawn(std::future::ready(Err(1))).await;
+        assert_eq!(1, task.await);
+    }
+
+    #[tokio::test]
     async fn async_spawn() {
         let (mut handle, scpoe_task) = new_scope::<usize>();
 
