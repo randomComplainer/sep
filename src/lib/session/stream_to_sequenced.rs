@@ -19,8 +19,8 @@ pub enum Event {
 }
 
 pub struct Config {
-    pub max_package_ahead: u16,
-    pub max_package_size: usize,
+    pub max_packet_ahead: u16,
+    pub max_packet_size: usize,
 }
 
 // simple wrapper around u16 sequence number
@@ -74,15 +74,24 @@ async fn stream_reading_loop(
     config: Config,
 ) -> Result<(), SequencingError> {
     loop {
-        let lock = max_acked_rx
-            .wait_for(|max_acked| max_acked.unacked_count_if(seq) <= config.max_package_ahead)
+        let lock = match max_acked_rx
+            .wait_for(|max_acked| max_acked.unacked_count_if(seq) < config.max_packet_ahead)
             .await
-            .expect("max_acked_rx is broken");
+        {
+            Ok(lock) => lock,
+            Err(_) => {
+                error!("max_acked_rx is broken");
+                return Err(SequencingError::SequencedBroken);
+            }
+        };
+
         drop(lock);
 
         // TODO: reuse buf
-        let mut buf = bytes::BytesMut::with_capacity(config.max_package_size);
-        let n = stream_to_read.read_buf(&mut buf).await?;
+        let mut buf = bytes::BytesMut::with_capacity(config.max_packet_size);
+        let n = stream_to_read.read_buf(&mut buf).await.inspect_err(|err| {
+            error!("stream read error: {:?}", err);
+        })?;
 
         if n != 0 {
             let evt = msg::Data { seq, data: buf }.into();
@@ -90,7 +99,7 @@ async fn stream_reading_loop(
         } else {
             let evt = msg::Eof { seq }.into();
             try_emit_evt(&mut evt_tx, evt).await?;
-            info!(seq = seq, "stream eof reached");
+            info!(seq = seq, "stream eof reached, wait for eof to be acked");
 
             let lock = max_acked_rx
                 .wait_for(|max_acked| max_acked.eq(seq))
@@ -137,6 +146,8 @@ pub async fn run(
             }
         }
 
+        error!("unexpected end of command channel");
+
         return Err::<(), _>(SequencingError::SequencedBroken);
     };
 
@@ -161,18 +172,168 @@ mod tests {
 
     use tokio::io::AsyncWriteExt as _;
 
+    fn create_task() -> (
+        impl futures::Sink<Command, Error = impl std::fmt::Debug> + Unpin,
+        impl futures::Stream<Item = Event> + Send + Unpin,
+        impl tokio::io::AsyncWrite + Unpin + Send + 'static,
+        impl std::future::Future<Output = Result<(), SequencingError>> + Send + 'static,
+    ) {
+        let (cmd_tx, cmd_rx) = futures::channel::mpsc::channel(1);
+        let (event_tx, event_rx) = futures::channel::mpsc::channel(1);
+
+        let (stream_read, stream_write) = tokio::io::duplex(1024);
+
+        let config = Config {
+            max_packet_ahead: 2,
+            max_packet_size: 1,
+        };
+
+        let task = run(cmd_rx, event_tx, stream_read, None, config);
+        (cmd_tx, event_rx, stream_write, task)
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn happy_path() {
+        let (mut cmd_tx, mut evt_rx, mut stream_write, task) = create_task();
+
+        let main_task = async move {
+            let task = tokio::spawn(task.instrument(tracing::info_span!("test target")));
+
+            let evt = evt_rx
+                .next()
+                .instrument(tracing::info_span!("receive evt 1"))
+                .await
+                .unwrap();
+
+            match evt {
+                super::Event::Data(msg::Data { seq, data }) => {
+                    assert_eq!(seq, 0);
+                    assert_eq!(data.as_ref(), &[1]);
+                }
+                _ => panic!("unexpected event"),
+            };
+
+            cmd_tx
+                .send(Command::Ack(msg::Ack { seq: 0 }))
+                .instrument(tracing::info_span!("send cmd 1"))
+                .await
+                .unwrap();
+
+            let evt = evt_rx
+                .next()
+                .instrument(tracing::info_span!("receive evt 2"))
+                .await
+                .unwrap();
+            match evt {
+                super::Event::Data(msg::Data { seq, data }) => {
+                    assert_eq!(seq, 1);
+                    assert_eq!(data.as_ref(), &[2]);
+                }
+                _ => panic!("unexpected event"),
+            };
+
+            cmd_tx
+                .send(Command::Ack(msg::Ack { seq: 1 }))
+                .instrument(tracing::info_span!("send cmd 2"))
+                .await
+                .unwrap();
+
+            let evt = evt_rx
+                .next()
+                .instrument(tracing::info_span!("receive evt 3"))
+                .await
+                .unwrap();
+            match evt {
+                super::Event::Eof(msg::Eof { seq }) => {
+                    assert_eq!(seq, 2);
+                }
+                _ => panic!("unexpected event"),
+            };
+
+            cmd_tx
+                .send(Command::Ack(msg::Ack { seq: 2 }))
+                .instrument(tracing::info_span!("send cmd 3"))
+                .await
+                .unwrap();
+
+            task.await.unwrap().unwrap();
+        }
+        .instrument(tracing::info_span!("parent task"));
+
+        let other_side_of_stream = async move {
+            stream_write.write_all(&[1, 2]).await.unwrap();
+        }
+        .instrument(tracing::info_span!("other side of stream"));
+
+        tokio::join!(other_side_of_stream, main_task);
+    }
+
+    #[test]
+    #[test_log::test]
+    fn respects_max_package_ahead() {
+        let (mut cmd_tx, mut event_rx, mut stream_write, task) = create_task();
+        let mut main_task = tokio_test::task::spawn(task);
+
+        tokio_test::assert_ready!(
+            tokio_test::task::spawn(stream_write.write_all(&[1, 2, 3, 4])).poll()
+        )
+        .unwrap();
+
+        tokio_test::assert_pending!(main_task.poll());
+
+        let evt =
+            tokio_test::assert_ready!(tokio_test::task::spawn(event_rx.next()).poll()).unwrap();
+        match evt {
+            super::Event::Data(msg::Data { seq, data }) => {
+                assert_eq!(seq, 0);
+                assert_eq!(data.as_ref(), &[1]);
+            }
+            _ => panic!("unexpected event"),
+        };
+        tokio_test::assert_pending!(main_task.poll());
+
+        let evt =
+            tokio_test::assert_ready!(tokio_test::task::spawn(event_rx.next()).poll()).unwrap();
+        match evt {
+            super::Event::Data(msg::Data { seq, data }) => {
+                assert_eq!(seq, 1);
+                assert_eq!(data.as_ref(), &[2]);
+            }
+            _ => panic!("unexpected event"),
+        };
+        tokio_test::assert_pending!(main_task.poll());
+
+        // no more packages due to max packet ahead reached
+        tokio_test::assert_pending!(tokio_test::task::spawn(event_rx.next()).poll());
+
+        tokio_test::assert_ready!(
+            tokio_test::task::spawn(
+                cmd_tx
+                    .send(Command::Ack(msg::Ack { seq: 0 }))
+                    .instrument(tracing::info_span!("send cmd 3"))
+            )
+            .poll()
+        )
+        .unwrap();
+        tokio_test::assert_pending!(main_task.poll());
+
+        let evt =
+            tokio_test::assert_ready!(tokio_test::task::spawn(event_rx.next()).poll()).unwrap();
+        match evt {
+            super::Event::Data(msg::Data { seq, data }) => {
+                assert_eq!(seq, 2);
+                assert_eq!(data.as_ref(), &[3]);
+            }
+            _ => panic!("unexpected event"),
+        };
+    }
+
     #[test]
     fn dont_block_on_stream() {
-        let (mut cmd_tx, cmd_rx) = futures::channel::mpsc::channel(1);
-        let (stream_read, mut stream_write) = tokio::io::duplex(1024);
-        let config = Config {
-            max_package_ahead: 2,
-            max_package_size: 1,
-        };
-        let (event_tx, mut event_rx) = futures::channel::mpsc::channel(1);
+        let (mut cmd_tx, mut event_rx, mut stream_write, task) = create_task();
 
-        let mut main_task =
-            tokio_test::task::spawn(run(cmd_rx, event_tx, stream_read, None, config));
+        let mut main_task = tokio_test::task::spawn(task);
 
         let _ = tokio_test::assert_ready!(
             tokio_test::task::spawn(stream_write.write_all(&[1, 2])).poll()

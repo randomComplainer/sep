@@ -120,8 +120,8 @@ pub async fn run(
         target_read,
         None,
         session::stream_to_sequenced::Config {
-            max_package_ahead: session::MAX_DATA_AHEAD,
-            max_package_size: session::DATA_BUFF_SIZE,
+            max_packet_ahead: session::MAX_DATA_AHEAD,
+            max_packet_size: session::DATA_BUFF_SIZE,
         },
     )
     .map_err(TerminationError::from)
@@ -135,7 +135,7 @@ pub async fn run(
         }),
         target_write,
         session::sequenced_to_stream::Config {
-            max_data_ahead: session::MAX_DATA_AHEAD,
+            max_packet_ahead: session::MAX_DATA_AHEAD,
         },
     )
     .map_err(TerminationError::from)

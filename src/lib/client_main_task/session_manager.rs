@@ -58,7 +58,11 @@ pub async fn run<ProxyeeStream>(
                             let session_result = session::client::run(
                                 proxyee,
                                 session_server_msg_rx,
-                                evt_tx.clone().with_sync(move |client_msg| Event::ClientMsg(session_id, client_msg))
+                                evt_tx.clone().with_sync(move |client_msg| Event::ClientMsg(session_id, client_msg)),
+                                session::client::Config {
+                                    max_packet_ahead: session::MAX_DATA_AHEAD,
+                                    max_packet_size: session::DATA_BUFF_SIZE,
+                                }
                             )
                                 .instrument(info_span!("session", session_id = session_id))
                                 .await;

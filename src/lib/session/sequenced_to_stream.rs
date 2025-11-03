@@ -33,7 +33,7 @@ async fn try_emit_evt(
 }
 
 pub struct Config {
-    pub max_data_ahead: u16,
+    pub max_packet_ahead: u16,
 }
 
 async fn streaming_loop(
@@ -93,9 +93,9 @@ pub async fn run(
     let mut next_seq = 0u16;
     let mut buffed_count = 0u16;
     let (mut data_tx, data_rx) =
-        futures::channel::mpsc::channel(config.max_data_ahead as usize + 1);
+        futures::channel::mpsc::channel(config.max_packet_ahead as usize + 1);
     let (local_evt_tx, mut local_evt_rx) =
-        futures::channel::mpsc::channel(config.max_data_ahead as usize + 1);
+        futures::channel::mpsc::channel(config.max_packet_ahead as usize + 1);
 
     let mut heap = std::collections::BinaryHeap::<std::cmp::Reverse<StreamEntry>>::with_capacity(
         (super::MAX_DATA_AHEAD + 1) as usize,
@@ -116,7 +116,7 @@ pub async fn run(
                     debug!(cmd = ?cmd, "command received");
 
                     buffed_count += 1;
-                    if buffed_count > config.max_data_ahead {
+                    if buffed_count > config.max_packet_ahead {
                         panic!("too many data cached");
                     }
 
@@ -195,7 +195,7 @@ mod tests {
                 cmd_rx,
                 event_tx,
                 stream_write,
-                Config { max_data_ahead: 10 },
+                Config { max_packet_ahead: 10 },
             )
             .boxed(),
         );

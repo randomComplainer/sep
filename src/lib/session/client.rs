@@ -5,6 +5,29 @@ use super::TerminationError;
 use super::msg;
 use crate::prelude::*;
 
+#[derive(Debug, Clone, Copy)]
+pub struct Config {
+    pub max_packet_ahead: u16,
+    pub max_packet_size: usize,
+}
+
+impl Into<session::sequenced_to_stream::Config> for Config {
+    fn into(self) -> session::sequenced_to_stream::Config {
+        session::sequenced_to_stream::Config {
+            max_packet_ahead: self.max_packet_ahead,
+        }
+    }
+}
+
+impl Into<session::stream_to_sequenced::Config> for Config {
+    fn into(self) -> session::stream_to_sequenced::Config {
+        session::stream_to_sequenced::Config {
+            max_packet_ahead: self.max_packet_ahead,
+            max_packet_size: self.max_packet_size,
+        }
+    }
+}
+
 // panic on protocol error (cache overflow/unexpected message)
 // Err(()) on closed server message channels
 // Ok(()) on completed session OR proxyee io error
@@ -17,6 +40,7 @@ pub async fn run<ProxyeeStream>(
     + Send
     + Clone
     + 'static,
+    config: Config,
 ) -> Result<(), ()>
 where
     ProxyeeStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -56,7 +80,8 @@ where
     let (reply, early_target_cmds) = {
         // target might start send data as soon as server connected to it.
         // so we need to buffer it until client receives server reply.
-        let mut early_target_packages: Vec<session::sequenced_to_stream::Command> = Vec::new();
+        let mut early_target_packages: Vec<session::sequenced_to_stream::Command> =
+            Vec::with_capacity(config.max_packet_ahead as usize);
 
         loop {
             match server_read
@@ -121,10 +146,7 @@ where
         }),
         proxyee_read,
         Some(buf),
-        session::stream_to_sequenced::Config {
-            max_package_ahead: session::MAX_DATA_AHEAD,
-            max_package_size: session::DATA_BUFF_SIZE,
-        },
+        config.into(),
     )
     .map_err(TerminationError::from)
     .instrument(info_span!("proxyee to server"));
@@ -149,9 +171,7 @@ where
             session::sequenced_to_stream::Event::Ack(ack) => ack.into(),
         }),
         proxyee_write,
-        session::sequenced_to_stream::Config {
-            max_data_ahead: session::MAX_DATA_AHEAD,
-        },
+        config.into(),
     )
     .map_err(TerminationError::from)
     .instrument(info_span!("server to proxyee"));
