@@ -195,7 +195,9 @@ mod tests {
                 cmd_rx,
                 event_tx,
                 stream_write,
-                Config { max_packet_ahead: 10 },
+                Config {
+                    max_packet_ahead: 10,
+                },
             )
             .boxed(),
         );
