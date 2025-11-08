@@ -82,6 +82,9 @@ async fn streaming_loop(
     Ok(())
 }
 
+// Err(SequencingError::SequencedBroken) when cmd_rx is broken
+// Err(SequencingError::SequencedBroken) when event_tx is broken
+// Err(SequencingError::StreamBroken) when stream_to_write is broken
 pub async fn run(
     mut cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
     mut event_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Unpin + Send + 'static,
@@ -178,32 +181,76 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches::assert_matches;
+
     use bytes::BytesMut;
     use tokio::io::AsyncReadExt;
 
     use super::*;
 
-    // temporarily disabled due to tokio::spawn in run()
-    // #[test]
-    fn dont_block_on_stream() {
-        let (mut cmd_tx, cmd_rx) = futures::channel::mpsc::channel(1);
-        let (stream_write, mut stream_read) = tokio::io::duplex(1);
-        let (event_tx, mut event_rx) = futures::channel::mpsc::channel(100);
+    fn create_task(
+        max_packet_ahead: u16,
+        stream_to_write: impl AsyncWrite + Unpin + Send + 'static,
+    ) -> (
+        impl futures::Sink<Command, Error = impl std::fmt::Debug> + Unpin,
+        impl futures::Stream<Item = Event> + Send + Unpin,
+        impl std::future::Future<Output = Result<(), SequencingError>> + Send + 'static,
+    ) {
+        let (cmd_tx, cmd_rx) = futures::channel::mpsc::channel(1);
+        let (event_tx, event_rx) = futures::channel::mpsc::channel(1);
 
-        let mut main_task = tokio_test::task::spawn(
-            run(
-                cmd_rx,
-                event_tx,
-                stream_write,
-                Config {
-                    max_packet_ahead: 10,
-                },
-            )
-            .boxed(),
-        );
+        let config = Config { max_packet_ahead };
+
+        let task = run(cmd_rx, event_tx, stream_to_write, config);
+        (cmd_tx, event_rx, task)
+    }
+
+    #[tokio::test]
+    async fn panic_on_exceed_max_packet_ahead() {
+        let (mut cmd_tx, mut _event_rx, main_task) = create_task(3, tokio::io::duplex(0).0);
+        let send_cmds = async move {
+            for i in 1..=4 {
+                cmd_tx
+                    .send(Command::Data(msg::Data {
+                        seq: i.try_into().unwrap(),
+                        data: BytesMut::from([i.try_into().unwrap()].as_ref()),
+                    }))
+                    .await
+                    .unwrap();
+            }
+        };
+
+        let send_cmds = tokio::spawn(send_cmds);
+        let main_task = tokio::spawn(main_task);
+
+        let (send_cmds_result, main_task_result) = tokio::join!(send_cmds, main_task);
+
+        send_cmds_result.unwrap();
+
+        assert!(main_task_result.is_err());
+        assert!(main_task_result.unwrap_err().is_panic());
+    }
+
+    // #[test_log::test]
+    // async fn err_on_broken_cmd_stream() {
+    //     let (cmd_tx, _event_rx, main_task) = create_task(3, tokio::io::duplex(1).0);
+    //
+    //     drop(cmd_tx);
+    //
+    //     let result = main_task.await;
+    //
+    //     assert_matches!(result, Err(SequencingError::SequencedBroken));
+    // }
+
+    #[test]
+    fn dont_block_on_stream() {
+        let (stream_write, mut stream_read) = tokio::io::duplex(1);
+
+        let (mut cmd_tx, mut event_rx, main_task) = create_task(10, stream_write);
+
+        let mut main_task = tokio_test::task::spawn(main_task);
 
         for i in 0..10 {
-            // let i = 10 - 1 - i;
             let mut cmd_sending = tokio_test::task::spawn(cmd_tx.send(Command::Data(msg::Data {
                 seq: i.try_into().unwrap(),
                 data: BytesMut::from([i.try_into().unwrap()].as_ref()),
