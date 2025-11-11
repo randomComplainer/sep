@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::AtomicU16;
+
 use derive_more::From;
 use futures::prelude::*;
 use tokio::io::{AsyncWrite, AsyncWriteExt as _};
@@ -5,7 +8,6 @@ use tracing::*;
 
 use crate::session::sequence::{StreamEntry, StreamEntryValue};
 
-use super::SequencingError;
 use super::msg;
 
 #[derive(Debug, From)]
@@ -19,17 +21,20 @@ pub enum Event {
     Ack(#[from] msg::Ack),
 }
 
-async fn try_emit_evt(
-    evt_tx: &mut (impl Sink<Event, Error = impl std::fmt::Debug> + Unpin),
-    evt: Event,
-) -> Result<(), SequencingError> {
-    let sp = info_span!("emit event:", evt = ?evt);
-    evt_tx
-        .send(evt)
-        .instrument(sp)
-        .await
-        .inspect_err(|_| error!("sequenced channel is broken"))
-        .map_err(|_| SequencingError::SequencedBroken)
+// return Ok(()) on broken channel
+macro_rules! try_emit_evt {
+    ($evt_tx:ident, $evt:ident) => {
+        let sp = info_span!("emit event:", evt = ?$evt);
+
+        if let Err(_) = $evt_tx
+            .send($evt)
+            .instrument(sp)
+            .await
+        {
+            error!("event channel is broken, exiting");
+            return Ok(());
+        }
+    }
 }
 
 pub struct Config {
@@ -39,8 +44,9 @@ pub struct Config {
 async fn streaming_loop(
     mut stream_to_write: impl AsyncWrite + Unpin + Send + 'static,
     mut data_rx: impl Stream<Item = StreamEntry> + Unpin,
-    mut evt_tx: impl Sink<Event, Error = futures::channel::mpsc::SendError> + Unpin,
-) -> Result<(), SequencingError> {
+    mut evt_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Unpin,
+    buffed_count: Arc<AtomicU16>,
+) -> Result<(), std::io::Error> {
     while let Some(StreamEntry(seq, entry)) = data_rx
         .next()
         .instrument(debug_span!("receive local stream entry"))
@@ -48,135 +54,106 @@ async fn streaming_loop(
     {
         match entry {
             StreamEntryValue::Data(data) => {
+                debug!(seq, data = data.len(), "stream entry: data");
                 stream_to_write
                     .write_all(data.as_ref())
                     .instrument(info_span!("write to stream", seq, len = data.len()))
                     .await?;
 
+                buffed_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+
                 let evt = msg::Ack { seq }.into();
-                let sp = info_span!("emit local event", evt = ?evt);
-                // TODO: sould not be Sequencing Error here
-                evt_tx
-                    .send(evt)
-                    .instrument(sp)
-                    .await
-                    .inspect_err(|_| error!("local event channel is broken"))
-                    .map_err(|_| SequencingError::SequencedBroken)?;
+
+                try_emit_evt!(evt_tx, evt);
             }
             StreamEntryValue::Eof => {
+                debug!(seq, "stream entry: eof");
+
+                buffed_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                assert!(buffed_count.load(std::sync::atomic::Ordering::SeqCst) == 0);
+
                 let evt = msg::Ack { seq }.into();
-                let sp = info_span!("emit local event", evt = ?evt);
-                // TODO: sould not be Sequencing Error here
-                evt_tx
-                    .send(evt)
-                    .instrument(sp)
-                    .await
-                    .inspect_err(|_| error!("local event channel is broken"))
-                    .map_err(|_| SequencingError::SequencedBroken)?;
+                try_emit_evt!(evt_tx, evt);
                 info!(seq = seq, "eof reached, streaming exits");
                 return Ok(());
             }
         }
     }
 
+    error!("stream entry channel is broken, exiting");
+
     Ok(())
 }
 
-// Err(SequencingError::SequencedBroken) when cmd_rx is broken
-// Err(SequencingError::SequencedBroken) when event_tx is broken
-// Err(SequencingError::StreamBroken) when stream_to_write is broken
 pub async fn run(
     mut cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
-    mut event_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Unpin + Send + 'static,
+    evt_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Unpin + Send + 'static,
     stream_to_write: impl AsyncWrite + Unpin + Send + 'static,
     config: Config,
-) -> Result<(), SequencingError> {
-    // stream interactions are on separate task to avoid blocking command sender
+) -> Result<(), std::io::Error> {
+    // stream interactions are on separate Future to avoid blocking command sender
 
     let mut next_seq = 0u16;
-    let mut buffed_count = 0u16;
+    let buffed_count = Arc::new(AtomicU16::new(0));
     let (mut data_tx, data_rx) =
-        futures::channel::mpsc::channel(config.max_packet_ahead as usize + 1);
-    let (local_evt_tx, mut local_evt_rx) =
         futures::channel::mpsc::channel(config.max_packet_ahead as usize + 1);
 
     let mut heap = std::collections::BinaryHeap::<std::cmp::Reverse<StreamEntry>>::with_capacity(
         (super::MAX_DATA_AHEAD + 1) as usize,
     );
 
-    let main_loop = async move {
-        loop {
-            tokio::select! {
-                cmd = cmd_rx.next().instrument(debug_span!("receive command")) => {
-                    let cmd = match cmd {
-                        Some(cmd) => cmd,
-                        None => {
-                            error!("command channel is broken");
-                            return Ok::<_, SequencingError>(());
-                        }
-                    };
+    let cmd_receiving_task = {
+        let buffed_count = buffed_count.clone();
+        async move {
+            while let Some(cmd) = cmd_rx
+                .next()
+                .instrument(debug_span!("receive command"))
+                .await
+            {
+                debug!(cmd = ?cmd, "command received");
 
-                    debug!(cmd = ?cmd, "command received");
+                buffed_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let loaded_buffed_count = buffed_count.load(std::sync::atomic::Ordering::SeqCst);
+                if loaded_buffed_count > config.max_packet_ahead {
+                    panic!("too many data cached");
+                }
 
-                    buffed_count += 1;
-                    if buffed_count > config.max_packet_ahead {
-                        panic!("too many data cached");
+                match cmd {
+                    Command::Data(data) => {
+                        heap.push(std::cmp::Reverse(StreamEntry::data(data.seq, data.data)));
+                    }
+                    Command::Eof(eof) => {
+                        heap.push(std::cmp::Reverse(StreamEntry::eof(eof.seq)));
+                    }
+                };
+
+                debug!("buffed count: {}", loaded_buffed_count);
+
+                while heap.peek().map(|e| e.0.0 == next_seq).unwrap_or(false) {
+                    let stream_entry = heap.pop().unwrap();
+                    let span = debug_span!("send stream entry", seq = stream_entry.0.0);
+                    if let Err(_) = data_tx.send(stream_entry.0).instrument(span).await {
+                        error!("local stream channel is broken, exiting");
+                        return Ok(());
                     }
 
-                    match cmd {
-                        Command::Data(data) => {
-                            heap.push(std::cmp::Reverse(StreamEntry::data(data.seq, data.data)));
-                        }
-                        Command::Eof(eof) => {
-                            heap.push(std::cmp::Reverse(StreamEntry::eof(eof.seq)));
-                        }
-                    };
-
-                    debug!("buffed count: {}", buffed_count);
-
-                    while heap.peek().map(|e| e.0.0 == next_seq).unwrap_or(false) {
-                        let stream_entry = heap.pop().unwrap();
-                        let span = debug_span!("send stream entry", seq = stream_entry.0.0);
-                        if let Err(_) = data_tx
-                            .send(stream_entry.0)
-                                .instrument(span)
-                                .await
-                        {
-                            error!("local stream channel is broken");
-                            return Ok(());
-                        }
-
-                        next_seq += 1;
-                    }
-                },
-                evt = local_evt_rx.next().instrument(debug_span!("receive local event")) => {
-                    let evt = match evt {
-                        Some(evt) => evt,
-                        None => {
-                            debug!("end of local event channel, exiting");
-                            return Ok::<_, SequencingError>(());
-                        }
-                    };
-
-                    match &evt {
-                        Event::Ack(_) => {
-                            buffed_count -= 1;
-                        }
-                    };
-
-                    info!(evt = ?evt, "local event received");
-                    try_emit_evt(&mut event_tx, evt).await?;
+                    next_seq += 1;
                 }
             }
-        }
-    };
 
-    tokio::try_join!(
-        main_loop.instrument(debug_span!("main loop")),
-        streaming_loop(stream_to_write, data_rx, local_evt_tx,)
-            .instrument(debug_span!("streaming loop")),
-    )
-    .map(|_| ())
+            error!("command channel is broken, exiting");
+            return Ok::<_, std::io::Error>(());
+        }
+    }
+    .instrument(info_span!("command receiving task"));
+
+    let streaming_task = streaming_loop(stream_to_write, data_rx, evt_tx, buffed_count)
+        .instrument(info_span!("streaming loop"));
+
+    tokio::select! {
+        r = streaming_task => r,
+        r = cmd_receiving_task => r
+    }
 }
 
 #[cfg(test)]
@@ -194,7 +171,7 @@ mod tests {
     ) -> (
         impl futures::Sink<Command, Error = impl std::fmt::Debug> + Unpin,
         impl futures::Stream<Item = Event> + Send + Unpin,
-        impl std::future::Future<Output = Result<(), SequencingError>> + Send + 'static,
+        impl std::future::Future<Output = Result<(), std::io::Error>> + Send + 'static,
     ) {
         let (cmd_tx, cmd_rx) = futures::channel::mpsc::channel(1);
         let (event_tx, event_rx) = futures::channel::mpsc::channel(1);
@@ -203,6 +180,115 @@ mod tests {
 
         let task = run(cmd_rx, event_tx, stream_to_write, config);
         (cmd_tx, event_rx, task)
+    }
+
+    #[test_log::test]
+    fn happy_path() {
+        let (mut cmd_tx, mut event_rx, task) =
+            create_task(1, tokio_test::io::Builder::new().write(&[1, 2, 3]).build());
+
+        let mut task = tokio_test::task::spawn(task);
+
+        for i in 0..=2 {
+            tokio_test::assert_pending!(task.poll());
+
+            tokio_test::assert_ready!(
+                tokio_test::task::spawn(cmd_tx.send(Command::Data(msg::Data {
+                    seq: i.try_into().unwrap(),
+                    data: BytesMut::from([(i + 1).try_into().unwrap()].as_ref()),
+                })))
+                .poll()
+            )
+            .unwrap();
+
+            tokio_test::assert_pending!(task.poll());
+            tokio_test::assert_pending!(task.poll());
+            tokio_test::assert_pending!(task.poll());
+
+            let evt =
+                tokio_test::assert_ready!(tokio_test::task::spawn(event_rx.next()).poll()).unwrap();
+
+            match evt {
+                super::Event::Ack(msg::Ack { seq }) => {
+                    assert_eq!(seq, i);
+                }
+            };
+        }
+
+        tokio_test::assert_ready!(
+            tokio_test::task::spawn(cmd_tx.send(Command::Eof(msg::Eof { seq: 3 }))).poll()
+        )
+        .unwrap();
+
+        tokio_test::block_on(task).unwrap();
+
+        let evt =
+            tokio_test::assert_ready!(tokio_test::task::spawn(event_rx.next()).poll()).unwrap();
+
+        match evt {
+            super::Event::Ack(msg::Ack { seq }) => {
+                assert_eq!(seq, 3);
+            }
+        };
+    }
+
+    #[tokio::test]
+    async fn quit_on_broken_cmd_stream() {
+        let (cmd_tx, mut _event_rx, main_task) = create_task(3, tokio::io::duplex(0).0);
+        drop(cmd_tx);
+
+        let result = main_task.await;
+        assert_matches!(result, Ok(()));
+    }
+
+    // it's slightly concerning that
+    // event channel's broken state is not checked
+    // until next packet is written to the stream
+    #[test_log::test(tokio::test)]
+    async fn quit_on_broken_evt_stream() {
+        let (mut cmd_tx, evt_rx, main_task) =
+            create_task(3, tokio_test::io::Builder::new().write(&[1]).build());
+        drop(evt_rx);
+
+        let main_task = tokio::spawn(main_task);
+
+        cmd_tx
+            .send(Command::Data(msg::Data {
+                seq: 0.try_into().unwrap(),
+                data: BytesMut::from([1].as_ref()),
+            }))
+            .await
+            .unwrap();
+
+        let result = main_task.await.unwrap();
+        assert_matches!(result, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn io_error() {
+        let (mut cmd_tx, mut _event_rx, main_task) = create_task(
+            1,
+            tokio_test::io::Builder::new()
+                .write_error(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "broken pipe",
+                ))
+                .build(),
+        );
+
+        cmd_tx
+            .send(Command::Data(msg::Data {
+                seq: 0.try_into().unwrap(),
+                data: BytesMut::from([1].as_ref()),
+            }))
+            .await
+            .unwrap();
+
+        let result = main_task.await;
+
+        assert_matches!(result, Err(std::io::Error { .. }));
+        let e = result.unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe);
     }
 
     #[tokio::test]
@@ -230,17 +316,6 @@ mod tests {
         assert!(main_task_result.is_err());
         assert!(main_task_result.unwrap_err().is_panic());
     }
-
-    // #[test_log::test]
-    // async fn err_on_broken_cmd_stream() {
-    //     let (cmd_tx, _event_rx, main_task) = create_task(3, tokio::io::duplex(1).0);
-    //
-    //     drop(cmd_tx);
-    //
-    //     let result = main_task.await;
-    //
-    //     assert_matches!(result, Err(SequencingError::SequencedBroken));
-    // }
 
     #[test]
     fn dont_block_on_stream() {

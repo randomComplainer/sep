@@ -4,7 +4,6 @@ use futures::prelude::*;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 use tracing::*;
 
-use super::SequencingError;
 use super::msg;
 
 #[derive(Debug, From)]
@@ -53,17 +52,20 @@ impl MaxAcked {
     }
 }
 
-async fn try_emit_evt(
-    evt_tx: &mut (impl Sink<Event, Error = impl std::fmt::Debug> + Unpin),
-    evt: Event,
-) -> Result<(), SequencingError> {
-    let sp = info_span!("emit event:", evt = ?evt);
-    evt_tx
-        .send(evt)
-        .instrument(sp)
-        .await
-        .inspect_err(|_| error!("sequenced channel is broken"))
-        .map_err(|_| SequencingError::SequencedBroken)
+// return Ok(()) on broken channel
+macro_rules! try_emit_evt {
+    ($evt_tx:ident, $evt:ident) => {
+        let sp = info_span!("emit event:", evt = ?$evt);
+
+        if let Err(_) = $evt_tx
+            .send($evt)
+            .instrument(sp)
+            .await
+        {
+            error!("event channel is broken, exiting");
+            return Ok(());
+        }
+    }
 }
 
 async fn stream_reading_loop(
@@ -72,7 +74,7 @@ async fn stream_reading_loop(
     mut evt_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Unpin,
     mut max_acked_rx: tokio::sync::watch::Receiver<MaxAcked>,
     config: Config,
-) -> Result<(), SequencingError> {
+) -> Result<(), std::io::Error> {
     loop {
         let lock = match max_acked_rx
             .wait_for(|max_acked| max_acked.unacked_count_if(seq) < config.max_packet_ahead)
@@ -80,8 +82,8 @@ async fn stream_reading_loop(
         {
             Ok(lock) => lock,
             Err(_) => {
-                error!("max_acked_rx is broken");
-                return Err(SequencingError::SequencedBroken);
+                error!("max_acked_rx is broken, exiting");
+                return Ok(());
             }
         };
 
@@ -95,10 +97,10 @@ async fn stream_reading_loop(
 
         if n != 0 {
             let evt = msg::Data { seq, data: buf }.into();
-            try_emit_evt(&mut evt_tx, evt).await?;
+            try_emit_evt!(evt_tx, evt);
         } else {
             let evt = msg::Eof { seq }.into();
-            try_emit_evt(&mut evt_tx, evt).await?;
+            try_emit_evt!(evt_tx, evt);
             info!(seq = seq, "stream eof reached, wait for eof to be acked");
 
             let lock = max_acked_rx
@@ -115,16 +117,15 @@ async fn stream_reading_loop(
     }
 }
 
-// Err(SequencingError::SequencedBroken) when cmd_rx is broken
-// Err(SequencingError::SequencedBroken) when event_tx is broken
-// Err(SequencingError::StreamBroken) when stream_to_read is broken
+// Err(std::io::Error) when stream_to_read io error
+// Ok(()) otherwise, including when cmd/evt channels are broken
 pub async fn run(
     mut cmd_rx: impl Stream<Item = Command> + Unpin,
     mut event_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Unpin,
     stream_to_read: impl AsyncRead + Unpin + Send + 'static,
     first_pack: Option<BytesMut>,
     config: Config,
-) -> Result<(), SequencingError> {
+) -> Result<(), std::io::Error> {
     let mut seq = 0;
 
     if let Some(first_pack) = first_pack {
@@ -133,7 +134,7 @@ pub async fn run(
             data: first_pack,
         }
         .into();
-        try_emit_evt(&mut event_tx, evt).await?;
+        try_emit_evt!(event_tx, evt);
         seq += 1;
     }
 
@@ -149,24 +150,23 @@ pub async fn run(
             }
         }
 
-        error!("unexpected end of command channel");
+        error!("command channel is broken, exiting");
 
-        return Err::<(), _>(SequencingError::SequencedBroken);
-    };
+        return Ok::<_, std::io::Error>(());
+    }
+    .instrument(info_span!("command receiving task"));
 
     let stream_reading_task =
-        stream_reading_loop(seq, stream_to_read, event_tx, max_acked_rx, config);
+        stream_reading_loop(seq, stream_to_read, event_tx, max_acked_rx, config)
+            .instrument(info_span!("stream reading task"));
 
-    // Two separate tasks are needed so that
-    // waiting on stream does not block transmitter of commands.
-    // Command receiving task never returns Ok,
-    // so it's either
-    // - one of the tasks errored
-    // - stream_reading_task returned Ok
-    tokio::select! (
-        err = cmd_receiving_task => Err(err.unwrap_err()),
-        r = stream_reading_task => r,
-    )
+    // cmd_receiving_task doesn't end by itself,
+    // only when cmd_rx is broken
+    // so we need to select instead of try_join
+    tokio::select! {
+        r = cmd_receiving_task => r,
+        r = stream_reading_task => r
+    }
 }
 
 #[cfg(test)]
@@ -183,7 +183,7 @@ mod tests {
     ) -> (
         impl futures::Sink<Command, Error = impl std::fmt::Debug> + Unpin,
         impl futures::Stream<Item = Event> + Send + Unpin,
-        impl std::future::Future<Output = Result<(), SequencingError>> + Send + 'static,
+        impl std::future::Future<Output = Result<(), std::io::Error>> + Send + 'static,
     ) {
         let (cmd_tx, cmd_rx) = futures::channel::mpsc::channel(1);
         let (event_tx, event_rx) = futures::channel::mpsc::channel(1);
@@ -322,21 +322,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn err_on_broken_cmd_stream() {
+    async fn quit_on_broken_cmd_stream() {
         let (cmd_tx, _event_rx, task) = create_task(tokio::io::duplex(1024).0);
 
         drop(cmd_tx);
         let resut = task.await;
-        assert_matches!(resut, Err(SequencingError::SequencedBroken));
+        assert_matches!(resut, Ok(()));
     }
 
     #[tokio::test]
-    async fn err_on_broken_evt_stream() {
+    async fn quit_on_broken_evt_stream() {
         let (_cmd_tx, event_rx, task) = create_task(tokio::io::duplex(1024).0);
 
         drop(event_rx);
-        let resut = task.await;
-        assert_matches!(resut, Err(SequencingError::SequencedBroken));
+        let result = task.await;
+        assert_matches!(result, Ok(()));
     }
 
     #[tokio::test]
@@ -350,8 +350,10 @@ mod tests {
                 .build(),
         );
 
-        let resut = task.await;
-        assert_matches!(resut, Err(SequencingError::StreamBroken(_)));
+        let result = task.await;
+        assert_matches!(result, Err(_));
+        let e = result.unwrap_err();
+        assert_matches!(e.kind(), std::io::ErrorKind::BrokenPipe);
     }
 
     #[test]

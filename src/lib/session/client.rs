@@ -1,7 +1,6 @@
 use futures::prelude::*;
 use tracing::*;
 
-use super::TerminationError;
 use super::msg;
 use crate::prelude::*;
 
@@ -41,41 +40,49 @@ pub async fn run<ProxyeeStream>(
     + Clone
     + 'static,
     config: Config,
-) -> Result<(), ()>
+) -> Result<(), std::io::Error>
 where
     ProxyeeStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    // TODO: duplicated code
     let (_, proxyee) = proxyee
         .receive_greeting_message()
         .instrument(info_span!("receive greeting message from proxyee"))
         .await
-        .inspect_err(|err| {
-            error!("falied to receive proxyee greeting: {:?}", err);
-        })
-        .map_err(|_| ())?;
+        .map_err(|err| match err {
+            socks5::Socks5Error::Io(err) => err,
+            err => {
+                panic!("socks5 error: {:?}", err);
+            }
+        })?;
 
     let (proxyee_req, proxyee) = proxyee
         .send_method_selection_message(0)
         .instrument(info_span!("send method selection message to proxyee"))
         .await
-        .inspect_err(|err| {
-            error!(
-                "falied to send method selection message to proxyee: {:?}",
-                err
-            );
-        })
-        .map_err(|_| ())?;
+        .map_err(|err| match err {
+            socks5::Socks5Error::Io(err) => err,
+            err => {
+                panic!("socks5 error: {:?}", err);
+            }
+        })?;
 
     info!(addr = ?proxyee_req.addr, port = proxyee_req.port, "request addr");
 
-    server_write
+    match server_write
         .send(msg::ClientMsg::Request(msg::Request {
             addr: proxyee_req.addr,
             port: proxyee_req.port,
         }))
         .instrument(info_span!("send request to server"))
         .await
-        .map_err(|_| ())?;
+    {
+        Ok(_) => (),
+        Err(err) => {
+            error!("falied to send request to server, exiting: {:?}", err);
+            return Ok(());
+        }
+    };
 
     let (reply, early_target_cmds) = {
         // target might start send data as soon as server connected to it.
@@ -118,21 +125,25 @@ where
                     }
                 },
                 None => {
-                    return Err(());
+                    error!("server read is broken, exiting");
+                    return Ok(());
                 }
             };
         }
     };
 
-    let (proxyee_read, proxyee_write) = proxyee
+    let (proxyee_read, proxyee_write) = match proxyee
         .reply(&reply.bound_addr)
         .instrument(info_span!("reply to proxyee"))
         .await
-        .inspect_err(|err| {
+    {
+        Ok(x) => x,
+        Err(err) => {
+            // TODO: notify server
             error!("falied to reply to proxyee: {:?}", err);
-        })
-        // TODO: notify server
-        .map_err(|_| ())?;
+            return Ok(());
+        }
+    };
 
     let (mut proxyee_to_server_cmd_tx, proxyee_to_server_cmd_rx) =
         futures::channel::mpsc::channel(1);
@@ -148,7 +159,6 @@ where
         Some(buf),
         config.into(),
     )
-    .map_err(TerminationError::from)
     .instrument(info_span!("proxyee to server"));
 
     let (mut server_to_proxyee_cmd_tx, server_to_proxyee_cmd_rx) =
@@ -160,7 +170,7 @@ where
             for cmd in early_target_cmds {
                 let _ = server_to_proxyee_cmd_tx.send(cmd).await;
             }
-            Ok::<_, TerminationError>(())
+            Ok::<_, std::io::Error>(())
         }
     }
     .instrument(info_span!("server to proxyee early packages"));
@@ -173,7 +183,6 @@ where
         proxyee_write,
         config.into(),
     )
-    .map_err(TerminationError::from)
     .instrument(info_span!("server to proxyee"));
 
     let server_to_proxyee = async move {
@@ -192,6 +201,7 @@ where
                     let cmd = data.into();
                     let span = info_span!("send command to server to proxyee task", cmd = ?cmd);
                     if let Err(_) = server_to_proxyee_cmd_tx.send(cmd).instrument(span).await {
+                        debug!("server to proxyee command channel is broken");
                         continue;
                     }
                 }
@@ -199,6 +209,7 @@ where
                     let cmd = eof.into();
                     let span = info_span!("send command to server to proxyee task", cmd = ?cmd);
                     if let Err(_) = server_to_proxyee_cmd_tx.send(cmd).instrument(span).await {
+                        debug!("server to proxyee command channel is broken");
                         continue;
                     }
                 }
@@ -209,25 +220,24 @@ where
                         .instrument(span)
                         .await
                     {
+                        debug!("proxyee to server command channel is broken");
                         continue;
                     }
                 }
                 msg::ServerMsg::TargetIoError(_) => {
-                    return Result::<(), _>::Err(TerminationError::TargetIo);
+                    return;
                 }
                 _ => panic!("unexpected server msg: {:?}", msg),
             }
         }
-
-        Ok(())
     }
     .instrument(info_span!("server_msg_handling"));
 
     let streaming =
         async move { tokio::try_join!(server_to_proxyee, proxyee_to_server).map(|_| ()) };
 
-    match futures::future::select(Box::pin(streaming), Box::pin(server_msg_handling)).await {
-        future::Either::Left((r, _)) => TerminationError::to_session_result(r),
-        future::Either::Right((r, _)) => TerminationError::to_session_result(r),
+    tokio::select! {
+        r = streaming => r,
+        _ = server_msg_handling => Ok(())
     }
 }

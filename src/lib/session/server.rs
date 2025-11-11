@@ -4,7 +4,6 @@ use futures::StreamExt;
 use futures::prelude::*;
 use tracing::*;
 
-use super::TerminationError;
 use super::msg;
 use crate::prelude::*;
 
@@ -48,10 +47,6 @@ async fn connect_target(addrs: Vec<SocketAddr>) -> Result<tokio::net::TcpStream,
     ))
 }
 
-// panic on protocol error (cache overflow/unexpected message)
-// Err(()) on closed client message channels
-// Ok(()) on completed session OR target io error
-// (one can consider a target io error is a completed session)
 pub async fn run(
     mut client_read: impl Stream<Item = msg::ClientMsg> + Unpin,
     mut client_write: impl Sink<msg::ServerMsg, Error = futures::channel::mpsc::SendError>
@@ -59,7 +54,7 @@ pub async fn run(
     + Clone
     + Send
     + 'static,
-) -> Result<(), ()> {
+) -> Result<(), std::io::Error> {
     let req = match client_read
         .next()
         .instrument(info_span!("receive request from client"))
@@ -72,7 +67,8 @@ pub async fn run(
             }
         },
         None => {
-            return Err(());
+            error!("client read is broken, exiting");
+            return Ok(());
         }
     };
 
@@ -90,21 +86,32 @@ pub async fn run(
         Err(err) => {
             error!("connect target failed: {:?}", err);
 
-            return client_write
+            match client_write
                 .send(msg::ServerMsg::ReplyError(err.into()))
                 .instrument(info_span!("send reply error to client"))
                 .await
-                .map_err(|_| ());
+            {
+                Ok(_) => {
+                    return Ok(());
+                }
+                Err(err) => {
+                    error!("falied to send reply error to client: {:?}", err);
+                    return Ok(());
+                }
+            }
         }
     };
 
-    client_write
+    if let Err(_) = client_write
         .send(msg::ServerMsg::Reply(msg::Reply {
             bound_addr: target_stream.local_addr().unwrap(),
         }))
         .instrument(info_span!("send reply to client"))
         .await
-        .map_err(|_| ())?;
+    {
+        error!("falied to send reply to client, exiting");
+        return Ok(());
+    };
 
     let (target_read, target_write) = target_stream.into_split();
 
@@ -124,7 +131,6 @@ pub async fn run(
             max_packet_size: session::DATA_BUFF_SIZE,
         },
     )
-    .map_err(TerminationError::from)
     .instrument(info_span!("target to client"));
 
     let (mut client_to_target_cmd_tx, client_to_target_cmd_rx) = futures::channel::mpsc::channel(1);
@@ -138,46 +144,42 @@ pub async fn run(
             max_packet_ahead: session::MAX_DATA_AHEAD,
         },
     )
-    .map_err(TerminationError::from)
     .instrument(info_span!("client to target"));
 
     let client_msg_handling = async move {
         while let Some(msg) = client_read.next().await {
-            // it's ok to ignore broken channels for messages to
-            // client_to_target & target_to_client
-            // because they could be closed due to target io error
-            // try_join! will catch it
             match msg {
                 msg::ClientMsg::Data(data) => {
                     if let Err(_) = client_to_target_cmd_tx.send(data.into()).await {
+                        debug!("client to target command channel is broken");
                         continue;
                     }
                 }
                 msg::ClientMsg::Ack(ack) => {
                     if let Err(_) = target_to_client_cmd_tx.send(ack.into()).await {
+                        debug!("target to client command channel is broken");
                         continue;
                     }
                 }
                 msg::ClientMsg::Eof(eof) => {
                     if let Err(_) = client_to_target_cmd_tx.send(eof.into()).await {
+                        debug!("client to target command channel is broken");
                         continue;
                     }
                 }
                 msg::ClientMsg::ProxyeeIoError(_) => {
-                    return Err::<(), _>(TerminationError::ProxyeeIo);
+                    return;
                 }
                 _ => panic!("unexpected client msg: {:?}", msg),
             }
         }
-
-        Ok(())
     }
     .instrument(info_span!("client message handling"));
 
     let streaming = async move { tokio::try_join!(target_to_client, client_to_target).map(|_| ()) };
 
-    match futures::future::select(Box::pin(streaming), Box::pin(client_msg_handling)).await {
-        future::Either::Left((r, _)) => TerminationError::to_session_result(r),
-        future::Either::Right((r, _)) => TerminationError::to_session_result(r),
+    tokio::select! {
+        r = streaming => r,
+        _ = client_msg_handling => Ok(())
     }
 }
