@@ -16,6 +16,30 @@ pub enum ClientError {
     LostServerConnection,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Config {
+    pub max_packet_ahead: u16,
+    pub max_packet_size: usize,
+    pub max_server_conn: usize,
+}
+
+impl Into<session_manager::Config> for Config {
+    fn into(self) -> session_manager::Config {
+        session_manager::Config {
+            max_packet_ahead: self.max_packet_ahead,
+            max_packet_size: self.max_packet_size,
+        }
+    }
+}
+
+impl Into<server_connection_manager::Config> for Config {
+    fn into(self) -> server_connection_manager::Config {
+        server_connection_manager::Config {
+            max_server_conn: self.max_server_conn,
+        }
+    }
+}
+
 // Exits only on server connection io error
 // protocol error panics
 pub async fn run<ProxyeeStream, ServerConnector>(
@@ -24,7 +48,7 @@ pub async fn run<ProxyeeStream, ServerConnector>(
     + Send
     + 'static,
     connect_to_server: ServerConnector,
-    max_server_conn: usize,
+    config: Config,
 ) -> std::io::Error
 where
     ProxyeeStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -40,7 +64,8 @@ where
 
     let (mut server_conn_cmd_tx, server_conn_cmd_rx) = futures::channel::mpsc::channel(8);
 
-    let session_manager_task = session_manager::run(new_proxee_rx, session_cmd_rx, session_evt_tx);
+    let session_manager_task =
+        session_manager::run(new_proxee_rx, session_cmd_rx, session_evt_tx, config.into());
 
     let handle_session_evt = async move {
         while let Some(evt) = session_evt_rx.next().await {
@@ -75,7 +100,7 @@ where
         connect_to_server,
         server_conn_cmd_rx,
         server_conn_evt_tx,
-        server_connection_manager::Config { max_server_conn },
+        config.into(),
     );
 
     let handle_server_conn_evt = async move {

@@ -230,6 +230,8 @@ where
                 _ => panic!("unexpected server msg: {:?}", msg),
             }
         }
+
+        warn!("end of server message, exiting");
     }
     .instrument(info_span!("server_msg_handling"));
 

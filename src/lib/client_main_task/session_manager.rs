@@ -15,6 +15,21 @@ pub enum Event {
     ClientMsg(u16, session::msg::ClientMsg),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Config {
+    pub max_packet_ahead: u16,
+    pub max_packet_size: usize,
+}
+
+impl Into<session::client::Config> for Config {
+    fn into(self) -> session::client::Config {
+        session::client::Config {
+            max_packet_ahead: self.max_packet_ahead,
+            max_packet_size: self.max_packet_size,
+        }
+    }
+}
+
 pub async fn run<ProxyeeStream>(
     mut new_proxyee_rx: impl Stream<Item = (u16, socks5::agent::Init<ProxyeeStream>)>
     + Unpin
@@ -22,6 +37,7 @@ pub async fn run<ProxyeeStream>(
     + 'static,
     mut cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
     mut evt_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Clone + Unpin + Send + 'static,
+    config: Config,
 ) where
     ProxyeeStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -59,10 +75,7 @@ pub async fn run<ProxyeeStream>(
                                 proxyee,
                                 session_server_msg_rx,
                                 evt_tx.clone().with_sync(move |client_msg| Event::ClientMsg(session_id, client_msg)),
-                                session::client::Config {
-                                    max_packet_ahead: session::MAX_DATA_AHEAD,
-                                    max_packet_size: session::DATA_BUFF_SIZE,
-                                }
+                                config.into(),
                             )
                                 .instrument(info_span!("session", session_id = session_id))
                                 .await;

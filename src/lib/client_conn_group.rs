@@ -20,6 +20,21 @@ pub enum ConnectionGroupError {
     LostConnection,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Config {
+    pub max_packet_ahead: u16,
+    pub max_packet_size: usize,
+}
+
+impl Into<session::server::Config> for Config {
+    fn into(self) -> session::server::Config {
+        session::server::Config {
+            max_packet_ahead: self.max_packet_ahead,
+            max_packet_size: self.max_packet_size,
+        }
+    }
+}
+
 struct State {
     conn_num: usize,
     session_num: usize,
@@ -37,12 +52,14 @@ async fn run_session(
     ctx: Ctx,
     session_id: u16,
     client_msg_rx: mpsc::Receiver<session::msg::ClientMsg>,
+    config: Config,
 ) -> Result<(), ConnectionGroupError> {
     let session_task_result = session::server::run(
         client_msg_rx,
         ctx.server_msg_tx
             .clone()
             .with_sync(move |msg| protocol::msg::ServerMsg::SessionMsg(session_id, msg)),
+        config.into(),
     )
     .await;
 
@@ -60,6 +77,7 @@ async fn run_session(
 async fn receiving_msg_from_client(
     mut ctx: Ctx,
     mut client_msg_rx: mpsc::Receiver<protocol::msg::ClientMsg>,
+    config: Config,
 ) -> Result<(), ConnectionGroupError> {
     while let Some(client_msg) = client_msg_rx.next().await {
         if let protocol::msg::ClientMsg::SessionMsg(
@@ -92,7 +110,8 @@ async fn receiving_msg_from_client(
 
             ctx.scope_handle
                 .run_async(
-                    run_session(ctx.clone(), *session_id, client_msg_rx).instrument(session_span),
+                    run_session(ctx.clone(), *session_id, client_msg_rx, config)
+                        .instrument(session_span),
                 )
                 .await;
         };
@@ -188,6 +207,7 @@ type GreetedChannelRef<ClientStream, Cipher> = handover::ChannelRef<Greeted<Clie
 
 pub async fn run<ClientStream, Cipher>(
     mut new_conn_rx: GreetedReciver<ClientStream, Cipher>,
+    config: Config,
 ) -> Result<
     GreetedChannelRef<ClientStream, Cipher>,
     (
@@ -226,7 +246,11 @@ where
     };
 
     ctx.scope_handle
-        .run_async(receiving_msg_from_client(ctx.clone(), client_msg_rx))
+        .run_async(receiving_msg_from_client(
+            ctx.clone(),
+            client_msg_rx,
+            config,
+        ))
         .await;
 
     // accepting client conns

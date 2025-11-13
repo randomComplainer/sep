@@ -13,6 +13,21 @@ type Greeted<Stream, Cipher> = (
     protocol::server_agent::GreetedWrite<Stream, Cipher>,
 );
 
+#[derive(Debug, Clone, Copy)]
+pub struct Config {
+    pub max_packet_ahead: u16,
+    pub max_packet_size: usize,
+}
+
+impl Into<crate::client_conn_group::Config> for Config {
+    fn into(self) -> crate::client_conn_group::Config {
+        crate::client_conn_group::Config {
+            max_packet_ahead: self.max_packet_ahead,
+            max_packet_size: self.max_packet_size,
+        }
+    }
+}
+
 pub async fn run<ClientStream, Cipher>(
     mut new_conn_rx: impl Stream<
         Item = (
@@ -21,6 +36,7 @@ pub async fn run<ClientStream, Cipher>(
             protocol::server_agent::GreetedWrite<ClientStream, Cipher>,
         ),
     > + Unpin,
+    config: Config,
 ) -> Result<(), std::io::Error>
 where
     ClientStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Sync + Send + 'static,
@@ -57,7 +73,7 @@ where
                     let (mut worker_conn_tx, worker_conn_rx) =
                         handover::channel::<Greeted<ClientStream, Cipher>>();
 
-                    let worker = crate::client_conn_group::run(worker_conn_rx);
+                    let worker = crate::client_conn_group::run(worker_conn_rx, config.into());
 
                     tokio::spawn({
                         let client_id = client_id.clone();

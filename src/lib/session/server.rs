@@ -7,6 +7,29 @@ use tracing::*;
 use super::msg;
 use crate::prelude::*;
 
+#[derive(Debug, Clone, Copy)]
+pub struct Config {
+    pub max_packet_ahead: u16,
+    pub max_packet_size: usize,
+}
+
+impl Into<session::sequenced_to_stream::Config> for Config {
+    fn into(self) -> session::sequenced_to_stream::Config {
+        session::sequenced_to_stream::Config {
+            max_packet_ahead: self.max_packet_ahead,
+        }
+    }
+}
+
+impl Into<session::stream_to_sequenced::Config> for Config {
+    fn into(self) -> session::stream_to_sequenced::Config {
+        session::stream_to_sequenced::Config {
+            max_packet_ahead: self.max_packet_ahead,
+            max_packet_size: self.max_packet_size,
+        }
+    }
+}
+
 async fn resolve_addrs(
     addr: decode::ReadRequestAddr,
     port: u16,
@@ -54,6 +77,7 @@ pub async fn run(
     + Clone
     + Send
     + 'static,
+    config: Config,
 ) -> Result<(), std::io::Error> {
     let req = match client_read
         .next()
@@ -126,10 +150,7 @@ pub async fn run(
         }),
         target_read,
         None,
-        session::stream_to_sequenced::Config {
-            max_packet_ahead: session::MAX_DATA_AHEAD,
-            max_packet_size: session::DATA_BUFF_SIZE,
-        },
+        config.into(),
     )
     .instrument(info_span!("target to client"));
 
@@ -140,9 +161,7 @@ pub async fn run(
             session::sequenced_to_stream::Event::Ack(ack) => ack.into(),
         }),
         target_write,
-        session::sequenced_to_stream::Config {
-            max_packet_ahead: session::MAX_DATA_AHEAD,
-        },
+        config.into(),
     )
     .instrument(info_span!("client to target"));
 
