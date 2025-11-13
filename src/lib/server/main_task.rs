@@ -5,6 +5,7 @@ use futures::channel::mpsc;
 use futures::prelude::*;
 use tracing::*;
 
+use super::connection_group;
 use crate::handover;
 use crate::prelude::*;
 
@@ -19,9 +20,9 @@ pub struct Config {
     pub max_packet_size: u16,
 }
 
-impl Into<crate::client_conn_group::Config> for Config {
-    fn into(self) -> crate::client_conn_group::Config {
-        crate::client_conn_group::Config {
+impl Into<connection_group::Config> for Config {
+    fn into(self) -> connection_group::Config {
+        connection_group::Config {
             max_packet_ahead: self.max_packet_ahead,
             max_packet_size: self.max_packet_size,
         }
@@ -73,7 +74,7 @@ where
                     let (mut worker_conn_tx, worker_conn_rx) =
                         handover::channel::<Greeted<ClientStream, Cipher>>();
 
-                    let worker = crate::client_conn_group::run(worker_conn_rx, config.into());
+                    let worker = connection_group::run(worker_conn_rx, config.into());
 
                     tokio::spawn({
                         let client_id = client_id.clone();

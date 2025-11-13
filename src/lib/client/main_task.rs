@@ -4,9 +4,7 @@ use tracing::*;
 
 use crate::prelude::*;
 
-pub mod server_connection_lifetime;
-pub mod server_connection_manager;
-pub mod session_manager;
+use super::{server_connection_lifetime, server_connection_manager, session_manager};
 
 #[derive(Error, Debug)]
 pub enum ClientError {

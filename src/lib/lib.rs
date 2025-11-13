@@ -1,5 +1,3 @@
-#![feature(duration_constructors_lite)]
-#![feature(ip_from)]
 #![feature(trait_alias)]
 #![feature(assert_matches)]
 
@@ -16,9 +14,8 @@ pub mod protocol;
 pub mod session;
 pub mod socks5;
 
-pub mod client_conn_group;
-pub mod client_main_task;
-pub mod server_main_task;
+pub mod client;
+pub mod server;
 
 pub mod cli_parameters {
     use clap::Parser;
@@ -115,7 +112,6 @@ pub mod cli_parameters {
 }
 
 pub mod prelude {
-    pub use crate::client_conn_group::*;
     pub use crate::decode::*;
     pub use crate::encrypt::{EncryptedRead, EncryptedWrite};
     pub use crate::future_ext::FutureExt as _;
