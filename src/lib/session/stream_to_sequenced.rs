@@ -19,7 +19,7 @@ pub enum Event {
 
 pub struct Config {
     pub max_packet_ahead: u16,
-    pub max_packet_size: usize,
+    pub max_packet_size: u16,
 }
 
 // simple wrapper around u16 sequence number
@@ -90,7 +90,7 @@ async fn stream_reading_loop(
         drop(lock);
 
         // TODO: reuse buf
-        let mut buf = bytes::BytesMut::with_capacity(config.max_packet_size);
+        let mut buf = bytes::BytesMut::with_capacity(config.max_packet_size as usize);
         let n = stream_to_read.read_buf(&mut buf).await.inspect_err(|err| {
             error!("stream read error: {:?}", err);
         })?;

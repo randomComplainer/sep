@@ -16,7 +16,7 @@ type Greeted<Stream, Cipher> = (
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub max_packet_ahead: u16,
-    pub max_packet_size: usize,
+    pub max_packet_size: u16,
 }
 
 impl Into<crate::client_conn_group::Config> for Config {

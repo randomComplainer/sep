@@ -19,8 +19,8 @@ pub enum ClientError {
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub max_packet_ahead: u16,
-    pub max_packet_size: usize,
-    pub max_server_conn: usize,
+    pub max_packet_size: u16,
+    pub max_server_conn: u16,
 }
 
 impl Into<session_manager::Config> for Config {

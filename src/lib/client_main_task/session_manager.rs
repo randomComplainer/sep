@@ -18,7 +18,7 @@ pub enum Event {
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub max_packet_ahead: u16,
-    pub max_packet_size: usize,
+    pub max_packet_size: u16,
 }
 
 impl Into<session::client::Config> for Config {

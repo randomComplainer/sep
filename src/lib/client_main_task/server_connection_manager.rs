@@ -20,7 +20,7 @@ pub enum Event {
 }
 
 pub struct Config {
-    pub max_server_conn: usize,
+    pub max_server_conn: u16,
 }
 
 struct State {
@@ -113,7 +113,7 @@ ServerConnector: super::server_connection_lifetime::ServerConnector + Send,{
                                 debug!("found idle server write");
                                 server_write.unwrap()
                             },
-                            lock = state_rx.wait_for(|state| state.server_conn_count < config.max_server_conn).boxed() => {
+                            lock = state_rx.wait_for(|state| state.server_conn_count < config.max_server_conn as usize).boxed() => {
                                 drop(lock);
                                 debug!("creating new servere connection");
                                 create_connection.clone()().await;
