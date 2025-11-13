@@ -46,9 +46,8 @@ pub async fn run<ProxyeeStream>(
 
     // relay session ending events so that
     // we don't have to access the hashmap in multiple tasks
-    // TODO: magic number
     let (local_session_ending_tx, mut local_session_ending_rx) =
-        futures::channel::mpsc::channel::<u16>(4);
+        futures::channel::mpsc::channel::<u16>(config.max_packet_ahead as usize);
 
     let session_server_msg_senders =
         DashMap::<u16, futures::channel::mpsc::Sender<session::msg::ServerMsg>>::new();
@@ -58,8 +57,8 @@ pub async fn run<ProxyeeStream>(
             tokio::select! {
                 proxyee = new_proxyee_rx.next() => {
                     let (session_id, proxyee) = proxyee.unwrap();
-                    // TODO: magic number
-                    let (session_server_msg_tx, session_server_msg_rx) = futures::channel::mpsc::channel(8);
+                    let (session_server_msg_tx, session_server_msg_rx) =
+                        futures::channel::mpsc::channel(config.max_packet_ahead as usize);
                     session_server_msg_senders.insert(session_id, session_server_msg_tx);
 
                     evt_tx.send(Event::New(session_id))

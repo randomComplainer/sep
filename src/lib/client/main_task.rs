@@ -52,15 +52,18 @@ where
     ProxyeeStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     ServerConnector: server_connection_lifetime::ServerConnector + Send,
 {
-    // TODO: magic number
-    let (session_evt_tx, mut session_evt_rx) = futures::channel::mpsc::channel(8);
+    let (session_evt_tx, mut session_evt_rx) =
+        futures::channel::mpsc::channel(config.max_server_conn as usize);
 
-    let (mut session_cmd_tx, session_cmd_rx) =
-        futures::channel::mpsc::channel::<session_manager::Command>(8);
+    let (mut session_cmd_tx, session_cmd_rx) = futures::channel::mpsc::channel::<
+        session_manager::Command,
+    >(config.max_server_conn as usize);
 
-    let (server_conn_evt_tx, mut server_conn_evt_rx) = futures::channel::mpsc::channel(8);
+    let (server_conn_evt_tx, mut server_conn_evt_rx) =
+        futures::channel::mpsc::channel(config.max_server_conn as usize);
 
-    let (mut server_conn_cmd_tx, server_conn_cmd_rx) = futures::channel::mpsc::channel(8);
+    let (mut server_conn_cmd_tx, server_conn_cmd_rx) =
+        futures::channel::mpsc::channel(config.max_server_conn as usize);
 
     let session_manager_task =
         session_manager::run(new_proxee_rx, session_cmd_rx, session_evt_tx, config.into());

@@ -63,7 +63,8 @@ where
         .map_err(|err| match err {
             socks5::Socks5Error::Io(err) => err,
             err => {
-                panic!("socks5 error: {:?}", err);
+                error!("socks5 error: {:?}", err);
+                std::io::Error::new(std::io::ErrorKind::Other, "socks5 error")
             }
         })?;
 

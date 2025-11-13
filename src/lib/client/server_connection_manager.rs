@@ -35,9 +35,8 @@ pub async fn run<ServerConnector>(
     config: Config,
 ) -> std::io::Error  where
 ServerConnector: super::server_connection_lifetime::ServerConnector + Send,{
-    // TODO: magic number
     let (server_write_queue_tx, mut server_write_queue_rx) = futures::channel::mpsc::channel::<
-        handover::Sender<protocol::msg::ClientMsg>>(8);
+        handover::Sender<protocol::msg::ClientMsg>>(config.max_server_conn as usize);
 
     let (connection_scope_handle, connection_scope_task) = task_scope::new_scope::<std::io::Error>();
     let (state_tx, state_rx) = tokio::sync::watch::channel(State{
@@ -45,8 +44,8 @@ ServerConnector: super::server_connection_lifetime::ServerConnector + Send,{
         server_conn_count: 0,
     });
 
-    // TODO: magic number
-    let (mut client_msg_queue_tx, mut client_msg_queue_rx) = futures::channel::mpsc::channel::<protocol::msg::ClientMsg>(8);
+    let (mut client_msg_queue_tx, mut client_msg_queue_rx) = 
+        futures::channel::mpsc::channel::<protocol::msg::ClientMsg>(config.max_server_conn as usize);
 
     // increase conn count sycnhronously
     let create_connection = { 
@@ -91,8 +90,9 @@ ServerConnector: super::server_connection_lifetime::ServerConnector + Send,{
         let mut state_rx = state_rx.clone();
         let server_write_queue_tx = server_write_queue_tx.clone();
         async move {
-            // TODO: magic number
-            let client_msg_retry_queue = VecDeque::<protocol::msg::ClientMsg>::with_capacity(4);
+            let client_msg_retry_queue = VecDeque::<protocol::msg::ClientMsg>::with_capacity(
+                config.max_server_conn as usize,
+            );
             let client_msg_retry_queue = Arc::new(Mutex::new(client_msg_retry_queue));
 
             while let Some(msg) = {

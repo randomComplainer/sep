@@ -85,8 +85,8 @@ where
         }
 
         unsafe {
-            debug_assert!(!*self.item_watch_rx.borrow());
-            debug_assert!((&*self.shared.item.get()).is_none());
+            assert!(!*self.item_watch_rx.borrow());
+            assert!((&*self.shared.item.get()).is_none());
             (*self.shared.item.get()) = NonNull::new(Box::leak(Box::new(t)));
         }
 
@@ -102,7 +102,7 @@ where
             futures::future::Either::Left(x) => {
                 drop(x);
                 unsafe {
-                    debug_assert!((&*self.shared.item.get()).is_some());
+                    assert!((&*self.shared.item.get()).is_some());
                     let _ = self.item_watch_tx.send_replace(false);
 
                     Err(*Box::from_raw(
@@ -173,7 +173,7 @@ where
                 // drop borrowed item form wait_for
                 drop(x);
                 unsafe {
-                    debug_assert!((&*self.shared.item.get()).is_some());
+                    assert!((&*self.shared.item.get()).is_some());
                     let result = (*self.shared.item.get())
                         .take()
                         .map(|p| *Box::from_raw(p.as_ptr()));
