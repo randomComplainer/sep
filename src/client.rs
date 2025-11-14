@@ -59,7 +59,7 @@ async fn async_main(args: Args) {
         let client_id = client_id.clone();
         let server_addr = server_addr.clone();
 
-        let listener = socks5::agent::Socks5Listener::bind(bound_addr)
+        let listener = socks5::server_agent::stream::Socks5Listener::bind(bound_addr)
             .await
             .unwrap();
 

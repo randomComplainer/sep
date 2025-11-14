@@ -117,6 +117,7 @@ pub mod prelude {
     pub use crate::future_ext::FutureExt as _;
     pub use crate::handover::ChannelExt as _;
     pub use crate::sink_ext::SinkExt as _;
+    pub use crate::socks5::server_agent::{Greeted as _, Init as _, Requested as _};
     pub use crate::task_scope;
     pub use crate::{decode, protocol, session, socks5};
 }

@@ -40,16 +40,12 @@ impl Into<server_connection_manager::Config> for Config {
 
 // Exits only on server connection io error
 // protocol error panics
-pub async fn run<ProxyeeStream, ServerConnector>(
-    new_proxee_rx: impl Stream<Item = (u16, socks5::agent::Init<ProxyeeStream>)>
-    + Unpin
-    + Send
-    + 'static,
+pub async fn run<ServerConnector>(
+    new_proxee_rx: impl Stream<Item = (u16, impl socks5::server_agent::Init)> + Unpin + Send + 'static,
     connect_to_server: ServerConnector,
     config: Config,
 ) -> std::io::Error
 where
-    ProxyeeStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     ServerConnector: server_connection_lifetime::ServerConnector + Send,
 {
     let (session_evt_tx, mut session_evt_rx) =

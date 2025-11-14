@@ -31,8 +31,8 @@ impl Into<session::stream_to_sequenced::Config> for Config {
 // Err(()) on closed server message channels
 // Ok(()) on completed session OR proxyee io error
 // (one can consider a proxyee io error is a completed session)
-pub async fn run<ProxyeeStream>(
-    proxyee: socks5::agent::Init<ProxyeeStream>,
+pub async fn run(
+    proxyee: impl socks5::server_agent::Init,
     mut server_read: impl Stream<Item = msg::ServerMsg> + Send + Unpin + 'static,
     mut server_write: impl Sink<msg::ClientMsg, Error = impl std::fmt::Debug>
     + Unpin
@@ -40,10 +40,7 @@ pub async fn run<ProxyeeStream>(
     + Clone
     + 'static,
     config: Config,
-) -> Result<(), std::io::Error>
-where
-    ProxyeeStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-{
+) -> Result<(), std::io::Error> {
     // TODO: duplicated code
     let (_, proxyee) = proxyee
         .receive_greeting_message()

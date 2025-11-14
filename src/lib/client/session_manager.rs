@@ -30,17 +30,15 @@ impl Into<session::client::Config> for Config {
     }
 }
 
-pub async fn run<ProxyeeStream>(
-    mut new_proxyee_rx: impl Stream<Item = (u16, socks5::agent::Init<ProxyeeStream>)>
+pub async fn run(
+    mut new_proxyee_rx: impl Stream<Item = (u16, impl socks5::server_agent::Init)>
     + Unpin
     + Send
     + 'static,
     mut cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
     mut evt_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Clone + Unpin + Send + 'static,
     config: Config,
-) where
-    ProxyeeStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-{
+) {
     let (mut sessions_scope_handle, sessions_scope_task) = task_scope::new_scope::<()>();
     tokio::pin!(sessions_scope_task);
 
