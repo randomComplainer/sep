@@ -131,7 +131,7 @@ pub async fn run(
     };
 
     let (proxyee_read, proxyee_write) = match proxyee
-        .reply(&reply.bound_addr)
+        .reply(reply.bound_addr)
         .instrument(info_span!("reply to proxyee"))
         .await
     {

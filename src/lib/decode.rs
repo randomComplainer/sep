@@ -527,6 +527,10 @@ where
         }
     }
 
+    pub fn from_parts(buf: BytesMut, inner: Stream) -> Self {
+        Self { buf, inner }
+    }
+
     pub fn into_parts(self) -> (BytesMut, Stream) {
         (self.buf, self.inner)
     }

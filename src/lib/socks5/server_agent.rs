@@ -4,6 +4,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::*;
 
+#[cfg(test)]
+pub mod mock;
 pub mod stream;
 
 pub trait Init
@@ -31,7 +33,7 @@ where
 {
     fn reply(
         self,
-        bound_addr: &SocketAddr,
+        bound_addr: SocketAddr,
     ) -> impl Future<
         Output = Result<
             (

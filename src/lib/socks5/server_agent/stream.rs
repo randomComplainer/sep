@@ -118,13 +118,13 @@ where
     #[allow(refining_impl_trait)]
     async fn reply(
         mut self,
-        bound_addr: &SocketAddr,
+        bound_addr: SocketAddr,
     ) -> Result<(BufDecoder<ReadHalf<Stream>>, WriteHalf<Stream>), std::io::Error> {
         let buf = msg::encode_reply(&msg::Reply {
             ver: 5,
             rep: 0,
             rsv: 0,
-            addr: bound_addr,
+            addr: &bound_addr,
         })?;
 
         self.stream_write.write_all(buf.as_ref()).await?;
