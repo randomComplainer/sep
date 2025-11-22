@@ -89,6 +89,7 @@ enum RequestStep {
 enum ReplyStep {
     Drop(DropFlag),
     ServerBoundAddr(SocketAddr),
+    Error(u8),
 }
 
 enum StreamingStep {
@@ -250,6 +251,20 @@ fn build_requested(steps: &mut VecDeque<Step>) -> Requested {
                 }),
             }
         }
+        ReplyStep::Error(expected_err) => {
+            let mut invocation_expectation = invocation::Expected::new("reply_error");
+
+            Requested {
+                reply_func: Box::new(move |_| {
+                    Box::pin(async move { panic!("unexpected invocation") })
+                }),
+                reply_error_func: Box::new(move |err| {
+                    invocation_expectation.fulfill();
+                    test_eq(expected_err, err, "reply error");
+                    Box::pin(std::future::ready(Ok(())))
+                }),
+            }
+        }
     }
 }
 
@@ -335,6 +350,12 @@ impl BoundBuilder {
             .push_back(Step::Reply(ReplyStep::ServerBoundAddr(bound_addr)));
 
         ReplyBuilder(self.0)
+    }
+
+    pub fn expect_reply_error(mut self, err_code: u8) -> Init {
+        self.0.push_back(Step::Reply(ReplyStep::Error(err_code)));
+
+        build_init(&mut self.0)
     }
 
     pub fn to_be_dropped(mut self, flag: DropFlag) -> Init {

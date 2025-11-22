@@ -4,7 +4,7 @@ use derive_more::From;
 use crate::decode::*;
 use crate::prelude::*;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Request {
     pub addr: decode::ReadRequestAddr,
     pub port: u16,
@@ -34,7 +34,7 @@ pub fn request_peeker() -> impl Peeker<Request, Reader = RequestReader> {
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Reply {
     pub bound_addr: std::net::SocketAddr,
 }
@@ -59,6 +59,7 @@ pub fn reply_peeker() -> impl Peeker<Reply, Reader = ReplyReader> {
     })
 }
 
+#[derive(PartialEq, Eq)]
 pub struct Data {
     pub seq: u16,
     pub data: BytesMut,
@@ -97,7 +98,7 @@ impl std::fmt::Debug for Data {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Ack {
     pub seq: u16,
 }
@@ -123,7 +124,7 @@ pub fn ack_peeker() -> impl Peeker<Ack, Reader = AckReader> {
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Eof {
     pub seq: u16,
 }
@@ -149,7 +150,7 @@ pub fn eof_peeker() -> impl Peeker<Eof, Reader = EofReader> {
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct IoError;
 pub struct IoErrorReader;
 
@@ -164,7 +165,7 @@ pub fn error_peeker() -> impl Peeker<IoError, Reader = IoErrorReader> {
     peek::wrap(|_cursor| Ok(Some(IoErrorReader)))
 }
 
-#[derive(Debug, From)]
+#[derive(Debug, From, PartialEq, Eq)]
 pub enum ClientMsg {
     Request(#[from] Request),
     Data(#[from] Data),
@@ -210,7 +211,7 @@ pub fn client_msg_peeker() -> impl Peeker<ClientMsg, Reader = ClientMsgReader> {
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum ConnectionError {
     General,
     NetworkUnreachable,
@@ -270,7 +271,7 @@ pub fn connection_error_peeker() -> impl Peeker<ConnectionError, Reader = Connec
     })
 }
 
-#[derive(Debug, From)]
+#[derive(Debug, From, Eq, PartialEq)]
 pub enum ServerMsg {
     Reply(#[from] Reply),
     ReplyError(#[from] ConnectionError),

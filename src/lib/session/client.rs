@@ -124,6 +124,11 @@ pub async fn run(
                 },
                 None => {
                     error!("server read is broken, exiting");
+                    let _ = proxyee
+                        .reply_error(1)
+                        .instrument(info_span!("send reply error to proxyee"))
+                        .await;
+
                     return Ok(());
                 }
             };
@@ -239,5 +244,446 @@ pub async fn run(
     tokio::select! {
         r = streaming => r,
         _ = server_msg_handling => Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use bytes::BytesMut;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn happy_path() {
+        let (proxyee_stream, proxyee_stream_handle) = tokio::io::duplex(1024);
+        let (mut proxyee_stream_handle_read, mut proxyee_stream_handle_write) =
+            tokio::io::split(proxyee_stream_handle);
+        proxyee_stream_handle_write
+            .write_all(&mut [2u8, 3, 4])
+            .await
+            .unwrap();
+        drop(proxyee_stream_handle_write);
+
+        let (proxyee_read, proxyee_write) = tokio::io::split(proxyee_stream);
+
+        let proxyee = socks5::server_agent::mock::script()
+            .provide_greeting_message(socks5::msg::ClientGreeting {
+                ver: 5,
+                methods: BytesMut::from([0].as_ref()),
+            })
+            .expect_method_selection(0)
+            .provide_request_message(socks5::msg::ClientRequest {
+                ver: 5,
+                cmd: 1,
+                rsv: 0,
+                addr: ReadRequestAddr::Domain(BytesMut::from("example.com")),
+                port: 7878,
+            })
+            .expect_reply(SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+                80,
+            ))
+            .provide_stream(BytesMut::from([1].as_ref()), proxyee_read, proxyee_write);
+
+        let (mut server_msg_tx, server_msg_rx) = futures::channel::mpsc::channel(1);
+        let (client_msg_tx, mut client_msg_rx) = futures::channel::mpsc::channel(1);
+
+        let main_task = run(
+            proxyee,
+            server_msg_rx,
+            client_msg_tx,
+            Config {
+                max_packet_ahead: 1,
+                max_packet_size: 10,
+            },
+        );
+
+        let server_task = async move {
+            assert_eq!(
+                client_msg_rx.next().await.unwrap(),
+                session::msg::ClientMsg::Request(msg::Request {
+                    addr: ReadRequestAddr::Domain(BytesMut::from("example.com")),
+                    port: 7878,
+                })
+            );
+
+            server_msg_tx
+                .send(
+                    msg::Reply {
+                        bound_addr: SocketAddr::new(
+                            std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+                            80,
+                        ),
+                    }
+                    .into(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                client_msg_rx.next().await.unwrap(),
+                session::msg::Data {
+                    seq: 0,
+                    data: BytesMut::from([1].as_ref())
+                }
+                .into()
+            );
+
+            server_msg_tx
+                .send(msg::Ack { seq: 0 }.into())
+                .await
+                .unwrap();
+
+            assert_eq!(
+                client_msg_rx.next().await.unwrap(),
+                session::msg::Data {
+                    seq: 1,
+                    data: BytesMut::from([2, 3, 4].as_ref())
+                }
+                .into()
+            );
+
+            server_msg_tx
+                .send(msg::Ack { seq: 1 }.into())
+                .await
+                .unwrap();
+
+            server_msg_tx
+                .send(
+                    msg::Data {
+                        seq: 0,
+                        data: BytesMut::from([4, 3, 2, 1].as_ref()),
+                    }
+                    .into(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                client_msg_rx.next().await.unwrap(),
+                session::msg::Ack { seq: 0 }.into()
+            );
+
+            let mut buf = vec![0u8; 4];
+            proxyee_stream_handle_read
+                .read_exact(&mut buf)
+                .await
+                .unwrap();
+
+            assert_eq!(buf, vec![4, 3, 2, 1]);
+            drop(proxyee_stream_handle_read);
+
+            assert_eq!(
+                client_msg_rx.next().await.unwrap(),
+                session::msg::Eof { seq: 2 }.into()
+            );
+
+            server_msg_tx
+                .send(msg::Ack { seq: 2 }.into())
+                .await
+                .unwrap();
+
+            server_msg_tx
+                .send(msg::Eof { seq: 1 }.into())
+                .await
+                .unwrap();
+
+            assert_eq!(
+                client_msg_rx.next().await.unwrap(),
+                session::msg::Ack { seq: 1 }.into()
+            );
+        };
+
+        tokio::join!(main_task.map(|r| r.unwrap()), server_task);
+    }
+
+    mod proxyee_interaction {
+        use super::*;
+
+        #[tokio::test]
+        async fn server_failed_to_connect_to_target() {
+            let proxyee = socks5::server_agent::mock::script()
+                .provide_greeting_message(socks5::msg::ClientGreeting {
+                    ver: 5,
+                    methods: BytesMut::from([0].as_ref()),
+                })
+                .expect_method_selection(0)
+                .provide_request_message(socks5::msg::ClientRequest {
+                    ver: 5,
+                    cmd: 1,
+                    rsv: 0,
+                    addr: ReadRequestAddr::Domain(BytesMut::from("example.com")),
+                    port: 7878,
+                })
+                .expect_reply_error(1);
+
+            let (mut server_msg_tx, server_msg_rx) = futures::channel::mpsc::channel(1);
+            let (client_msg_tx, mut client_msg_rx) = futures::channel::mpsc::channel(1);
+
+            let main_task = async move {
+                let r = run(
+                    proxyee,
+                    server_msg_rx,
+                    client_msg_tx,
+                    Config {
+                        max_packet_ahead: 1,
+                        max_packet_size: 10,
+                    },
+                )
+                .await;
+
+                assert!(r.is_ok());
+            };
+
+            let server_task = async move {
+                assert_eq!(
+                    client_msg_rx.next().await.unwrap(),
+                    session::msg::ClientMsg::Request(msg::Request {
+                        addr: ReadRequestAddr::Domain(BytesMut::from("example.com")),
+                        port: 7878,
+                    })
+                );
+
+                server_msg_tx
+                    .send(msg::ConnectionError::General.into())
+                    .await
+                    .unwrap();
+                drop(server_msg_tx);
+            };
+
+            tokio::join!(main_task, server_task);
+        }
+
+        #[tokio::test]
+        async fn broken_server_connection_during_requesting() {
+            let proxyee = socks5::server_agent::mock::script()
+                .provide_greeting_message(socks5::msg::ClientGreeting {
+                    ver: 5,
+                    methods: BytesMut::from([0].as_ref()),
+                })
+                .expect_method_selection(0)
+                .provide_request_message(socks5::msg::ClientRequest {
+                    ver: 5,
+                    cmd: 1,
+                    rsv: 0,
+                    addr: ReadRequestAddr::Domain(BytesMut::from("example.com")),
+                    port: 7878,
+                })
+                .expect_reply_error(1);
+
+            let (server_msg_tx, server_msg_rx) = futures::channel::mpsc::channel(1);
+            let (client_msg_tx, mut client_msg_rx) = futures::channel::mpsc::channel(1);
+
+            let main_task = async move {
+                let r = run(
+                    proxyee,
+                    server_msg_rx,
+                    client_msg_tx,
+                    Config {
+                        max_packet_ahead: 1,
+                        max_packet_size: 10,
+                    },
+                )
+                .await;
+
+                assert!(r.is_ok());
+            };
+
+            let server_task = async move {
+                assert_eq!(
+                    client_msg_rx.next().await.unwrap(),
+                    session::msg::ClientMsg::Request(msg::Request {
+                        addr: ReadRequestAddr::Domain(BytesMut::from("example.com")),
+                        port: 7878,
+                    })
+                );
+
+                drop(server_msg_tx);
+            };
+
+            tokio::join!(main_task, server_task);
+        }
+
+        #[tokio::test]
+        async fn broken_server_connection_during_streaming() {
+            let (proxyee_stream, proxyee_stream_handle) = tokio::io::duplex(1024);
+            let (mut proxyee_stream_handle_read, proxyee_stream_handle_write) =
+                tokio::io::split(proxyee_stream_handle);
+            drop(proxyee_stream_handle_write);
+
+            let (proxyee_read, proxyee_write) = tokio::io::split(proxyee_stream);
+
+            let proxyee = socks5::server_agent::mock::script()
+                .provide_greeting_message(socks5::msg::ClientGreeting {
+                    ver: 5,
+                    methods: BytesMut::from([0].as_ref()),
+                })
+                .expect_method_selection(0)
+                .provide_request_message(socks5::msg::ClientRequest {
+                    ver: 5,
+                    cmd: 1,
+                    rsv: 0,
+                    addr: ReadRequestAddr::Domain(BytesMut::from("example.com")),
+                    port: 7878,
+                })
+                .expect_reply(SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+                    80,
+                ))
+                .provide_stream(BytesMut::new(), proxyee_read, proxyee_write);
+
+            let (mut server_msg_tx, server_msg_rx) = futures::channel::mpsc::channel(1);
+            let (client_msg_tx, mut client_msg_rx) = futures::channel::mpsc::channel(1);
+
+            let main_task = run(
+                proxyee,
+                server_msg_rx,
+                client_msg_tx,
+                Config {
+                    max_packet_ahead: 1,
+                    max_packet_size: 10,
+                },
+            );
+
+            let server_task = async move {
+                assert_eq!(
+                    client_msg_rx.next().await.unwrap(),
+                    session::msg::ClientMsg::Request(msg::Request {
+                        addr: ReadRequestAddr::Domain(BytesMut::from("example.com")),
+                        port: 7878,
+                    })
+                );
+
+                server_msg_tx
+                    .send(
+                        msg::Reply {
+                            bound_addr: SocketAddr::new(
+                                std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+                                80,
+                            ),
+                        }
+                        .into(),
+                    )
+                    .await
+                    .unwrap();
+
+                server_msg_tx
+                    .send(
+                        msg::Data {
+                            seq: 0,
+                            data: BytesMut::from([1, 2, 3, 4].as_ref()),
+                        }
+                        .into(),
+                    )
+                    .await
+                    .unwrap();
+
+                let mut buf = vec![0u8; 4];
+                proxyee_stream_handle_read
+                    .read_exact(&mut buf)
+                    .await
+                    .unwrap();
+
+                assert_eq!(buf, vec![1, 2, 3, 4]);
+
+                drop(server_msg_tx);
+            };
+
+            tokio::join!(main_task.map(|r| r.unwrap()), server_task);
+        }
+
+        #[tokio::test]
+        async fn io_error_message_during_streaming() {
+            let (proxyee_stream, proxyee_stream_handle) = tokio::io::duplex(1024);
+            let (mut proxyee_stream_handle_read, _proxyee_stream_handle_write) =
+                tokio::io::split(proxyee_stream_handle);
+
+            let (proxyee_read, proxyee_write) = tokio::io::split(proxyee_stream);
+
+            let proxyee = socks5::server_agent::mock::script()
+                .provide_greeting_message(socks5::msg::ClientGreeting {
+                    ver: 5,
+                    methods: BytesMut::from([0].as_ref()),
+                })
+                .expect_method_selection(0)
+                .provide_request_message(socks5::msg::ClientRequest {
+                    ver: 5,
+                    cmd: 1,
+                    rsv: 0,
+                    addr: ReadRequestAddr::Domain(BytesMut::from("example.com")),
+                    port: 7878,
+                })
+                .expect_reply(SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+                    80,
+                ))
+                .provide_stream(BytesMut::new(), proxyee_read, proxyee_write);
+
+            let (mut server_msg_tx, server_msg_rx) = futures::channel::mpsc::channel(1);
+            let (client_msg_tx, mut client_msg_rx) = futures::channel::mpsc::channel(1);
+
+            let main_task = run(
+                proxyee,
+                server_msg_rx,
+                client_msg_tx,
+                Config {
+                    max_packet_ahead: 1,
+                    max_packet_size: 10,
+                },
+            );
+
+            let server_task = async move {
+                assert_eq!(
+                    client_msg_rx.next().await.unwrap(),
+                    session::msg::ClientMsg::Request(msg::Request {
+                        addr: ReadRequestAddr::Domain(BytesMut::from("example.com")),
+                        port: 7878,
+                    })
+                );
+
+                server_msg_tx
+                    .send(
+                        msg::Reply {
+                            bound_addr: SocketAddr::new(
+                                std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+                                80,
+                            ),
+                        }
+                        .into(),
+                    )
+                    .await
+                    .unwrap();
+
+                server_msg_tx
+                    .send(
+                        msg::Data {
+                            seq: 0,
+                            data: BytesMut::from([1, 2, 3, 4].as_ref()),
+                        }
+                        .into(),
+                    )
+                    .await
+                    .unwrap();
+
+                let mut buf = vec![0u8; 4];
+                proxyee_stream_handle_read
+                    .read_exact(&mut buf)
+                    .await
+                    .unwrap();
+
+                assert_eq!(buf, vec![1, 2, 3, 4]);
+
+                server_msg_tx.send(msg::IoError.into()).await.unwrap();
+
+                let mut buf = vec![0u8; 4];
+                let n = proxyee_stream_handle_read.read(&mut buf).await.unwrap();
+                assert_eq!(n, 0);
+            };
+
+            tokio::join!(main_task.map(|r| r.unwrap()), server_task);
+        }
     }
 }
