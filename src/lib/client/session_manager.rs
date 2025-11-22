@@ -68,7 +68,7 @@ pub async fn run(
                         let mut local_session_ending_tx = local_session_ending_tx.clone();
 
                         async move {
-                            let session_result = session::client::run(
+                            let _ = session::client::run(
                                 proxyee,
                                 session_server_msg_rx,
                                 evt_tx.clone().with_sync(move |client_msg| Event::ClientMsg(session_id, client_msg)),
@@ -77,13 +77,7 @@ pub async fn run(
                                 .instrument(info_span!("session", session_id = session_id))
                                 .await;
                             local_session_ending_tx.send(session_id).await.expect("local_session_ending_tx is broken");
-                            match session_result {
-                                Ok(_) => Ok(()),
-                                Err(err) => {
-                                    error!("session task failed: {:?}", err);
-                                    Ok(())
-                                }
-                            }
+                            Ok(())
                         }
                     }).await;
                 },

@@ -40,30 +40,31 @@ pub async fn run(
     + Clone
     + 'static,
     config: Config,
-) -> Result<(), std::io::Error> {
+) {
     // TODO: duplicated code
-    let (_, proxyee) = proxyee
+    let (_, proxyee) = match proxyee
         .receive_greeting_message()
         .instrument(info_span!("receive greeting message from proxyee"))
         .await
-        .map_err(|err| match err {
-            socks5::Socks5Error::Io(err) => err,
-            err => {
-                panic!("socks5 error: {:?}", err);
-            }
-        })?;
+    {
+        Ok(x) => x,
+        Err(err) => {
+            error!("socks5 error: {:?}", err);
+            return;
+        }
+    };
 
-    let (proxyee_req, proxyee) = proxyee
+    let (proxyee_req, proxyee) = match proxyee
         .send_method_selection_message(0)
         .instrument(info_span!("send method selection message to proxyee"))
         .await
-        .map_err(|err| match err {
-            socks5::Socks5Error::Io(err) => err,
-            err => {
-                error!("socks5 error: {:?}", err);
-                std::io::Error::new(std::io::ErrorKind::Other, "socks5 error")
-            }
-        })?;
+    {
+        Ok(x) => x,
+        Err(err) => {
+            error!("socks5 error: {:?}", err);
+            return;
+        }
+    };
 
     info!(addr = ?proxyee_req.addr, port = proxyee_req.port, "request addr");
 
@@ -78,7 +79,7 @@ pub async fn run(
         Ok(_) => (),
         Err(err) => {
             error!("falied to send request to server, exiting: {:?}", err);
-            return Ok(());
+            return;
         }
     };
 
@@ -110,7 +111,7 @@ pub async fn run(
                             })
                             .instrument(info_span!("send reply error to proxyee"))
                             .await;
-                        return Ok(());
+                        return;
                     }
                     msg::ServerMsg::Data(data) => {
                         early_target_packages.push(data.into());
@@ -129,7 +130,7 @@ pub async fn run(
                         .instrument(info_span!("send reply error to proxyee"))
                         .await;
 
-                    return Ok(());
+                    return;
                 }
             };
         }
@@ -144,7 +145,7 @@ pub async fn run(
         Err(err) => {
             // TODO: notify server
             error!("falied to reply to proxyee: {:?}", err);
-            return Ok(());
+            return;
         }
     };
 
@@ -238,12 +239,15 @@ pub async fn run(
     }
     .instrument(info_span!("server_msg_handling"));
 
-    let streaming =
-        async move { tokio::try_join!(server_to_proxyee, proxyee_to_server).map(|_| ()) };
+    let streaming = async move {
+        // streaming tasks error on Io Error, which doesn't matter
+        let _ = tokio::try_join!(server_to_proxyee, proxyee_to_server);
+        ()
+    };
 
     tokio::select! {
         r = streaming => r,
-        _ = server_msg_handling => Ok(())
+        _ = server_msg_handling =>()
     }
 }
 
@@ -397,7 +401,7 @@ mod tests {
             );
         };
 
-        tokio::join!(main_task.map(|r| r.unwrap()), server_task);
+        tokio::join!(main_task, server_task);
     }
 
     mod proxyee_interaction {
@@ -423,20 +427,15 @@ mod tests {
             let (mut server_msg_tx, server_msg_rx) = futures::channel::mpsc::channel(1);
             let (client_msg_tx, mut client_msg_rx) = futures::channel::mpsc::channel(1);
 
-            let main_task = async move {
-                let r = run(
-                    proxyee,
-                    server_msg_rx,
-                    client_msg_tx,
-                    Config {
-                        max_packet_ahead: 1,
-                        max_packet_size: 10,
-                    },
-                )
-                .await;
-
-                assert!(r.is_ok());
-            };
+            let main_task = run(
+                proxyee,
+                server_msg_rx,
+                client_msg_tx,
+                Config {
+                    max_packet_ahead: 1,
+                    max_packet_size: 10,
+                },
+            );
 
             let server_task = async move {
                 assert_eq!(
@@ -477,20 +476,15 @@ mod tests {
             let (server_msg_tx, server_msg_rx) = futures::channel::mpsc::channel(1);
             let (client_msg_tx, mut client_msg_rx) = futures::channel::mpsc::channel(1);
 
-            let main_task = async move {
-                let r = run(
-                    proxyee,
-                    server_msg_rx,
-                    client_msg_tx,
-                    Config {
-                        max_packet_ahead: 1,
-                        max_packet_size: 10,
-                    },
-                )
-                .await;
-
-                assert!(r.is_ok());
-            };
+            let main_task = run(
+                proxyee,
+                server_msg_rx,
+                client_msg_tx,
+                Config {
+                    max_packet_ahead: 1,
+                    max_packet_size: 10,
+                },
+            );
 
             let server_task = async move {
                 assert_eq!(
@@ -592,7 +586,7 @@ mod tests {
                 drop(server_msg_tx);
             };
 
-            tokio::join!(main_task.map(|r| r.unwrap()), server_task);
+            tokio::join!(main_task, server_task);
         }
 
         #[tokio::test]
@@ -683,7 +677,73 @@ mod tests {
                 assert_eq!(n, 0);
             };
 
-            tokio::join!(main_task.map(|r| r.unwrap()), server_task);
+            tokio::join!(main_task, server_task);
+        }
+    }
+
+    mod server_interaction {
+        use super::*;
+
+        #[tokio::test]
+        async fn proxyee_disconnects_after_request() {
+            let proxyee = socks5::server_agent::mock::script()
+                .provide_greeting_message(socks5::msg::ClientGreeting {
+                    ver: 5,
+                    methods: BytesMut::from([0].as_ref()),
+                })
+                .expect_method_selection(0)
+                .provide_request_message(socks5::msg::ClientRequest {
+                    ver: 5,
+                    cmd: 1,
+                    rsv: 0,
+                    addr: ReadRequestAddr::Domain(BytesMut::from("example.com")),
+                    port: 7878,
+                })
+                .expect_reply(SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+                    80,
+                ))
+                .provide_io_error(std::io::Error::new(std::io::ErrorKind::Other, "test"));
+
+            let (mut server_msg_tx, server_msg_rx) = futures::channel::mpsc::channel(1);
+            let (client_msg_tx, mut client_msg_rx) = futures::channel::mpsc::channel(1);
+
+            let main_task = run(
+                proxyee,
+                server_msg_rx,
+                client_msg_tx,
+                Config {
+                    max_packet_ahead: 1,
+                    max_packet_size: 10,
+                },
+            );
+
+            let server_task = async move {
+                assert_eq!(
+                    client_msg_rx.next().await.unwrap(),
+                    session::msg::ClientMsg::Request(msg::Request {
+                        addr: ReadRequestAddr::Domain(BytesMut::from("example.com")),
+                        port: 7878,
+                    })
+                );
+
+                server_msg_tx
+                    .send(
+                        msg::Reply {
+                            bound_addr: SocketAddr::new(
+                                std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+                                80,
+                            ),
+                        }
+                        .into(),
+                    )
+                    .await
+                    .unwrap();
+
+                drop(server_msg_tx);
+            };
+
+            tokio::join!(main_task, server_task);
         }
     }
 }
