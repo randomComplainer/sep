@@ -147,6 +147,7 @@ pub async fn run(
         client_write.clone().with_sync(|evt| match evt {
             session::stream_to_sequenced::Event::Data(data) => data.into(),
             session::stream_to_sequenced::Event::Eof(eof) => eof.into(),
+            session::stream_to_sequenced::Event::IoError(err) => err.into(),
         }),
         target_read,
         None,

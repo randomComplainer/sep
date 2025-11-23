@@ -158,6 +158,7 @@ pub async fn run(
         server_write.clone().with_sync(|evt| match evt {
             session::stream_to_sequenced::Event::Data(data) => data.into(),
             session::stream_to_sequenced::Event::Eof(eof) => eof.into(),
+            session::stream_to_sequenced::Event::IoError(err) => err.into(),
         }),
         proxyee_read,
         Some(buf),
@@ -739,8 +740,77 @@ mod tests {
                     )
                     .await
                     .unwrap();
+            };
 
-                drop(server_msg_tx);
+            tokio::join!(main_task, server_task);
+        }
+
+        #[tokio::test]
+        async fn proxyee_io_error_during_streaming() {
+            let proxyee = socks5::server_agent::mock::script()
+                .provide_greeting_message(socks5::msg::ClientGreeting {
+                    ver: 5,
+                    methods: BytesMut::from([0].as_ref()),
+                })
+                .expect_method_selection(0)
+                .provide_request_message(socks5::msg::ClientRequest {
+                    ver: 5,
+                    cmd: 1,
+                    rsv: 0,
+                    addr: ReadRequestAddr::Domain(BytesMut::from("example.com")),
+                    port: 7878,
+                })
+                .expect_reply(SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+                    80,
+                ))
+                .provide_stream(
+                    BytesMut::new(),
+                    tokio_test::io::Builder::new()
+                        .read_error(std::io::Error::new(std::io::ErrorKind::Other, "test"))
+                        .build(),
+                    tokio_test::io::Builder::new().build(),
+                );
+
+            let (mut server_msg_tx, server_msg_rx) = futures::channel::mpsc::channel(1);
+            let (client_msg_tx, mut client_msg_rx) = futures::channel::mpsc::channel(1);
+
+            let main_task = run(
+                proxyee,
+                server_msg_rx,
+                client_msg_tx,
+                Config {
+                    max_packet_ahead: 1,
+                    max_packet_size: 10,
+                },
+            );
+
+            let server_task = async move {
+                assert_eq!(
+                    client_msg_rx.next().await.unwrap(),
+                    session::msg::ClientMsg::Request(msg::Request {
+                        addr: ReadRequestAddr::Domain(BytesMut::from("example.com")),
+                        port: 7878,
+                    })
+                );
+
+                server_msg_tx
+                    .send(
+                        msg::Reply {
+                            bound_addr: SocketAddr::new(
+                                std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+                                80,
+                            ),
+                        }
+                        .into(),
+                    )
+                    .await
+                    .unwrap();
+
+                assert_eq!(
+                    client_msg_rx.next().await.unwrap(),
+                    session::msg::IoError.into()
+                );
             };
 
             tokio::join!(main_task, server_task);

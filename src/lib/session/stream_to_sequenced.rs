@@ -15,6 +15,7 @@ pub enum Command {
 pub enum Event {
     Data(#[from] msg::Data),
     Eof(#[from] msg::Eof),
+    IoError(#[from] msg::IoError),
 }
 
 pub struct Config {
@@ -91,9 +92,15 @@ async fn stream_reading_loop(
 
         // TODO: reuse buf
         let mut buf = bytes::BytesMut::with_capacity(config.max_packet_size as usize);
-        let n = stream_to_read.read_buf(&mut buf).await.inspect_err(|err| {
-            error!("stream read error: {:?}", err);
-        })?;
+        let n = match stream_to_read.read_buf(&mut buf).await {
+            Ok(n) => n,
+            Err(err) => {
+                error!("stream read error: {:?}", err);
+                let evt = msg::IoError.into();
+                try_emit_evt!(evt_tx, evt);
+                return Err(err);
+            }
+        };
 
         if n != 0 {
             let evt = msg::Data { seq, data: buf }.into();
@@ -129,13 +136,15 @@ pub async fn run(
     let mut seq = 0;
 
     if let Some(first_pack) = first_pack {
-        let evt = msg::Data {
-            seq: 0,
-            data: first_pack,
+        if first_pack.len() > 0 {
+            let evt = msg::Data {
+                seq: 0,
+                data: first_pack,
+            }
+            .into();
+            try_emit_evt!(event_tx, evt);
+            seq += 1;
         }
-        .into();
-        try_emit_evt!(event_tx, evt);
-        seq += 1;
     }
 
     let (max_acked_tx, max_acked_rx) = tokio::sync::watch::channel(MaxAcked::new());
