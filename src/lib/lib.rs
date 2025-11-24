@@ -1,6 +1,7 @@
 #![feature(trait_alias)]
 #![feature(assert_matches)]
 
+pub mod connect_target;
 pub mod future_ext;
 pub mod handover;
 pub mod sink_ext;
@@ -112,6 +113,7 @@ pub mod cli_parameters {
 }
 
 pub mod prelude {
+    pub use crate::connect_target::ConnectTarget;
     pub use crate::decode::*;
     pub use crate::encrypt::{EncryptedRead, EncryptedWrite};
     pub use crate::future_ext::FutureExt as _;

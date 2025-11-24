@@ -8,12 +8,13 @@ use super::msg;
 use crate::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
-pub struct Config {
+pub struct Config<TConnectTarget> {
     pub max_packet_ahead: u16,
     pub max_packet_size: u16,
+    pub connect_target: TConnectTarget,
 }
 
-impl Into<session::sequenced_to_stream::Config> for Config {
+impl<TConnectTarget> Into<session::sequenced_to_stream::Config> for Config<TConnectTarget> {
     fn into(self) -> session::sequenced_to_stream::Config {
         session::sequenced_to_stream::Config {
             max_packet_ahead: self.max_packet_ahead,
@@ -21,7 +22,7 @@ impl Into<session::sequenced_to_stream::Config> for Config {
     }
 }
 
-impl Into<session::stream_to_sequenced::Config> for Config {
+impl<TConnectTarget> Into<session::stream_to_sequenced::Config> for Config<TConnectTarget> {
     fn into(self) -> session::stream_to_sequenced::Config {
         session::stream_to_sequenced::Config {
             max_packet_ahead: self.max_packet_ahead,
@@ -70,15 +71,18 @@ async fn connect_target(addrs: Vec<SocketAddr>) -> Result<tokio::net::TcpStream,
     ))
 }
 
-pub async fn run(
+pub async fn run<TConnectTarget>(
     mut client_read: impl Stream<Item = msg::ClientMsg> + Unpin,
     mut client_write: impl Sink<msg::ServerMsg, Error = futures::channel::mpsc::SendError>
     + Unpin
     + Clone
     + Send
     + 'static,
-    config: Config,
-) -> Result<(), std::io::Error> {
+    config: Config<TConnectTarget>,
+) -> Result<(), std::io::Error>
+where
+    TConnectTarget: ConnectTarget,
+{
     let req = match client_read
         .next()
         .instrument(info_span!("receive request from client"))
@@ -101,9 +105,10 @@ pub async fn run(
         req.addr, req.port
     );
 
-    let target_stream = match resolve_addrs(req.addr, req.port)
-        .instrument(info_span!("resolve target address"))
-        .and_then(|resolved| connect_target(resolved).instrument(info_span!("connect target")))
+    let (target_stream, local_addr) = match config
+        .connect_target
+        .connect(req.addr, req.port)
+        .instrument(info_span!("conneet to target"))
         .await
     {
         Ok(stream) => stream,
@@ -128,7 +133,7 @@ pub async fn run(
 
     if let Err(_) = client_write
         .send(msg::ServerMsg::Reply(msg::Reply {
-            bound_addr: target_stream.local_addr().unwrap(),
+            bound_addr: local_addr,
         }))
         .instrument(info_span!("send reply to client"))
         .await
@@ -137,7 +142,7 @@ pub async fn run(
         return Ok(());
     };
 
-    let (target_read, target_write) = target_stream.into_split();
+    let (target_read, target_write) = tokio::io::split(target_stream);
 
     let (mut target_to_client_cmd_tx, cmd_target_to_client_cmd_rx) =
         futures::channel::mpsc::channel(1);
@@ -151,7 +156,7 @@ pub async fn run(
         }),
         target_read,
         None,
-        config.into(),
+        config.clone().into(),
     )
     .instrument(info_span!("target to client"));
 

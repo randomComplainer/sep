@@ -261,7 +261,7 @@ pub const fn ipv6_peeker() -> impl Peeker<std::net::Ipv6Addr, Reader = Ipv6AddrR
     })
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Hash)]
 pub enum ReadRequestAddr {
     Ipv4(std::net::Ipv4Addr),
     Ipv6(std::net::Ipv6Addr),

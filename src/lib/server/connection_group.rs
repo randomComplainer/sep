@@ -21,16 +21,18 @@ pub enum ConnectionGroupError {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Config {
+pub struct Config<TConnectTarget> {
     pub max_packet_ahead: u16,
     pub max_packet_size: u16,
+    pub connect_target: TConnectTarget,
 }
 
-impl Into<session::server::Config> for Config {
-    fn into(self) -> session::server::Config {
+impl<TConnectTarget> Into<session::server::Config<TConnectTarget>> for Config<TConnectTarget> {
+    fn into(self) -> session::server::Config<TConnectTarget> {
         session::server::Config {
             max_packet_ahead: self.max_packet_ahead,
             max_packet_size: self.max_packet_size,
+            connect_target: self.connect_target,
         }
     }
 }
@@ -48,12 +50,15 @@ struct Ctx {
     state_tx: watch::Sender<State>,
 }
 
-async fn run_session(
+async fn run_session<TConnectTarget>(
     ctx: Ctx,
     session_id: u16,
     client_msg_rx: mpsc::Receiver<session::msg::ClientMsg>,
-    config: Config,
-) -> Result<(), ConnectionGroupError> {
+    config: Config<TConnectTarget>,
+) -> Result<(), ConnectionGroupError>
+where
+    TConnectTarget: ConnectTarget,
+{
     let session_task_result = session::server::run(
         client_msg_rx,
         ctx.server_msg_tx
@@ -74,11 +79,14 @@ async fn run_session(
         .map_err(|_| ConnectionGroupError::LostConnection)
 }
 
-async fn receiving_msg_from_client(
+async fn receiving_msg_from_client<TConnectTarget>(
     mut ctx: Ctx,
     mut client_msg_rx: mpsc::Receiver<protocol::msg::ClientMsg>,
-    config: Config,
-) -> Result<(), ConnectionGroupError> {
+    config: Config<TConnectTarget>,
+) -> Result<(), ConnectionGroupError>
+where
+    TConnectTarget: ConnectTarget,
+{
     while let Some(client_msg) = client_msg_rx.next().await {
         if let protocol::msg::ClientMsg::SessionMsg(
             session_id,
@@ -110,7 +118,7 @@ async fn receiving_msg_from_client(
 
             ctx.scope_handle
                 .run_async(
-                    run_session(ctx.clone(), *session_id, client_msg_rx, config)
+                    run_session(ctx.clone(), *session_id, client_msg_rx, config.clone())
                         .instrument(session_span),
                 )
                 .await;
@@ -205,9 +213,9 @@ type Greeted<ClientStream, Cipher> = (
 type GreetedReciver<ClientStream, Cipher> = handover::Receiver<Greeted<ClientStream, Cipher>>;
 type GreetedChannelRef<ClientStream, Cipher> = handover::ChannelRef<Greeted<ClientStream, Cipher>>;
 
-pub async fn run<ClientStream, Cipher>(
+pub async fn run<ClientStream, Cipher, TConnectTarget>(
     mut new_conn_rx: GreetedReciver<ClientStream, Cipher>,
-    config: Config,
+    config: Config<TConnectTarget>,
 ) -> Result<
     GreetedChannelRef<ClientStream, Cipher>,
     (
@@ -218,6 +226,7 @@ pub async fn run<ClientStream, Cipher>(
 where
     ClientStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Sync + Send + 'static,
     Cipher: StreamCipher + Unpin + Send + Sync + 'static,
+    TConnectTarget: ConnectTarget,
 {
     let channel_ref = new_conn_rx.create_channel_ref();
 

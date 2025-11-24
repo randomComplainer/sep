@@ -15,21 +15,23 @@ type Greeted<Stream, Cipher> = (
 );
 
 #[derive(Debug, Clone, Copy)]
-pub struct Config {
+pub struct Config<TConnectTarget> {
     pub max_packet_ahead: u16,
     pub max_packet_size: u16,
+    pub connect_target: TConnectTarget,
 }
 
-impl Into<connection_group::Config> for Config {
-    fn into(self) -> connection_group::Config {
+impl<TConnectTarget> Into<connection_group::Config<TConnectTarget>> for Config<TConnectTarget> {
+    fn into(self) -> connection_group::Config<TConnectTarget> {
         connection_group::Config {
             max_packet_ahead: self.max_packet_ahead,
             max_packet_size: self.max_packet_size,
+            connect_target: self.connect_target,
         }
     }
 }
 
-pub async fn run<ClientStream, Cipher>(
+pub async fn run<ClientStream, Cipher, TConnectTarget>(
     mut new_conn_rx: impl Stream<
         Item = (
             Box<[u8; 16]>,
@@ -37,11 +39,12 @@ pub async fn run<ClientStream, Cipher>(
             protocol::server_agent::GreetedWrite<ClientStream, Cipher>,
         ),
     > + Unpin,
-    config: Config,
+    config: Config<TConnectTarget>,
 ) -> Result<(), std::io::Error>
 where
     ClientStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Sync + Send + 'static,
     Cipher: StreamCipher + Unpin + Sync + Send + 'static,
+    TConnectTarget: ConnectTarget,
 {
     let mut conn_senders =
         HashMap::<Box<protocol::ClientId>, handover::Sender<Greeted<ClientStream, Cipher>>>::new();
@@ -74,7 +77,7 @@ where
                     let (mut worker_conn_tx, worker_conn_rx) =
                         handover::channel::<Greeted<ClientStream, Cipher>>();
 
-                    let worker = connection_group::run(worker_conn_rx, config.into());
+                    let worker = connection_group::run(worker_conn_rx, config.clone().into());
 
                     tokio::spawn({
                         let client_id = client_id.clone();
