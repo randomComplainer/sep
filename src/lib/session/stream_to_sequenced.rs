@@ -92,7 +92,11 @@ async fn stream_reading_loop(
 
         // TODO: reuse buf
         let mut buf = bytes::BytesMut::with_capacity(config.max_packet_size as usize);
-        let n = match stream_to_read.read_buf(&mut buf).await {
+        let n = match stream_to_read
+            .read_buf(&mut buf)
+            .instrument(info_span!("read from stream"))
+            .await
+        {
             Ok(n) => n,
             Err(err) => {
                 error!("stream read error: {:?}", err);

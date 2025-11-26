@@ -1,5 +1,3 @@
-use std::net::SocketAddr;
-
 use futures::StreamExt;
 use futures::prelude::*;
 use tracing::*;
@@ -29,46 +27,6 @@ impl<TConnectTarget> Into<session::stream_to_sequenced::Config> for Config<TConn
             max_packet_size: self.max_packet_size,
         }
     }
-}
-
-async fn resolve_addrs(
-    addr: decode::ReadRequestAddr,
-    port: u16,
-) -> Result<Vec<SocketAddr>, std::io::Error> {
-    let addrs = match addr {
-        decode::ReadRequestAddr::Ipv4(addr) => {
-            vec![SocketAddr::new(addr.into(), port)]
-        }
-        decode::ReadRequestAddr::Ipv6(addr) => {
-            vec![SocketAddr::new(addr.into(), port)]
-        }
-        decode::ReadRequestAddr::Domain(addr) => {
-            tokio::net::lookup_host((str::from_utf8(addr.as_ref()).unwrap(), port))
-                .await?
-                .collect()
-        }
-    };
-
-    Ok(addrs)
-}
-
-async fn connect_target(addrs: Vec<SocketAddr>) -> Result<tokio::net::TcpStream, std::io::Error> {
-    for addr in addrs {
-        match tokio::net::TcpStream::connect(addr).await {
-            Ok(stream) => {
-                return Ok(stream);
-            }
-            // TODO: collect errors?
-            Err(_err) => {
-                continue;
-            }
-        }
-    }
-
-    Err(std::io::Error::new(
-        std::io::ErrorKind::ConnectionRefused,
-        "connect target failed",
-    ))
 }
 
 pub async fn run<TConnectTarget>(
@@ -206,5 +164,152 @@ where
     tokio::select! {
         r = streaming => r,
         _ = client_msg_handling => Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    use bytes::BytesMut;
+    use futures::channel::mpsc;
+
+    use super::*;
+
+    struct ServerMessageExpectation {
+        pub bound_addr: SocketAddr,
+        pub ack_till: u16,
+        pub data_sequence: Vec<BytesMut>,
+        pub io_error: bool,
+    }
+
+    type Expectation = ServerMessageExpectation;
+
+    trait ClientMessageExpectationExt {
+        fn expect(self, exp: ServerMessageExpectation) -> impl Future<Output = ()>;
+    }
+
+    impl<T> ClientMessageExpectationExt for T
+    where
+        T: Stream<Item = msg::ServerMsg> + Unpin,
+    {
+        fn expect(mut self, exp: ServerMessageExpectation) -> impl Future<Output = ()> {
+            let mut next_ack = 0;
+            let mut next_package_seq = 0;
+            let mut error_received = false;
+
+            async move {
+                let msg::ServerMsg::Reply(msg::Reply { bound_addr }) = self.next().await.unwrap()
+                else {
+                    panic!("unexpected reply");
+                };
+
+                assert_eq!(bound_addr, exp.bound_addr);
+
+                while let Some(msg) = self.next().await {
+                    match msg {
+                        msg::ServerMsg::Reply(_) => {
+                            panic!("unexpected reply");
+                        }
+                        msg::ServerMsg::ReplyError(_) => {
+                            panic!("unexpected reply error");
+                        }
+                        msg::ServerMsg::Data(data) => {
+                            assert_eq!(next_package_seq, data.seq);
+                            assert_eq!(exp.data_sequence[next_package_seq as usize], data.data);
+                            next_package_seq += 1;
+                        }
+                        msg::ServerMsg::Eof(eof) => {
+                            assert_eq!(next_package_seq, eof.seq);
+                            assert_eq!(eof.seq, exp.data_sequence.len() as u16);
+                            next_package_seq += 1;
+                        }
+                        msg::ServerMsg::Ack(ack) => {
+                            assert_eq!(next_ack, ack.seq);
+                            assert!(ack.seq <= exp.ack_till);
+                            next_ack += 1;
+                        }
+                        msg::ServerMsg::TargetIoError(_) => {
+                            assert_eq!(next_package_seq, exp.data_sequence.len() as u16);
+                            assert!(exp.io_error);
+                            error_received = true;
+                        }
+                    }
+                }
+
+                assert_eq!(next_package_seq, exp.data_sequence.len() as u16 + 1);
+                assert_eq!(next_ack, exp.ack_till + 1);
+                assert_eq!(exp.io_error, error_received);
+            }
+        }
+    }
+
+    #[test_log::test(tokio::test)]
+    async fn happy_path() {
+        let (mut client_msg_tx, client_msg_rx) = mpsc::channel(1);
+        let (server_msg_tx, mut server_msg_rx) = mpsc::channel(1);
+
+        let main_task = run(
+            client_msg_rx,
+            server_msg_tx,
+            Config {
+                max_packet_ahead: 1024,
+                max_packet_size: 1024,
+                connect_target: crate::connect_target::make_mock([(
+                    (ReadRequestAddr::Domain("example.com".into()), 8080),
+                    Ok((
+                        tokio_test::io::Builder::new()
+                            .read(&[1, 2, 3, 4])
+                            .write(&[4, 3, 2, 1])
+                            .build(),
+                        SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1).into(), 9999),
+                    )),
+                )]),
+            },
+        );
+
+        let verify_server_msg = server_msg_rx.expect(Expectation {
+            bound_addr: SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1).into(), 9999),
+            ack_till: 1,
+            data_sequence: vec![[1, 2, 3, 4].as_ref().into()],
+            io_error: false,
+        });
+
+        let client_task = async move {
+            client_msg_tx
+                .send(msg::ClientMsg::Request(msg::Request {
+                    addr: ReadRequestAddr::Domain("example.com".into()),
+                    port: 8080,
+                }))
+                .await
+                .unwrap();
+
+            client_msg_tx
+                .send(msg::Ack { seq: 0 }.into())
+                .await
+                .unwrap();
+
+            client_msg_tx
+                .send(
+                    msg::Data {
+                        seq: 0,
+                        data: [4, 3, 2, 1].as_ref().into(),
+                    }
+                    .into(),
+                )
+                .await
+                .unwrap();
+
+            client_msg_tx
+                .send(msg::Eof { seq: 1 }.into())
+                .await
+                .unwrap();
+        };
+
+        tokio::join!(
+            main_task.map(|r| r.unwrap()),
+            verify_server_msg,
+            client_task
+        );
     }
 }

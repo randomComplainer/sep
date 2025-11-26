@@ -83,3 +83,79 @@ impl ConnectTarget for ConnectTargetImpl {
         }
     }
 }
+
+#[cfg(test)]
+pub fn make_mock(
+    entries: impl IntoIterator<
+        Item = (
+            (ReadRequestAddr, u16),
+            Result<(tokio_test::io::Mock, SocketAddr), std::io::Error>,
+        ),
+    >,
+) -> impl ConnectTarget {
+    mock::MockConnectTarget::new(entries)
+}
+
+#[cfg(test)]
+mod mock {
+    use tokio::sync::Mutex;
+
+    use super::*;
+
+    use std::{collections::HashMap, sync::Arc};
+
+    #[derive(Clone)]
+    pub(super) struct MockConnectTarget(
+        Arc<
+            Mutex<
+                HashMap<
+                    (ReadRequestAddr, u16),
+                    Result<(tokio_test::io::Mock, SocketAddr), std::io::Error>,
+                >,
+            >,
+        >,
+    );
+
+    impl MockConnectTarget {
+        pub fn new(
+            entries: impl IntoIterator<
+                Item = (
+                    (ReadRequestAddr, u16),
+                    Result<(tokio_test::io::Mock, SocketAddr), std::io::Error>,
+                ),
+            >,
+        ) -> Self {
+            Self(Arc::new(Mutex::new(entries.into_iter().collect())))
+        }
+    }
+
+    impl ConnectTarget for MockConnectTarget {
+        fn connect(
+            &self,
+            addr: ReadRequestAddr,
+            port: u16,
+        ) -> impl Future<
+            Output = Result<
+                (
+                    impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+                    SocketAddr,
+                ),
+                std::io::Error,
+            >,
+        > + Send
+        + 'static {
+            let entries = self.0.clone();
+
+            async move {
+                let mut entries = entries.lock().await;
+                match entries.remove(&(addr, port)) {
+                    Some(result) => result,
+                    None => Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "no entry",
+                    )),
+                }
+            }
+        }
+    }
+}

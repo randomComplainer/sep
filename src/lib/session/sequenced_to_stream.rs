@@ -70,7 +70,7 @@ async fn streaming_loop(
                 debug!(seq, "stream entry: eof");
 
                 buffed_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                assert!(buffed_count.load(std::sync::atomic::Ordering::SeqCst) == 0);
+                assert_eq!(0, buffed_count.load(std::sync::atomic::Ordering::SeqCst));
 
                 let evt = msg::Ack { seq }.into();
                 try_emit_evt!(evt_tx, evt);
