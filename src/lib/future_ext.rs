@@ -2,6 +2,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use futures::FutureExt as _;
+use tracing::*;
+
 pub struct ReadyOr<TResult, TL, TR>
 where
     TL: Future<Output = TResult>,
@@ -57,6 +60,10 @@ where
         TR: Future<Output = TResult>;
 
     fn poll_once(self) -> impl Future<Output = Option<Self::Output>>;
+
+    fn instrument_with_result(self, span: tracing::Span) -> impl Future<Output = Self::Output>
+    where
+        Self::Output: std::fmt::Debug;
 }
 
 impl<TResult, TFuture> FutureExt<TResult> for TFuture
@@ -78,6 +85,17 @@ where
                 Poll::Pending => Poll::Ready(None),
             }
         })
+    }
+
+    fn instrument_with_result(self, span: tracing::Span) -> impl Future<Output = Self::Output>
+    where
+        Self::Output: std::fmt::Debug,
+    {
+        self.then(|x| {
+            debug!(?x, "future completed");
+            std::future::ready(x)
+        })
+        .instrument(span)
     }
 }
 

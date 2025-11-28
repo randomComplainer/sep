@@ -85,14 +85,17 @@ impl ConnectTarget for ConnectTargetImpl {
 }
 
 #[cfg(test)]
-pub fn make_mock(
+pub fn make_mock<TStream>(
     entries: impl IntoIterator<
         Item = (
             (ReadRequestAddr, u16),
-            Result<(tokio_test::io::Mock, SocketAddr), std::io::Error>,
+            Result<(TStream, SocketAddr), std::io::Error>,
         ),
     >,
-) -> impl ConnectTarget {
+) -> impl ConnectTarget
+where
+    TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     mock::MockConnectTarget::new(entries)
 }
 
@@ -104,24 +107,22 @@ mod mock {
 
     use std::{collections::HashMap, sync::Arc};
 
-    #[derive(Clone)]
-    pub(super) struct MockConnectTarget(
-        Arc<
-            Mutex<
-                HashMap<
-                    (ReadRequestAddr, u16),
-                    Result<(tokio_test::io::Mock, SocketAddr), std::io::Error>,
-                >,
-            >,
-        >,
+    pub(super) struct MockConnectTarget<TStream>(
+        Arc<Mutex<HashMap<(ReadRequestAddr, u16), Result<(TStream, SocketAddr), std::io::Error>>>>,
     );
 
-    impl MockConnectTarget {
+    impl<TStream> Clone for MockConnectTarget<TStream> {
+        fn clone(&self) -> Self {
+            Self(self.0.clone())
+        }
+    }
+
+    impl<TStream> MockConnectTarget<TStream> {
         pub fn new(
             entries: impl IntoIterator<
                 Item = (
                     (ReadRequestAddr, u16),
-                    Result<(tokio_test::io::Mock, SocketAddr), std::io::Error>,
+                    Result<(TStream, SocketAddr), std::io::Error>,
                 ),
             >,
         ) -> Self {
@@ -129,7 +130,10 @@ mod mock {
         }
     }
 
-    impl ConnectTarget for MockConnectTarget {
+    impl<TStream> ConnectTarget for MockConnectTarget<TStream>
+    where
+        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         fn connect(
             &self,
             addr: ReadRequestAddr,

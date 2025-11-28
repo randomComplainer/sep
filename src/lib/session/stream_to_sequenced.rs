@@ -42,9 +42,8 @@ impl MaxAcked {
         }
     }
 
-    // unacked count if next_seq is sent
-    pub fn unacked_count_if(&self, next_seq: u16) -> u16 {
-        next_seq - self.0
+    pub fn do_send_more(&self, next_seq: u16, max_packet_ahead: u16) -> bool {
+        self.0 + max_packet_ahead > next_seq
     }
 
     // pass other value in to avoid underflow when checking for equality with 0
@@ -78,7 +77,7 @@ async fn stream_reading_loop(
 ) -> Result<(), std::io::Error> {
     loop {
         let lock = match max_acked_rx
-            .wait_for(|max_acked| max_acked.unacked_count_if(seq) < config.max_packet_ahead)
+            .wait_for(|max_acked| max_acked.do_send_more(seq, config.max_packet_ahead))
             .await
         {
             Ok(lock) => lock,

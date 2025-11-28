@@ -95,7 +95,7 @@ pub async fn run(
 
     let mut next_seq = 0u16;
     let buffed_count = Arc::new(AtomicU16::new(0));
-    let (mut data_tx, data_rx) =
+    let (mut local_stream_data_tx, local_stream_data_rx) =
         futures::channel::mpsc::channel(config.max_packet_ahead as usize + 1);
 
     let mut heap = std::collections::BinaryHeap::<std::cmp::Reverse<StreamEntry>>::with_capacity(
@@ -132,7 +132,11 @@ pub async fn run(
                 while heap.peek().map(|e| e.0.0 == next_seq).unwrap_or(false) {
                     let stream_entry = heap.pop().unwrap();
                     let span = debug_span!("send stream entry", seq = stream_entry.0.0);
-                    if let Err(_) = data_tx.send(stream_entry.0).instrument(span).await {
+                    if let Err(_) = local_stream_data_tx
+                        .send(stream_entry.0)
+                        .instrument(span)
+                        .await
+                    {
                         error!("local stream channel is broken, exiting");
                         return Ok(());
                     }
@@ -147,8 +151,9 @@ pub async fn run(
     }
     .instrument(info_span!("command receiving task"));
 
-    let streaming_task = streaming_loop(stream_to_write, data_rx, evt_tx, buffed_count)
-        .instrument(info_span!("streaming loop"));
+    let streaming_task =
+        streaming_loop(stream_to_write, local_stream_data_rx, evt_tx, buffed_count)
+            .instrument(info_span!("streaming loop"));
 
     tokio::select! {
         r = streaming_task => r,
