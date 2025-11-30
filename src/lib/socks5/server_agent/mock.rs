@@ -395,7 +395,6 @@ impl ReplyBuilder {
 }
 
 pub struct Init {
-    // pub(super) invocation_expectation: UnfulfilledInvocation,
     pub(super) receive_greeting_message_func:
         Box<dyn FnOnce() -> BoxFut<Result<(msg::ClientGreeting, Greeted), Socks5Error>> + Send>,
 }
