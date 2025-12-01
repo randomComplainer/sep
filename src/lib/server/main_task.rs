@@ -9,11 +9,6 @@ use super::connection_group;
 use crate::handover;
 use crate::prelude::*;
 
-type Greeted<Stream, Cipher> = (
-    protocol::server_agent::GreetedRead<Stream, Cipher>,
-    protocol::server_agent::GreetedWrite<Stream, Cipher>,
-);
-
 #[derive(Debug, Clone, Copy)]
 pub struct Config<TConnectTarget> {
     pub max_packet_ahead: u16,
@@ -31,27 +26,21 @@ impl<TConnectTarget> Into<connection_group::Config<TConnectTarget>> for Config<T
     }
 }
 
-pub async fn run<ClientStream, Cipher, TConnectTarget>(
-    mut new_conn_rx: impl Stream<
-        Item = (
-            Box<[u8; 16]>,
-            protocol::server_agent::GreetedRead<ClientStream, Cipher>,
-            protocol::server_agent::GreetedWrite<ClientStream, Cipher>,
-        ),
-    > + Unpin,
+pub async fn run<GreetedRead, GreetedWrite, TConnectTarget>(
+    mut new_conn_rx: impl Stream<Item = (Box<[u8; 16]>, GreetedRead, GreetedWrite)> + Unpin,
     config: Config<TConnectTarget>,
 ) -> Result<(), std::io::Error>
 where
-    ClientStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Sync + Send + 'static,
-    Cipher: StreamCipher + Unpin + Sync + Send + 'static,
+    GreetedRead: protocol::server_agent::GreetedRead,
+    GreetedWrite: protocol::server_agent::GreetedWrite,
     TConnectTarget: ConnectTarget,
 {
     let mut conn_senders =
-        HashMap::<Box<protocol::ClientId>, handover::Sender<Greeted<ClientStream, Cipher>>>::new();
+        HashMap::<Box<protocol::ClientId>, handover::Sender<(GreetedRead, GreetedWrite)>>::new();
 
     let (worker_ending_tx, mut worker_ending_rx) = mpsc::channel::<(
         Box<protocol::ClientId>,
-        handover::ChannelRef<Greeted<ClientStream, Cipher>>,
+        handover::ChannelRef<(GreetedRead, GreetedWrite)>,
     )>(2);
 
     loop {
@@ -69,13 +58,13 @@ where
                                 conn_senders.remove(&client_id);
                             })
                         }
-                        None => Err::<(), Greeted<ClientStream, Cipher>>(conn),
+                        None => Err::<(), (GreetedRead, GreetedWrite)>(conn),
                     }
                 } {
                     // create new worker
 
                     let (mut worker_conn_tx, worker_conn_rx) =
-                        handover::channel::<Greeted<ClientStream, Cipher>>();
+                        handover::channel::<(GreetedRead, GreetedWrite)>();
 
                     let worker = connection_group::run(worker_conn_rx, config.clone().into());
 

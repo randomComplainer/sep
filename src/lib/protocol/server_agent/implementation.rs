@@ -4,30 +4,10 @@ use std::sync::Arc;
 use bytes::{BufMut, BytesMut};
 use chacha20::ChaCha20;
 use chacha20::cipher::KeyIvInit;
-use thiserror::Error;
 use tokio::io::AsyncReadExt;
 
 use super::*;
 use crate::decode::*;
-
-#[derive(Error, Debug)]
-pub enum InitError<Stream> {
-    #[error("io error")]
-    Io(#[from] std::io::Error),
-    #[error("greeting invalid, {0}")]
-    InvalidGreeting(&'static str, Stream),
-    #[error("protocol error: {0}")]
-    Protocol(#[from] protocol::ProtocolError),
-}
-
-impl<Stream> InitError<Stream> {
-    pub fn from_decode_error(err: DecodeError) -> Self {
-        match err {
-            DecodeError::InvalidStream(str) => InitError::Protocol(str.into()),
-            DecodeError::Io(err) => InitError::Io(err),
-        }
-    }
-}
 
 pub struct Init<Stream>
 where
@@ -105,9 +85,9 @@ where
             ));
         }
 
-        let rand_byte_len = super::cal_rand_byte_len(&self.key, &nonce, client_timestamp);
+        let rand_byte_len = cal_rand_byte_len(&self.key, &nonce, client_timestamp);
 
-        if rand_byte_len > super::RAND_BYTE_LEN_MAX {
+        if rand_byte_len > RAND_BYTE_LEN_MAX {
             return Err(InitError::InvalidGreeting(
                 "rand_byte_len > RAND_BYTE_LEN_MAX",
                 stream_read
@@ -146,6 +126,22 @@ where
                 ChaCha20::new(self.key.as_slice().into(), nonce.as_slice().into()),
             )),
         ))
+    }
+}
+
+impl<Stream> super::Init for Init<Stream>
+where
+    Stream: StaticStream,
+{
+    type Stream = Stream;
+    type GreetedRead = GreetedRead<Stream, ChaCha20>;
+    type GreetedWrite = GreetedWrite<Stream, ChaCha20>;
+
+    async fn recv_greeting(
+        self,
+        server_timestamp: u64,
+    ) -> Result<(Box<ClientId>, Self::GreetedRead, Self::GreetedWrite), InitError<Stream>> {
+        self.recv_greeting(server_timestamp).await
     }
 }
 
@@ -254,8 +250,18 @@ where
         Ok(())
     }
 
-    pub async fn close(self) -> Result<(), std::io::Error> {
-        self.stream_write.close().await
+    // pub async fn close(self) -> Result<(), std::io::Error> {
+    //     self.stream_write.close().await
+    // }
+}
+
+impl<Stream, Cipher> super::GreetedWrite for GreetedWrite<Stream, Cipher>
+where
+    Stream: StaticStream,
+    Cipher: StaticCipher,
+{
+    async fn send_msg(&mut self, msg: protocol::msg::ServerMsg) -> Result<(), std::io::Error> {
+        self.send_msg(msg).await
     }
 }
 
@@ -280,5 +286,15 @@ where
         let msg = self.stream_read.read_next(msg::client_msg_peeker()).await?;
 
         Ok(msg)
+    }
+}
+
+impl<Stream, Cipher> super::GreetedRead for GreetedRead<Stream, Cipher>
+where
+    Stream: StaticStream,
+    Cipher: StaticCipher,
+{
+    async fn recv_msg(&mut self) -> Result<Option<protocol::msg::ClientMsg>, DecodeError> {
+        self.recv_msg().await
     }
 }

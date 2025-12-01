@@ -68,8 +68,8 @@ type ReadEncrypted<S, C> = EncryptedRead<ReadHalf<S>, C>;
 type WriteEncrypted<S, C> = EncryptedWrite<WriteHalf<S>, C>;
 type FramedRead<S, C> = BufDecoder<ReadEncrypted<S, C>>;
 
-pub trait StaticStream: AsyncRead + AsyncWrite + Unpin + 'static {}
-impl<T: AsyncRead + AsyncWrite + Unpin + 'static> StaticStream for T {}
+pub trait StaticStream: AsyncRead + AsyncWrite + Send + Unpin + 'static {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> StaticStream for T {}
 
-pub trait StaticCipher: StreamCipher + Unpin + 'static {}
-impl<T: StreamCipher + Unpin + 'static> StaticCipher for T {}
+pub trait StaticCipher: StreamCipher + Send + Unpin + 'static {}
+impl<T: StreamCipher + Unpin + Send + 'static> StaticCipher for T {}

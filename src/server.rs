@@ -38,7 +38,7 @@ async fn async_main(args: Args) {
 
     let bound_addr = SocketAddr::new(args.bound_addr, args.port);
 
-    let listener = protocol::server_agent::TcpListener::bind(
+    let listener = protocol::server_agent::implementation::TcpListener::bind(
         bound_addr,
         protocol::key_from_string(&args.key).into(),
     )

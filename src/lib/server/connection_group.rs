@@ -139,16 +139,12 @@ where
     Ok::<_, ConnectionGroupError>(())
 }
 
-async fn client_connection_lifetime_task<ClientStream, Cipher>(
-    mut client_read: protocol::server_agent::GreetedRead<ClientStream, Cipher>,
-    mut client_write: protocol::server_agent::GreetedWrite<ClientStream, Cipher>,
+async fn client_connection_lifetime_task(
+    mut client_read: impl protocol::server_agent::GreetedRead,
+    mut client_write: impl protocol::server_agent::GreetedWrite,
     mut client_msg_tx: mpsc::Sender<protocol::msg::ClientMsg>,
     mut server_msg_rx: handover::Receiver<protocol::msg::ServerMsg>,
-) -> Result<(), std::io::Error>
-where
-    ClientStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-    Cipher: StreamCipher + Unpin + Send + 'static,
-{
+) -> Result<(), std::io::Error> {
     //TODO: error handling
     debug!("client connection lifetime task started");
 
@@ -182,7 +178,8 @@ where
                         .send_msg(protocol::msg::ServerMsg::EndOfStream)
                         .await
                         .unwrap();
-                    let _ = client_write.close().await;
+                    // let _ = client_write.close().await;
+                    drop(client_write);
 
                     return Ok::<_, std::io::Error>(());
                 }
@@ -206,26 +203,19 @@ where
     .map(|_| ())
 }
 
-type Greeted<ClientStream, Cipher> = (
-    protocol::server_agent::GreetedRead<ClientStream, Cipher>,
-    protocol::server_agent::GreetedWrite<ClientStream, Cipher>,
-);
-type GreetedReciver<ClientStream, Cipher> = handover::Receiver<Greeted<ClientStream, Cipher>>;
-type GreetedChannelRef<ClientStream, Cipher> = handover::ChannelRef<Greeted<ClientStream, Cipher>>;
-
-pub async fn run<ClientStream, Cipher, TConnectTarget>(
-    mut new_conn_rx: GreetedReciver<ClientStream, Cipher>,
+pub async fn run<GreetedRead, GreetedWrite, TConnectTarget>(
+    mut new_conn_rx: handover::Receiver<(GreetedRead, GreetedWrite)>,
     config: Config<TConnectTarget>,
 ) -> Result<
-    GreetedChannelRef<ClientStream, Cipher>,
+    handover::ChannelRef<(GreetedRead, GreetedWrite)>,
     (
-        GreetedChannelRef<ClientStream, Cipher>,
+        handover::ChannelRef<(GreetedRead, GreetedWrite)>,
         ConnectionGroupError,
     ),
 >
 where
-    ClientStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Sync + Send + 'static,
-    Cipher: StreamCipher + Unpin + Send + Sync + 'static,
+    GreetedRead: protocol::server_agent::GreetedRead,
+    GreetedWrite: protocol::server_agent::GreetedWrite,
     TConnectTarget: ConnectTarget,
 {
     let channel_ref = new_conn_rx.create_channel_ref();
@@ -369,5 +359,53 @@ where
     {
         future::Either::Left((e, _)) => Err((channel_ref, e)),
         future::Either::Right(_) => Ok(channel_ref),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use super::*;
+    //
+    // #[tokio::test]
+    // async fn happy_path() {
+    //     let (new_conn_tx, new_conn_rx) = handover::channel();
+    //     let config = Config {
+    //         max_packet_ahead: 4,
+    //         max_packet_size: 1024,
+    //         connect_target: crate::connect_target::make_mock([(
+    //             (ReadRequestAddr::Domain("example.com".into()), 80),
+    //             Ok((
+    //                 tokio_test::io::Builder::new().build(),
+    //                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 180),
+    //             )),
+    //         )]),
+    //     };
+    //
+    //     let main_task = tokio::spawn(run(new_conn_rx, config));
+    //
+    //
+    // }
+
+    struct Inner;
+
+    impl Inner {
+        pub async fn run(self) {
+            todo!()
+        }
+    }
+
+    struct Wraper {
+        inner: Inner,
+    }
+
+    impl Wraper {
+        pub async fn poll_run(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<()> {
+            todo!()
+        }
     }
 }

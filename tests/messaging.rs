@@ -15,8 +15,8 @@ async fn create_pair() -> (
     ),
     (
         Box<[u8; 16]>,
-        server_agent::GreetedRead<DuplexStream, ChaCha20>,
-        server_agent::GreetedWrite<DuplexStream, ChaCha20>,
+        server_agent::implementation::GreetedRead<DuplexStream, ChaCha20>,
+        server_agent::implementation::GreetedWrite<DuplexStream, ChaCha20>,
     ),
 ) {
     let key: Arc<protocol::Key> = protocol::key_from_string("000").into();
@@ -27,7 +27,7 @@ async fn create_pair() -> (
 
     let client_agent =
         protocol::client_agent::Init::new(client_id, 0, key.clone(), nonce, client_steam);
-    let server_agent = protocol::server_agent::Init::new(key, server_stream);
+    let server_agent = protocol::server_agent::implementation::Init::new(key, server_stream);
 
     let client_agent = client_agent.send_greeting(12).await.unwrap();
     let server_agent = server_agent.recv_greeting(12).await.unwrap();
