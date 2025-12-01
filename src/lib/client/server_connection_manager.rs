@@ -62,14 +62,14 @@ ServerConnector: super::server_connection_lifetime::ServerConnector + Send,{
                 let (conn_client_msg_tx, conn_client_msg_rx) = handover::channel();
 
                 debug!("connecting to server");
-                let (server_write, server_read) = connect_to_server.connect().await?;
+                let (server_read, server_write) = connect_to_server.connect().await?;
                 debug!("connected to server");
 
                 server_write_queue_tx.send(conn_client_msg_tx).await.expect("server_write_queue_tx is broken");
 
                 super::server_connection_lifetime::run(
-                    server_write,
                     server_read,
+                    server_write,
                     conn_client_msg_rx,
                     evt_tx.clone().with_sync(move |client_msg| Event::ServerMsg(client_msg))
                 )

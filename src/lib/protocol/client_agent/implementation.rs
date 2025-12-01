@@ -6,13 +6,13 @@ use chacha20::cipher::KeyIvInit;
 use rand::RngCore;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
-use super::*;
+use crate::protocol::*;
 
 pub struct Init<Stream>
 where
     Stream: AsyncRead + AsyncWrite + 'static + Unpin,
 {
-    client_id: Arc<[u8; 16]>,
+    client_id: Arc<ClientId>,
     conn_id: u16,
     key: Arc<Key>,
     nonce: Box<Nonce>,
@@ -24,7 +24,7 @@ where
     Stream: StaticStream,
 {
     pub fn new(
-        client_id: Arc<[u8; 16]>,
+        client_id: Arc<ClientId>,
         conn_id: u16,
         key: Arc<Key>,
         nonce: Box<Nonce>,
@@ -44,8 +44,8 @@ where
         timestamp: u64,
     ) -> Result<
         (
-            GreetedWrite<Stream, ChaCha20>,
             GreetedRead<Stream, ChaCha20>,
+            GreetedWrite<Stream, ChaCha20>,
         ),
         std::io::Error,
     > {
@@ -64,8 +64,8 @@ where
         rand::rng().fill_bytes(&mut rand_bytes);
 
         let buf_size = 8 // timestamp
-            + rand_byte_len
-            + 16; // client_id
+        + rand_byte_len
+        + 16; // client_id
 
         let mut buf = BytesMut::with_capacity(buf_size);
         buf.put_u64(timestamp);
@@ -75,12 +75,89 @@ where
         stream_write.write_all(buf.as_mut()).await?;
 
         Ok((
-            GreetedWrite::new(self.conn_id, stream_write),
             GreetedRead::new(BufDecoder::new(EncryptedRead::new(
                 stream_read,
                 ChaCha20::new(self.key.as_slice().into(), self.nonce.as_slice().into()),
             ))),
+            GreetedWrite::new(self.conn_id, stream_write),
         ))
+    }
+}
+
+impl<Stream> super::Init for Init<Stream>
+where
+    Stream: StaticStream,
+{
+    async fn send_greeting(
+        self,
+        timestamp: u64,
+    ) -> Result<(impl super::GreetedRead, impl super::GreetedWrite), std::io::Error> {
+        let cipher = ChaCha20::new(self.key.as_slice().into(), self.nonce.as_slice().into());
+
+        let (stream_read, mut stream_write) = tokio::io::split(self.stream);
+
+        // send nonce in plaintext
+        stream_write.write_all(self.nonce.as_slice()).await?;
+
+        let mut stream_write = EncryptedWrite::new(stream_write, cipher);
+
+        let rand_byte_len = super::cal_rand_byte_len(&self.key, &self.nonce, timestamp);
+
+        let mut rand_bytes = vec![0; rand_byte_len];
+        rand::rng().fill_bytes(&mut rand_bytes);
+
+        let buf_size = 8 // timestamp
+        + rand_byte_len
+        + 16; // client_id
+
+        let mut buf = BytesMut::with_capacity(buf_size);
+        buf.put_u64(timestamp);
+        buf.put_slice(&rand_bytes);
+        buf.put_slice(self.client_id.as_ref());
+
+        stream_write.write_all(buf.as_mut()).await?;
+
+        Ok((
+            GreetedRead::new(BufDecoder::new(EncryptedRead::new(
+                stream_read,
+                ChaCha20::new(self.key.as_slice().into(), self.nonce.as_slice().into()),
+            ))),
+            GreetedWrite::new(self.conn_id, stream_write),
+        ))
+    }
+}
+
+pub struct GreetedRead<Stream, Cipher>
+where
+    Stream: StaticStream,
+    Cipher: StaticCipher,
+{
+    stream_read: FramedRead<Stream, Cipher>,
+}
+
+impl<Stream, Cipher> GreetedRead<Stream, Cipher>
+where
+    Stream: StaticStream,
+    Cipher: StaticCipher,
+{
+    pub fn new(stream_read: FramedRead<Stream, Cipher>) -> Self {
+        Self { stream_read }
+    }
+
+    pub async fn recv_msg(&mut self) -> Result<Option<msg::ServerMsg>, decode::DecodeError> {
+        let msg = self.stream_read.read_next(msg::server_msg_peeker()).await?;
+
+        Ok(msg)
+    }
+}
+
+impl<Stream, Cipher> super::GreetedRead for GreetedRead<Stream, Cipher>
+where
+    Stream: StaticStream,
+    Cipher: StaticCipher,
+{
+    async fn recv_msg(&mut self) -> Result<Option<msg::ServerMsg>, decode::DecodeError> {
+        self.recv_msg().await
     }
 }
 
@@ -161,26 +238,12 @@ where
     }
 }
 
-pub struct GreetedRead<Stream, Cipher>
+impl<Stream, Cipher> super::GreetedWrite for GreetedWrite<Stream, Cipher>
 where
-    Stream: StaticStream,
+    Stream: AsyncWrite + Send + Unpin + 'static,
     Cipher: StaticCipher,
 {
-    stream_read: FramedRead<Stream, Cipher>,
-}
-
-impl<Stream, Cipher> GreetedRead<Stream, Cipher>
-where
-    Stream: StaticStream,
-    Cipher: StaticCipher,
-{
-    pub fn new(stream_read: FramedRead<Stream, Cipher>) -> Self {
-        Self { stream_read }
-    }
-
-    pub async fn recv_msg(&mut self) -> Result<Option<msg::ServerMsg>, decode::DecodeError> {
-        let msg = self.stream_read.read_next(msg::server_msg_peeker()).await?;
-
-        Ok(msg)
+    async fn send_msg(&mut self, msg: protocol::msg::ClientMsg) -> Result<(), std::io::Error> {
+        self.send_msg(msg).await
     }
 }

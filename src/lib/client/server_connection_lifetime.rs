@@ -1,4 +1,3 @@
-use chacha20::cipher::StreamCipher;
 use futures::prelude::*;
 use tracing::*;
 
@@ -9,16 +8,11 @@ pub trait ServerConnector
 where
     Self: Clone + Sync + Send + Unpin + 'static,
 {
-    type ServerStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static;
-    type Cipher: StreamCipher + Unpin + Send + 'static;
+    type GreetedWrite: protocol::client_agent::GreetedWrite;
+    type GreetedRead: protocol::client_agent::GreetedRead;
+
     type Fut: std::future::Future<
-            Output = Result<
-                (
-                    protocol::client_agent::GreetedWrite<Self::ServerStream, Self::Cipher>,
-                    protocol::client_agent::GreetedRead<Self::ServerStream, Self::Cipher>,
-                ),
-                std::io::Error,
-            >,
+            Output = Result<(Self::GreetedRead, Self::GreetedWrite), std::io::Error>,
         > + Send
         + Unpin
         + 'static;
@@ -26,44 +20,33 @@ where
     fn connect(&self) -> Self::Fut;
 }
 
-impl<TFn, TServerStream, TCipher, TFuture> ServerConnector for TFn
+impl<TFn, TGreetedRead, TGreetedWrite, TFuture> ServerConnector for TFn
 where
     TFn: (Fn() -> TFuture) + Clone + Sync + Send + Unpin + 'static,
-    TServerStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-    TCipher: StreamCipher + Unpin + Send + 'static,
-    TFuture: std::future::Future<
-            Output = Result<
-                (
-                    protocol::client_agent::GreetedWrite<TServerStream, TCipher>,
-                    protocol::client_agent::GreetedRead<TServerStream, TCipher>,
-                ),
-                std::io::Error,
-            >,
-        > + Send
+    TGreetedRead: protocol::client_agent::GreetedRead,
+    TGreetedWrite: protocol::client_agent::GreetedWrite,
+    TFuture: std::future::Future<Output = Result<(TGreetedRead, TGreetedWrite), std::io::Error>>
+        + Send
         + Unpin
         + 'static,
 {
-    type ServerStream = TServerStream;
-    type Cipher = TCipher;
+    type GreetedWrite = TGreetedWrite;
+    type GreetedRead = TGreetedRead;
     type Fut = TFuture;
     fn connect(&self) -> Self::Fut {
         self()
     }
 }
 
-pub fn run<TServerStream, TCipher>(
-    mut server_write: protocol::client_agent::GreetedWrite<TServerStream, TCipher>,
-    mut server_read: protocol::client_agent::GreetedRead<TServerStream, TCipher>,
+pub fn run(
+    mut server_read: impl protocol::client_agent::GreetedRead,
+    mut server_write: impl protocol::client_agent::GreetedWrite,
     mut client_msg_rx: handover::Receiver<protocol::msg::ClientMsg>,
     mut server_msg_tx: impl Sink<(u16, session::msg::ServerMsg), Error = impl std::fmt::Debug>
     + Unpin
     + Send
     + 'static,
-) -> impl Future<Output = Result<(), std::io::Error>> + Send
-where
-    TServerStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-    TCipher: StreamCipher + Unpin + Send + 'static,
-{
+) -> impl Future<Output = Result<(), std::io::Error>> + Send {
     async move {
         let send_loop = async move {
             while let Some(client_msg) = client_msg_rx

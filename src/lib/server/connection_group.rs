@@ -2,7 +2,6 @@ use std::ops::Add;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use chacha20::cipher::StreamCipher;
 use dashmap::DashMap;
 use futures::channel::mpsc;
 use futures::prelude::*;

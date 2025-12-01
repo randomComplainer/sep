@@ -87,7 +87,7 @@ async fn async_main(args: Args) {
                     async move {
                         let stream = tokio::net::TcpStream::connect(server_addr.as_ref()).await?;
 
-                        let server = protocol::client_agent::Init::new(
+                        let server = protocol::client_agent::implementation::Init::new(
                             client_id,
                             stream.local_addr()?.port(),
                             key,
