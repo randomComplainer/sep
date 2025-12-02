@@ -1,30 +1,12 @@
 use std::sync::Arc;
 
-use tokio::io::{DuplexStream, duplex};
+use tokio::io::duplex;
 
 use sep_lib::prelude::*;
 
-fn create_pair() -> (
-    protocol::client_agent::implementation::Init<DuplexStream>,
-    protocol::server_agent::implementation::Init<DuplexStream>,
-) {
-    let key: Arc<protocol::Key> = protocol::key_from_string("000").into();
-    let nonce: Box<protocol::Nonce> = vec![1u8; 12].try_into().unwrap();
-    let client_id: Arc<[u8; 16]> = [1u8; 16].into();
+use common::create_init_pair as create_pair;
 
-    let (client_steam, server_stream) = duplex(8 * 1024);
-
-    let client_agent = protocol::client_agent::implementation::Init::new(
-        client_id,
-        0,
-        key.clone(),
-        nonce,
-        client_steam,
-    );
-    let server_agent = protocol::server_agent::implementation::Init::new(key, server_stream);
-
-    (client_agent, server_agent)
-}
+mod common;
 
 #[tokio::test]
 async fn happy_path() {

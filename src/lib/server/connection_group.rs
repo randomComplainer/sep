@@ -386,25 +386,4 @@ mod tests {
     //
     //
     // }
-
-    struct Inner;
-
-    impl Inner {
-        pub async fn run(self) {
-            todo!()
-        }
-    }
-
-    struct Wraper {
-        inner: Inner,
-    }
-
-    impl Wraper {
-        pub async fn poll_run(
-            self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<()> {
-            todo!()
-        }
-    }
 }
