@@ -83,11 +83,15 @@ pub fn run(
                             session_id = proxyee_id,
                             ?server_msg
                         );
-                        server_msg_tx
+
+                        if let Err(_) = server_msg_tx
                             .send((proxyee_id, server_msg))
                             .instrument(span)
                             .await
-                            .unwrap();
+                        {
+                            warn!("failed to send server msg to session, exiting");
+                            return Ok::<_, std::io::Error>(());
+                        }
                     }
                     protocol::msg::ServerMsg::EndOfStream => {
                         debug!("end of server messages");
@@ -95,7 +99,11 @@ pub fn run(
                     }
                 };
             }
-            panic!("server_read stream is broken");
+
+            Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "unexpected end of server read stream",
+            ))
         }
         .instrument(debug_span!("recv loop"));
 
