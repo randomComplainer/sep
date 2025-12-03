@@ -58,8 +58,10 @@ pub async fn run(
                     // TODO: gracefully shutdown
                     let (session_id, proxyee) = proxyee.unwrap();
 
+                    // if proxyee reuse session id (port), previous session is no longer valid
                     if session_server_msg_senders.contains_key(&session_id) {
-                        panic!("session id {} is duplicated", session_id);
+                        warn!(session_id=session_id, "abort session with duplicated id");
+                        session_server_msg_senders.remove(&session_id);
                     }
 
                     let (session_server_msg_tx, session_server_msg_rx) =
