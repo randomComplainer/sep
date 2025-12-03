@@ -4,9 +4,7 @@ use tokio::io::duplex;
 
 use sep_lib::prelude::*;
 
-use common::create_init_pair as create_pair;
-
-mod common;
+use protocol::test_utils::create_init_pair as create_pair;
 
 #[tokio::test]
 async fn happy_path() {

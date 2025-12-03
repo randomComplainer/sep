@@ -4,7 +4,7 @@ use derive_more::From;
 use crate::decode::*;
 use crate::prelude::*;
 
-#[derive(Debug, From)]
+#[derive(Debug, From, PartialEq, Eq)]
 pub enum ServerMsg {
     SessionMsg(u16, session::msg::ServerMsg),
     EndOfStream,
@@ -50,7 +50,7 @@ pub fn server_msg_peeker() -> impl Peeker<ServerMsg, Reader = ServerMsgReader> {
     })
 }
 
-#[derive(Debug, From)]
+#[derive(Debug, From, PartialEq, Eq)]
 pub enum ClientMsg {
     SessionMsg(u16, session::msg::ClientMsg),
 }

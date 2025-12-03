@@ -345,6 +345,7 @@ where
 
     let checking_state_ending_condition = async move {
         // wait for initial state set
+        // TODO: find a better solution
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
         let _ = state_rx
@@ -354,7 +355,13 @@ where
         return Ok::<_, ConnectionGroupError>(());
     };
 
-    match futures::future::select(scope_task.boxed(), checking_state_ending_condition.boxed()).await
+    match futures::future::select(
+        scope_task.boxed(),
+        checking_state_ending_condition
+            .instrument(info_span!("check ending condition"))
+            .boxed(),
+    )
+    .await
     {
         future::Either::Left((e, _)) => Err((channel_ref, e)),
         future::Either::Right(_) => Ok(channel_ref),
@@ -366,24 +373,94 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     use super::*;
-    //
-    // #[tokio::test]
-    // async fn happy_path() {
-    //     let (new_conn_tx, new_conn_rx) = handover::channel();
-    //     let config = Config {
-    //         max_packet_ahead: 4,
-    //         max_packet_size: 1024,
-    //         connect_target: crate::connect_target::make_mock([(
-    //             (ReadRequestAddr::Domain("example.com".into()), 80),
-    //             Ok((
-    //                 tokio_test::io::Builder::new().build(),
-    //                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 180),
-    //             )),
-    //         )]),
-    //     };
-    //
-    //     let main_task = tokio::spawn(run(new_conn_rx, config));
-    //
-    //
-    // }
+
+    #[test_log::test(tokio::test)]
+    async fn happy_path() {
+        let (mut new_conn_tx, new_conn_rx) = handover::channel();
+        let config = Config {
+            max_packet_ahead: 4,
+            max_packet_size: 1024,
+            connect_target: crate::connect_target::make_mock([(
+                (ReadRequestAddr::Domain("example.com".into()), 80),
+                Ok((
+                    tokio_test::io::Builder::new().build(),
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 180),
+                )),
+            )]),
+        };
+
+        let main_task = tokio::spawn(run(new_conn_rx, config));
+
+        let (client_agent, server_agent) = protocol::test_utils::create_greeted_pair().await;
+        let server_agent = (server_agent.1, server_agent.2);
+
+        new_conn_tx
+            .send(server_agent)
+            .await
+            .map_err(|_| ())
+            .unwrap();
+
+        let (mut client_agent_read, mut client_agent_write) = client_agent;
+
+        client_agent_write
+            .send_msg(
+                (
+                    2,
+                    session::msg::Request {
+                        addr: decode::ReadRequestAddr::Domain("example.com".into()),
+                        port: 80,
+                    }
+                    .into(),
+                )
+                    .into(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            client_agent_read.recv_msg().await.unwrap().unwrap(),
+            (
+                2,
+                session::msg::Reply {
+                    bound_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 180),
+                }
+                .into()
+            )
+                .into()
+        );
+
+        assert_eq!(
+            client_agent_read.recv_msg().await.unwrap().unwrap(),
+            (2, session::msg::Eof { seq: 0 }.into()).into()
+        );
+
+        client_agent_write
+            .send_msg((2, session::msg::Ack { seq: 0 }.into()).into())
+            .await
+            .unwrap();
+
+        client_agent_write
+            .send_msg((2, session::msg::Eof { seq: 0 }.into()).into())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            client_agent_read.recv_msg().await.unwrap().unwrap(),
+            protocol::msg::ServerMsg::SessionMsg(2, session::msg::Ack { seq: 0 }.into())
+        );
+
+        // let connection timeout run out
+        tokio::time::pause();
+
+        assert_eq!(
+            client_agent_read.recv_msg().await.unwrap().unwrap(),
+            protocol::msg::ServerMsg::EndOfStream
+        );
+
+        drop(client_agent_read);
+        drop(client_agent_write);
+
+        let result = main_task.await;
+        assert!(result.unwrap().is_ok());
+    }
 }

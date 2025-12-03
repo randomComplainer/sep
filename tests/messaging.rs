@@ -3,9 +3,7 @@ use std::net::SocketAddr;
 
 use sep_lib::prelude::*;
 
-use common::create_greeted_pair as create_pair;
-
-mod common;
+use protocol::test_utils::create_greeted_pair as create_pair;
 
 #[tokio::test]
 async fn client_req_v4() {
