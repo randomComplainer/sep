@@ -90,7 +90,10 @@ pub fn run(
                             .await
                         {
                             warn!("failed to send server msg to session, exiting");
-                            return Ok::<_, std::io::Error>(());
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "failed to forward server msg",
+                            ));
                         }
                     }
                     protocol::msg::ServerMsg::EndOfStream => {

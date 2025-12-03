@@ -161,7 +161,13 @@ async fn client_connection_lifetime_task(
             },
         } {
             debug!("message from client: {:?}", &msg);
-            client_msg_tx.send(msg).await.unwrap();
+            if let Err(_) = client_msg_tx.send(msg).await {
+                warn!("failed to forward client message, exiting");
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "failed to forward client message",
+                ));
+            }
         }
 
         Ok::<_, std::io::Error>(())
@@ -175,8 +181,7 @@ async fn client_connection_lifetime_task(
                     drop(x);
                     client_write
                         .send_msg(protocol::msg::ServerMsg::EndOfStream)
-                        .await
-                        .unwrap();
+                        .await?;
                     // let _ = client_write.close().await;
                     drop(client_write);
 
@@ -186,7 +191,7 @@ async fn client_connection_lifetime_task(
                     if let Some(server_msg) = server_msg_opt {
                         time_limit_task = not_yet;
                         debug!("message to client: {:?}", &server_msg);
-                        client_write.send_msg(server_msg).await.unwrap();
+                        client_write.send_msg(server_msg).await?;
                     } else {
                         return Ok::<_, std::io::Error>(());
                     }
