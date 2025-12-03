@@ -137,10 +137,19 @@ ServerConnector: super::server_connection_lifetime::ServerConnector + Send,{
                                     .unwrap();
                                 Ok(())
                                 },
-                            Err(msg) => {
+                            Err(msg_opt) => {
+                                match msg_opt {
+                                    Some(msg) => {
+
                                 debug!("server_write is closed, retry sending client message");
                                 client_msg_retry_queue.lock().await.push_back(msg);
                                 Ok(())
+                                    },
+                                    None => {
+                                        debug!("server_write is closed after client message is sent");
+                                        Ok(())
+                                    },
+                                }
                             },
                         }
                     } })

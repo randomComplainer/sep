@@ -53,11 +53,16 @@ where
                 if let Err(conn) = {
                     // try to send to existing worker first
                     match conn_senders.get_mut(&client_id) {
-                        Some(existing_sender) => {
-                            existing_sender.send(conn).await.inspect_err(|_| {
+                        Some(existing_sender) => match existing_sender.send(conn).await {
+                            Ok(_) => Ok(()),
+                            Err(conn_opt) => {
                                 conn_senders.remove(&client_id);
-                            })
-                        }
+                                match conn_opt {
+                                    Some(conn) => Err(conn),
+                                    None => Ok(()),
+                                }
+                            }
+                        },
                         None => Err::<(), (GreetedRead, GreetedWrite)>(conn),
                     }
                 } {

@@ -332,9 +332,11 @@ where
                                         // TODO: do I care about error?
                                         let _ = client_write_tx.send(client_write).await.unwrap();
                                     }
-                                    Err(server_msg) => {
+                                    Err(server_msg_opt) => {
                                         // TODO: piroritize resending?
-                                        server_msg_tx.send(server_msg).await.unwrap();
+                                        if let Some(server_msg) = server_msg_opt {
+                                            server_msg_tx.send(server_msg).await.unwrap();
+                                        }
                                     }
                                 };
 

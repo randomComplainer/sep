@@ -76,12 +76,14 @@ impl<T> Sender<T>
 where
     T: Send,
 {
+    // Err(Some) when receiver closed without consuming item
+    // Err(None) when receiver closed and item consumed
     // Not safe to cancel, YOU WILL DEADLOCK
     // cause item_watch is not in correct state(empty=false)
     // and you lose the item anyway
-    pub async fn send(&mut self, t: T) -> Result<(), T> {
+    pub async fn send(&mut self, t: T) -> Result<(), Option<T>> {
         if *self.receiver_closed_rx.borrow() {
-            return Err(t);
+            return Err(Some(t));
         }
 
         unsafe {
@@ -101,14 +103,9 @@ where
             // receiver droped
             futures::future::Either::Left(x) => {
                 drop(x);
-                unsafe {
-                    assert!((&*self.shared.item.get()).is_some());
-                    let _ = self.item_watch_tx.send_replace(false);
+                let _ = self.item_watch_tx.send_replace(false);
 
-                    Err(*Box::from_raw(
-                        (*self.shared.item.get()).take().unwrap().as_ptr(),
-                    ))
-                }
+                unsafe { Err((*self.shared.item.get()).map(|p| *Box::from_raw(p.as_ptr()))) }
             }
             // consumed
             futures::future::Either::Right(_) => Ok(()),
@@ -273,7 +270,7 @@ mod tests {
         drop(rx);
         assert_matches!(
             tokio_test::task::spawn(tx.send(1)).poll(),
-            Poll::Ready(Err(1))
+            Poll::Ready(Err(Some(1)))
         );
     }
 
