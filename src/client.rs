@@ -1,5 +1,6 @@
 #![feature(impl_trait_in_bindings)]
 
+use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
@@ -53,6 +54,7 @@ async fn async_main(args: Args) {
 
     let key: Arc<protocol::Key> = protocol::key_from_string(&args.key).into();
     let server_addr = Arc::new(args.server_addr);
+    let mut retry = RetryState::default();
 
     loop {
         let key = key.clone();
@@ -118,9 +120,36 @@ async fn async_main(args: Args) {
                 // lost connection to server
                 // retry later
                 error!("lost connection to server: {}", err);
-                tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                // tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                retry.wait().await;
                 continue;
             }
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct RetryState {
+    history: Option<std::time::Instant>,
+}
+
+impl RetryState {
+    pub async fn wait(&mut self) {
+        let now = std::time::Instant::now();
+
+        // no attempt in 10 seconds -> instant retry
+        // else wait for 20 seconds
+
+        if self
+            .history
+            .map(|h| now - h >= std::time::Duration::from_secs(10))
+            .unwrap_or(true)
+        {
+            self.history = Some(now);
+            return;
+        } else {
+            self.history = Some(now);
+            tokio::time::sleep(std::time::Duration::from_secs(20)).await;
         }
     }
 }
