@@ -48,18 +48,17 @@ async fn async_main(args: Args) {
 
     let bound_addr = SocketAddr::new(args.bound_addr, args.port);
 
-    let mut client_id: Box<[u8; 16]> = [0u8; 16].into();
-    rand::rng().fill_bytes(client_id.as_mut());
-    let client_id: Arc<[u8; 16]> = client_id.into();
-
     let key: Arc<protocol::Key> = protocol::key_from_string(&args.key).into();
     let server_addr = Arc::new(args.server_addr);
     let mut retry = RetryState::default();
 
     loop {
         let key = key.clone();
-        let client_id = client_id.clone();
         let server_addr = server_addr.clone();
+
+        let mut client_id: Box<[u8; 16]> = [0u8; 16].into();
+        rand::rng().fill_bytes(client_id.as_mut());
+        let client_id: Arc<[u8; 16]> = client_id.into();
 
         let listener = socks5::server_agent::stream::Socks5Listener::bind(bound_addr)
             .await
