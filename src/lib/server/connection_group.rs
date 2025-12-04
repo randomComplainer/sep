@@ -105,7 +105,11 @@ where
             let (client_msg_tx, client_msg_rx) = mpsc::channel(4);
 
             if ctx.session_client_msg_senders.contains_key(session_id) {
-                panic!("duplicated session id: {:?}", session_id);
+                warn!(
+                    session_id,
+                    "duplicated session id, dropping previous session"
+                );
+                ctx.session_client_msg_senders.remove(session_id);
             }
 
             ctx.session_client_msg_senders

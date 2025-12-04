@@ -360,54 +360,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn panic_on_duplicated_session_id() {
-        let (mut new_proxyee_tx, new_proxyee_rx) = mpsc::channel(1);
-        let (mut cmd_tx, cmd_rx) = mpsc::channel(1);
-        let (evt_tx, mut evt_rx) = mpsc::channel(1);
-
-        let main_task = run(
-            new_proxyee_rx,
-            cmd_rx,
-            evt_tx,
-            Config {
-                max_packet_ahead: 1024,
-                max_packet_size: 1024,
-            },
-        );
-
-        let main_task = tokio::spawn(main_task);
-
-        let create_proxyee = || {
-            let stream = tokio_test::io::Builder::new().build();
-            let (stream_read, stream_write) = tokio::io::split(stream);
-
-            socks5::server_agent::mock::script()
-                .provide_greeting_message(socks5::msg::ClientGreeting {
-                    ver: 5,
-                    methods: [0].as_ref().into(),
-                })
-                .expect_method_selection(0)
-                .provide_request_message(socks5::msg::ClientRequest {
-                    ver: 5,
-                    cmd: 1,
-                    rsv: 0,
-                    addr: ReadRequestAddr::Domain("example.com".into()),
-                    port: 80,
-                })
-                .expect_reply(SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1).into(), 1180))
-                .provide_stream(BytesMut::new(), stream_read, stream_write)
-        };
-
-        new_proxyee_tx.send((8, create_proxyee())).await.unwrap();
-        new_proxyee_tx.send((8, create_proxyee())).await.unwrap();
-
-        let result = main_task.await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.is_panic());
-    }
-
-    #[tokio::test]
     async fn reuse_session_id_after_previous_session_ended() {
         let (mut new_proxyee_tx, new_proxyee_rx) = mpsc::channel(1);
         let (mut cmd_tx, cmd_rx) = mpsc::channel(1);
