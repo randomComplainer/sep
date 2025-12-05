@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 
-use chacha20::cipher::StreamCipher;
 use futures::channel::mpsc;
 use futures::prelude::*;
 use tracing::*;
 
-use super::connection_group;
+use super::serve_client;
 use crate::handover;
 use crate::prelude::*;
 
@@ -16,9 +15,9 @@ pub struct Config<TConnectTarget> {
     pub connect_target: TConnectTarget,
 }
 
-impl<TConnectTarget> Into<connection_group::Config<TConnectTarget>> for Config<TConnectTarget> {
-    fn into(self) -> connection_group::Config<TConnectTarget> {
-        connection_group::Config {
+impl<TConnectTarget> Into<serve_client::Config<TConnectTarget>> for Config<TConnectTarget> {
+    fn into(self) -> serve_client::Config<TConnectTarget> {
+        serve_client::Config {
             max_packet_ahead: self.max_packet_ahead,
             max_packet_size: self.max_packet_size,
             connect_target: self.connect_target,
@@ -71,19 +70,15 @@ where
                     let (mut worker_conn_tx, worker_conn_rx) =
                         handover::channel::<(GreetedRead, GreetedWrite)>();
 
-                    let worker = connection_group::run(worker_conn_rx, config.clone().into());
+                    let channel_ref = worker_conn_tx.create_channel_ref();
+                    let worker = serve_client::run(worker_conn_rx, config.clone().into());
 
                     tokio::spawn({
                         let client_id = client_id.clone();
                         let mut worker_ending_tx = worker_ending_tx.clone();
                         async move {
-                            let channel_ref = match worker.await {
-                                Ok(channel_ref) => channel_ref,
-                                Err((channel_ref, err)) => {
-                                    error!("worker task failed: {:?}", err);
-                                    channel_ref
-                                }
-                            };
+                            // don't care about result, it's a io error
+                            let _ = worker.await;
 
                             let _ = worker_ending_tx.send((client_id, channel_ref)).await;
                         }

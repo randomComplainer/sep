@@ -92,6 +92,7 @@ where
         Self::Output: std::fmt::Debug,
     {
         self.then(|x| {
+            // TODO: pass log level as parameter
             debug!(?x, "future completed");
             std::future::ready(x)
         })

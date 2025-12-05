@@ -31,7 +31,7 @@ impl<TConnectTarget> Into<session::stream_to_sequenced::Config> for Config<TConn
 
 pub async fn run<TConnectTarget>(
     mut client_msg_read: impl Stream<Item = msg::ClientMsg> + Unpin,
-    mut server_msg_write: impl Sink<msg::ServerMsg, Error = futures::channel::mpsc::SendError>
+    mut server_msg_write: impl Sink<msg::ServerMsg, Error = impl std::fmt::Debug>
     + Unpin
     + Clone
     + Send
