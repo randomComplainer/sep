@@ -1,3 +1,5 @@
+use std::time::SystemTime;
+
 use futures::prelude::*;
 use tracing::*;
 
@@ -24,6 +26,12 @@ struct State {
     pub server_conn_count: usize,
 }
 
+#[derive(Debug)]
+struct ConnId {
+    pub port: u16,
+    pub start_time: u64,
+}
+
 pub async fn run<ServerConnector>(
     connect_to_server: ServerConnector,
     mut cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
@@ -38,7 +46,7 @@ where
     // (they will be removed when we try to send a message to them)
     // so keep the queue unbounded for now
     let (server_write_queue_tx, mut server_write_queue_rx) =
-        futures::channel::mpsc::unbounded::<handover::Sender<protocol::msg::ClientMsg>>();
+        futures::channel::mpsc::unbounded::<(ConnId, handover::Sender<protocol::msg::ClientMsg>)>();
 
     let (connection_scope_handle, connection_scope_task) =
         task_scope::new_scope::<std::io::Error>();
@@ -65,38 +73,49 @@ where
                 old.server_conn_count += 1;
             });
             connecting_scope_handle
-                .run_async(
-                    async move {
-                        let (conn_client_msg_tx, conn_client_msg_rx) = handover::channel();
+                .run_async(async move {
+                    let (conn_client_msg_tx, conn_client_msg_rx) = handover::channel();
 
-                        debug!("connecting to server");
-                        let (server_read, server_write) = connect_to_server.connect().await?;
-                        debug!("connected to server");
+                    debug!("connecting to server");
+                    let (conn_port, server_read, server_write) =
+                        connect_to_server.connect().await?;
+                    let start_time = SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    let conn_id = ConnId {
+                        port: conn_port,
+                        start_time,
+                    };
+                    let lifetime_span = info_span!(
+                        "server connection lifetime",
+                        conn_id = ?conn_id
+                    );
+                    debug!("connected to server");
 
-                        server_write_queue_tx
-                            .send(conn_client_msg_tx)
-                            .await
-                            .expect("server_write_queue_tx is broken");
+                    server_write_queue_tx
+                        .send((conn_id, conn_client_msg_tx))
+                        .await
+                        .expect("server_write_queue_tx is broken");
 
-                        super::server_connection_lifetime::run(
-                            server_read,
-                            server_write,
-                            conn_client_msg_rx,
-                            evt_tx
-                                .clone()
-                                .with_sync(move |client_msg| Event::ServerMsg(client_msg)),
-                        )
-                        .inspect(|_| {
-                            state_tx.send_modify(|old| {
-                                old.server_conn_count -= 1;
-                            })
+                    super::server_connection_lifetime::run(
+                        server_read,
+                        server_write,
+                        conn_client_msg_rx,
+                        evt_tx
+                            .clone()
+                            .with_sync(move |client_msg| Event::ServerMsg(client_msg)),
+                    )
+                    .inspect(|_| {
+                        state_tx.send_modify(|old| {
+                            old.server_conn_count -= 1;
                         })
-                        .await?;
+                    })
+                    .instrument_with_result(lifetime_span)
+                    .await?;
 
-                        Ok::<_, std::io::Error>(())
-                    }
-                    .instrument(info_span!("server connection lifetime")),
-                )
+                    Ok::<_, std::io::Error>(())
+                })
                 .await;
         }
     };
@@ -146,9 +165,9 @@ where
                         }
                     };
 
-                    match server_write
+                    match server_write.1
                         .send(msg)
-                        .instrument(debug_span!("forward client msg to connection"))
+                        .instrument(debug_span!("forward client msg to connection", conn_id = ?server_write.0))
                         .await
                     {
                         Ok(_) => {
@@ -196,6 +215,7 @@ where
 
     let cmd_loop = async move {
         while let Some(cmd) = cmd_rx.next().instrument(debug_span!("receive cmd")).await {
+            debug!(?cmd, "new cmd");
             match cmd {
                 Command::SendClientMsg(client_msg) => {
                     client_msg_queue_tx

@@ -8,7 +8,7 @@ pub trait Init {
     fn send_greeting(
         self,
         timestamp: u64,
-    ) -> impl Future<Output = Result<(impl GreetedRead, impl GreetedWrite), std::io::Error>> + Send;
+    ) -> impl Future<Output = Result<(u16, impl GreetedRead, impl GreetedWrite), std::io::Error>> + Send;
 }
 
 pub trait GreetedRead

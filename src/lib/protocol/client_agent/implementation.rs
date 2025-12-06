@@ -13,7 +13,7 @@ where
     Stream: AsyncRead + AsyncWrite + 'static + Unpin,
 {
     client_id: Arc<ClientId>,
-    conn_id: u16,
+    conn_local_port: u16,
     key: Arc<Key>,
     nonce: Box<Nonce>,
     stream: Stream,
@@ -35,7 +35,7 @@ where
             key,
             nonce,
             stream,
-            conn_id,
+            conn_local_port: conn_id,
         }
     }
 
@@ -44,6 +44,7 @@ where
         timestamp: u64,
     ) -> Result<
         (
+            u16,
             GreetedRead<Stream, ChaCha20>,
             GreetedWrite<Stream, ChaCha20>,
         ),
@@ -75,11 +76,12 @@ where
         stream_write.write_all(buf.as_mut()).await?;
 
         Ok((
+            self.conn_local_port,
             GreetedRead::new(BufDecoder::new(EncryptedRead::new(
                 stream_read,
                 ChaCha20::new(self.key.as_slice().into(), self.nonce.as_slice().into()),
             ))),
-            GreetedWrite::new(self.conn_id, stream_write),
+            GreetedWrite::new(self.conn_local_port, stream_write),
         ))
     }
 }
@@ -91,39 +93,8 @@ where
     async fn send_greeting(
         self,
         timestamp: u64,
-    ) -> Result<(impl super::GreetedRead, impl super::GreetedWrite), std::io::Error> {
-        let cipher = ChaCha20::new(self.key.as_slice().into(), self.nonce.as_slice().into());
-
-        let (stream_read, mut stream_write) = tokio::io::split(self.stream);
-
-        // send nonce in plaintext
-        stream_write.write_all(self.nonce.as_slice()).await?;
-
-        let mut stream_write = EncryptedWrite::new(stream_write, cipher);
-
-        let rand_byte_len = super::cal_rand_byte_len(&self.key, &self.nonce, timestamp);
-
-        let mut rand_bytes = vec![0; rand_byte_len];
-        rand::rng().fill_bytes(&mut rand_bytes);
-
-        let buf_size = 8 // timestamp
-        + rand_byte_len
-        + 16; // client_id
-
-        let mut buf = BytesMut::with_capacity(buf_size);
-        buf.put_u64(timestamp);
-        buf.put_slice(&rand_bytes);
-        buf.put_slice(self.client_id.as_ref());
-
-        stream_write.write_all(buf.as_mut()).await?;
-
-        Ok((
-            GreetedRead::new(BufDecoder::new(EncryptedRead::new(
-                stream_read,
-                ChaCha20::new(self.key.as_slice().into(), self.nonce.as_slice().into()),
-            ))),
-            GreetedWrite::new(self.conn_id, stream_write),
-        ))
+    ) -> Result<(u16, impl super::GreetedRead, impl super::GreetedWrite), std::io::Error> {
+        self.send_greeting(timestamp).await
     }
 }
 

@@ -80,6 +80,7 @@ pub mod test_utils {
     use chacha20::ChaCha20;
     use tokio::io::{DuplexStream, duplex};
 
+    use super::client_agent::Init as _;
     use crate::prelude::*;
     use protocol::{client_agent, server_agent};
 
@@ -120,6 +121,6 @@ pub mod test_utils {
         let client_agent = client_agent.send_greeting(12).await.unwrap();
         let server_agent = server_agent.recv_greeting(12).await.unwrap();
 
-        (client_agent, server_agent)
+        ((client_agent.1, client_agent.2), server_agent)
     }
 }
