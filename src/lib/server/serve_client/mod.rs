@@ -46,10 +46,10 @@ where
     TConnectTarget: ConnectTarget,
 {
     let (session_manager_evt_tx, mut session_manager_evt_rx) =
-        mpsc::channel::<session_manager::Event>(config.max_packet_ahead as usize);
+        mpsc::unbounded::<session_manager::Event>();
 
     let (mut session_manager_cmd_tx, session_manager_cmd_rx) =
-        mpsc::channel::<session_manager::Command>(config.max_packet_ahead as usize);
+        mpsc::unbounded::<session_manager::Command>();
 
     let session_manager_task = session_manager::run(
         session_manager_cmd_rx,
@@ -58,11 +58,9 @@ where
     )
     .instrument(info_span!("session manager"));
 
-    let (conn_manager_evt_tx, mut conn_manager_evt_rx) =
-        mpsc::channel::<conn_manager::Event>(config.max_packet_ahead as usize);
+    let (conn_manager_evt_tx, mut conn_manager_evt_rx) = mpsc::unbounded::<conn_manager::Event>();
 
-    let (mut conn_manager_cmd_tx, conn_manager_cmd_rx) =
-        mpsc::channel::<conn_manager::Command>(config.max_packet_ahead as usize);
+    let (mut conn_manager_cmd_tx, conn_manager_cmd_rx) = mpsc::unbounded::<conn_manager::Command>();
 
     let conn_manager_task = conn_manager::run(
         conn_manager_cmd_rx,

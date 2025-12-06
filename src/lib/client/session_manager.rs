@@ -49,7 +49,7 @@ pub async fn run(
         futures::channel::mpsc::unbounded::<u16>();
 
     let session_server_msg_senders =
-        DashMap::<u16, futures::channel::mpsc::Sender<session::msg::ServerMsg>>::new();
+        DashMap::<u16, futures::channel::mpsc::UnboundedSender<session::msg::ServerMsg>>::new();
 
     let main_loop = async move {
         loop {
@@ -65,7 +65,7 @@ pub async fn run(
                     }
 
                     let (session_server_msg_tx, session_server_msg_rx) =
-                        futures::channel::mpsc::channel(config.max_packet_ahead as usize * 2);
+                        futures::channel::mpsc::unbounded();
 
                     session_server_msg_senders
                         .insert(session_id, session_server_msg_tx);

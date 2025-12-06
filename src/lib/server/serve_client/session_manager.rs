@@ -49,7 +49,7 @@ pub async fn run<TConnectTarget>(
 
         async move {
             let mut session_client_msg_senders =
-                HashMap::<u16, mpsc::Sender<session::msg::ClientMsg>>::new();
+                HashMap::<u16, mpsc::UnboundedSender<session::msg::ClientMsg>>::new();
 
             while let Some(cmd) = cmd_rx.next().await {
                 debug!(?cmd, "new cmd incoming");
@@ -65,7 +65,7 @@ pub async fn run<TConnectTarget>(
                             }
 
                             // TODO: cache size
-                            let (client_msg_tx, client_msg_rx) = mpsc::channel(4);
+                            let (client_msg_tx, client_msg_rx) = mpsc::unbounded();
                             session_client_msg_senders.insert(session_id, client_msg_tx);
 
                             session_scope_handle
