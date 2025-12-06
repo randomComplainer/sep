@@ -1,12 +1,8 @@
-use std::collections::VecDeque;
-use std::sync::Arc;
-
 use futures::prelude::*;
-use tokio::sync::Mutex;
 use tracing::*;
 
-use crate::prelude::*;
 use crate::handover;
+use crate::prelude::*;
 
 #[derive(Debug)]
 pub enum Command {
@@ -31,24 +27,34 @@ struct State {
 pub async fn run<ServerConnector>(
     connect_to_server: ServerConnector,
     mut cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
-    evt_tx: impl Sink<Event, Error= impl std::fmt::Debug> + Clone + Unpin + Send + 'static,
+    evt_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Clone + Unpin + Send + 'static,
     config: Config,
-) -> std::io::Error  where
-ServerConnector: super::server_connection_lifetime::ServerConnector + Send,{
-    let (server_write_queue_tx, mut server_write_queue_rx) = futures::channel::mpsc::channel::<
-        handover::Sender<protocol::msg::ClientMsg>>(config.max_server_conn as usize);
+) -> std::io::Error
+where
+    ServerConnector: super::server_connection_lifetime::ServerConnector + Send,
+{
+    // There will be active connections
+    // and any connection that is closed by server but not yet removed from the queue
+    // (they will be removed when we try to send a message to them)
+    // so keep the queue unbounded for now
+    let (server_write_queue_tx, mut server_write_queue_rx) =
+        futures::channel::mpsc::unbounded::<handover::Sender<protocol::msg::ClientMsg>>();
 
-    let (connection_scope_handle, connection_scope_task) = task_scope::new_scope::<std::io::Error>();
-    let (state_tx, state_rx) = tokio::sync::watch::channel(State{
+    let (connection_scope_handle, connection_scope_task) =
+        task_scope::new_scope::<std::io::Error>();
+
+    let (state_tx, state_rx) = tokio::sync::watch::channel(State {
         session_count: 0,
         server_conn_count: 0,
     });
 
-    let (mut client_msg_queue_tx, mut client_msg_queue_rx) = 
-        futures::channel::mpsc::channel::<protocol::msg::ClientMsg>(config.max_server_conn as usize);
+    let (mut client_msg_queue_tx, mut client_msg_queue_rx) =
+        futures::channel::mpsc::unbounded::<protocol::msg::ClientMsg>();
 
     // increase conn count sycnhronously
-    let create_connection = { 
+    // actual connecting is done asynchronously
+    // so it will not block you too long on wait
+    let create_connection = {
         let connect_to_server = connect_to_server.clone();
         let mut connecting_scope_handle = connection_scope_handle.clone();
         let evt_tx = evt_tx.clone();
@@ -58,102 +64,115 @@ ServerConnector: super::server_connection_lifetime::ServerConnector + Send,{
             state_tx.send_modify(|old| {
                 old.server_conn_count += 1;
             });
-            connecting_scope_handle.run_async(async move {
-                let (conn_client_msg_tx, conn_client_msg_rx) = handover::channel();
+            connecting_scope_handle
+                .run_async(
+                    async move {
+                        let (conn_client_msg_tx, conn_client_msg_rx) = handover::channel();
 
-                debug!("connecting to server");
-                let (server_read, server_write) = connect_to_server.connect().await?;
-                debug!("connected to server");
+                        debug!("connecting to server");
+                        let (server_read, server_write) = connect_to_server.connect().await?;
+                        debug!("connected to server");
 
-                server_write_queue_tx.send(conn_client_msg_tx).await.expect("server_write_queue_tx is broken");
+                        server_write_queue_tx
+                            .send(conn_client_msg_tx)
+                            .await
+                            .expect("server_write_queue_tx is broken");
 
-                super::server_connection_lifetime::run(
-                    server_read,
-                    server_write,
-                    conn_client_msg_rx,
-                    evt_tx.clone().with_sync(move |client_msg| Event::ServerMsg(client_msg))
+                        super::server_connection_lifetime::run(
+                            server_read,
+                            server_write,
+                            conn_client_msg_rx,
+                            evt_tx
+                                .clone()
+                                .with_sync(move |client_msg| Event::ServerMsg(client_msg)),
+                        )
+                        .inspect(|_| {
+                            state_tx.send_modify(|old| {
+                                old.server_conn_count -= 1;
+                            })
+                        })
+                        .await?;
+
+                        Ok::<_, std::io::Error>(())
+                    }
+                    .instrument(info_span!("server connection lifetime")),
                 )
-                    .inspect(|_| state_tx.send_modify(|old| {
-                        old.server_conn_count -= 1;
-                    }))
-                    .await?;
-
-                Ok::<_, std::io::Error>(())
-            }).await;
-        } 
+                .await;
+        }
     };
 
-    let (mut client_msg_sending_worker_scope_handle, client_msg_sending_worker_scope_task) = 
-            task_scope::new_scope::<()>();
     let client_msg_dispatch_loop = {
         let create_connection = create_connection.clone();
-        let mut state_rx = state_rx.clone();
-        let server_write_queue_tx = server_write_queue_tx.clone();
+        let state_rx = state_rx.clone();
+        let mut server_write_queue_tx = server_write_queue_tx.clone();
         async move {
-            let client_msg_retry_queue = VecDeque::<protocol::msg::ClientMsg>::with_capacity(
-                config.max_server_conn as usize,
-            );
-            let client_msg_retry_queue = Arc::new(Mutex::new(client_msg_retry_queue));
+            while let Some(msg) = client_msg_queue_rx
+                .next()
+                .instrument(debug_span!("receive next client msg to forward"))
+                .await
+            {
+                debug!(?msg, "new client msg to forward");
 
-            while let Some(msg) = {
-                match client_msg_retry_queue.lock().await.pop_front() {
-                    Some(x) => Some(x),
-                    None => client_msg_queue_rx.next().await,
-                }
-            } {
-                debug!("aquiring server write");
-                let mut server_write = {
-                    if let Some(server_write) = server_write_queue_rx.next().poll_once().await {
-                        debug!("found idle server write");
-                        server_write.unwrap()
-                    } else {
-                        debug!("no idle server write");
-                        tokio::select! {
-                            server_write = server_write_queue_rx.next() => {
-                                debug!("found idle server write");
-                                server_write.unwrap()
-                            },
-                            lock = state_rx.wait_for(|state| state.server_conn_count < config.max_server_conn as usize).boxed() => {
-                                drop(lock);
-                                debug!("creating new servere connection");
-                                create_connection.clone()().await;
-                                server_write_queue_rx
-                                    .next().await.unwrap()
-                            },
+                let mut msg = msg;
+
+                loop {
+                    let aquire_server_write = {
+                        let server_write_queue_rx = &mut server_write_queue_rx;
+                        let create_connection = create_connection.clone();
+                        let mut state_rx = state_rx.clone();
+                        async move {
+                            tokio::select! {
+                                server_write = server_write_queue_rx.next() => {
+                                    debug!("found idle server write");
+
+                                    server_write
+                                },
+                                lock = state_rx.wait_for(|state| state.server_conn_count < config.max_server_conn as usize) => {
+                                    drop(lock);
+                                    debug!("creating new servere connection");
+                                    create_connection().await;
+                                    server_write_queue_rx.next().await
+                                },
+                            }
+                        }
+                        .instrument(debug_span!("aquire server write"))
+                    };
+
+                    let mut server_write = match aquire_server_write.await {
+                        Some(x) => x,
+                        None => {
+                            warn!("server_write_queue_rx is broken, exiting");
+                            return;
+                        }
+                    };
+
+                    match server_write
+                        .send(msg)
+                        .instrument(debug_span!("forward client msg to connection"))
+                        .await
+                    {
+                        Ok(_) => {
+                            // it's just a channel, it's fine to wait it
+                            if let Err(_) = server_write_queue_tx
+                                .send(server_write)
+                                .instrument(debug_span!(
+                                    "sucessfully send msg to server, queue server write back"
+                                ))
+                                .await
+                            {
+                                warn!("server_write_queue_tx is broken, exiting");
+                                return;
+                            }
+                            break;
+                        }
+                        Err(msg_opt) => {
+                            debug!("server_write is closed");
+                            msg = msg_opt.expect("client msg consumed unexpectedly");
+                            debug!("retry sending client message");
+                            continue;
                         }
                     }
-                };
-                debug!("aquired server write");
-
-                client_msg_sending_worker_scope_handle.run_async( { 
-                    let mut server_write_queue_tx = server_write_queue_tx.clone();
-                    let client_msg_retry_queue = client_msg_retry_queue.clone();
-                    async move{
-                        match server_write.send(msg).await {
-                            Ok(_) => {
-                                server_write_queue_tx.send(server_write)
-                                    .instrument(debug_span!("sucessfully send msg to server, queue server write back"))
-                                    .await
-                                    .unwrap();
-                                Ok(())
-                                },
-                            Err(msg_opt) => {
-                                match msg_opt {
-                                    Some(msg) => {
-
-                                debug!("server_write is closed, retry sending client message");
-                                client_msg_retry_queue.lock().await.push_back(msg);
-                                Ok(())
-                                    },
-                                    None => {
-                                        debug!("server_write is closed after client message is sent");
-                                        Ok(())
-                                    },
-                                }
-                            },
-                        }
-                    } })
-                .await; 
+                }
             }
 
             debug!("end of client_msg stream, exiting");
@@ -164,46 +183,50 @@ ServerConnector: super::server_connection_lifetime::ServerConnector + Send,{
         let create_connection = create_connection.clone();
         let mut state_rx = state_rx.clone();
         async move {
-            while let Ok(x) = state_rx.wait_for(|state| state.session_count > 0 && state.server_conn_count == 0).await 
-            { 
+            while let Ok(x) = state_rx
+                .wait_for(|state| state.session_count > 0 && state.server_conn_count == 0)
+                .await
+            {
                 drop(x);
                 debug!("no server conn present, create new one for running session");
-                create_connection.clone()().await; 
+                create_connection.clone()().await;
             }
         }
     };
 
     let cmd_loop = async move {
-        while let Some(cmd) = cmd_rx.next().await {
+        while let Some(cmd) = cmd_rx.next().instrument(debug_span!("receive cmd")).await {
             match cmd {
                 Command::SendClientMsg(client_msg) => {
                     client_msg_queue_tx
-                        .send(protocol::msg::ClientMsg::SessionMsg(client_msg.0, client_msg.1))
-                        .await.unwrap();
-                    },
+                        .send(protocol::msg::ClientMsg::SessionMsg(
+                            client_msg.0,
+                            client_msg.1,
+                        ))
+                        .instrument(debug_span!("forward client msg to queue"))
+                        .await
+                        .unwrap();
+                }
                 Command::SessionStarted(_) => {
                     state_tx.send_modify(|state| {
                         state.session_count += 1;
                     });
-                },
+                }
                 Command::SessionEnded(_) => {
                     state_tx.send_modify(|state| {
                         state.session_count -= 1;
                     });
-                },
+                }
             }
         }
 
         debug!("end of cmd stream, exiting");
     };
 
-    tokio::try_join!{
+    tokio::try_join! {
         connection_scope_task
             .map(|e| Err::<(), _>(e))
             .instrument(info_span!("connection scope task")),
-        client_msg_sending_worker_scope_task
-            .instrument(info_span!("client msg sending worker scope task"))
-            .map(|x| Ok::<_, std::io::Error>(x)),
         client_msg_dispatch_loop
             .map(|x| Ok::<_, std::io::Error>(x))
             .instrument(info_span!("client msg dispatch loop")),
@@ -216,4 +239,3 @@ ServerConnector: super::server_connection_lifetime::ServerConnector + Send,{
     }
     .unwrap_err()
 }
-

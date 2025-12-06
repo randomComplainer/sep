@@ -48,17 +48,34 @@ pub fn run(
     + 'static,
 ) -> impl Future<Output = Result<(), std::io::Error>> + Send {
     async move {
-        let send_loop = async move {
-            while let Some(client_msg) = client_msg_rx
-                .recv()
-                .instrument(debug_span!("receive client msg to send"))
-                .await
-            {
-                let span = debug_span!("send client msg to server", ?client_msg);
-                server_write.send_msg(client_msg).instrument(span).await?;
-            }
+        let (end_of_server_stream_tx, end_of_server_stream_rx) =
+            tokio::sync::oneshot::channel::<()>();
 
-            Ok::<_, std::io::Error>(())
+        let send_loop = async move {
+            let mut end_of_server_stream_rx = Box::pin(end_of_server_stream_rx);
+
+            loop {
+                tokio::select! {
+                    client_msg = client_msg_rx.recv()
+                        .instrument(debug_span!("receive client msg to send"))
+                        => {
+                        let client_msg = match client_msg {
+                            Some(client_msg) => client_msg,
+                            None => {
+                                return Ok::<_, std::io::Error>(());
+                            }
+                        };
+
+                        let span = debug_span!("send client msg to server", ?client_msg);
+                        server_write.send_msg(client_msg).instrument(span).await?;
+                    },
+
+                    _ = &mut end_of_server_stream_rx => {
+                        debug!("end of server messages notified");
+                        return Ok::<_, std::io::Error>(());
+                    }
+                }
+            }
         }
         .instrument(debug_span!("send loop"));
 
@@ -98,6 +115,7 @@ pub fn run(
                     }
                     protocol::msg::ServerMsg::EndOfStream => {
                         debug!("end of server messages");
+                        end_of_server_stream_tx.send(()).unwrap();
                         return Ok::<_, std::io::Error>(());
                     }
                 };
@@ -110,9 +128,10 @@ pub fn run(
         }
         .instrument(debug_span!("recv loop"));
 
-        tokio::select! {
-            x = send_loop => x,
-            x = recv_loop => x,
+        tokio::try_join! {
+             send_loop,
+             recv_loop,
         }
+        .map(|_| ())
     }
 }

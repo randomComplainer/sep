@@ -46,7 +46,7 @@ pub async fn run(
     // relay session ending events so that
     // we don't have to access the hashmap in multiple tasks
     let (local_session_ending_tx, mut local_session_ending_rx) =
-        futures::channel::mpsc::channel::<u16>(config.max_packet_ahead as usize);
+        futures::channel::mpsc::unbounded::<u16>();
 
     let session_server_msg_senders =
         DashMap::<u16, futures::channel::mpsc::Sender<session::msg::ServerMsg>>::new();
@@ -65,7 +65,7 @@ pub async fn run(
                     }
 
                     let (session_server_msg_tx, session_server_msg_rx) =
-                        futures::channel::mpsc::channel(config.max_packet_ahead as usize);
+                        futures::channel::mpsc::channel(config.max_packet_ahead as usize * 2);
 
                     session_server_msg_senders
                         .insert(session_id, session_server_msg_tx);
