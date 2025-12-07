@@ -1,5 +1,3 @@
-use std::time::SystemTime;
-
 use futures::prelude::*;
 use tracing::*;
 
@@ -26,12 +24,6 @@ struct State {
     pub server_conn_count: usize,
 }
 
-#[derive(Debug)]
-struct ConnId {
-    pub port: u16,
-    pub start_time: u64,
-}
-
 pub async fn run<ServerConnector>(
     connect_to_server: ServerConnector,
     mut cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
@@ -45,8 +37,10 @@ where
     // and any connection that is closed by server but not yet removed from the queue
     // (they will be removed when we try to send a message to them)
     // so keep the queue unbounded for now
-    let (server_write_queue_tx, mut server_write_queue_rx) =
-        futures::channel::mpsc::unbounded::<(ConnId, handover::Sender<protocol::msg::ClientMsg>)>();
+    let (server_write_queue_tx, mut server_write_queue_rx) = futures::channel::mpsc::unbounded::<(
+        Box<str>,
+        handover::Sender<protocol::msg::ClientMsg>,
+    )>();
 
     let (connection_scope_handle, connection_scope_task) =
         task_scope::new_scope::<std::io::Error>();
@@ -77,16 +71,7 @@ where
                     let (conn_client_msg_tx, conn_client_msg_rx) = handover::channel();
 
                     debug!("connecting to server");
-                    let (conn_port, server_read, server_write) =
-                        connect_to_server.connect().await?;
-                    let start_time = SystemTime::now()
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs();
-                    let conn_id = ConnId {
-                        port: conn_port,
-                        start_time,
-                    };
+                    let (conn_id, server_read, server_write) = connect_to_server.connect().await?;
                     let lifetime_span = info_span!(
                         "server connection lifetime",
                         conn_id = ?conn_id

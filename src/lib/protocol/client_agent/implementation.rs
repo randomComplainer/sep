@@ -8,12 +8,21 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use crate::protocol::*;
 
+fn create_conn_id(conn_local_port: u16) -> Box<str> {
+    let start_time = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let str = format!("{}-{}", start_time, conn_local_port);
+    str.into()
+}
+
 pub struct Init<Stream>
 where
     Stream: AsyncRead + AsyncWrite + 'static + Unpin,
 {
     client_id: Arc<ClientId>,
-    conn_local_port: u16,
+    conn_id: Box<str>,
     key: Arc<Key>,
     nonce: Box<Nonce>,
     stream: Stream,
@@ -25,7 +34,7 @@ where
 {
     pub fn new(
         client_id: Arc<ClientId>,
-        conn_id: u16,
+        local_port: u16,
         key: Arc<Key>,
         nonce: Box<Nonce>,
         stream: Stream,
@@ -35,7 +44,7 @@ where
             key,
             nonce,
             stream,
-            conn_local_port: conn_id,
+            conn_id: create_conn_id(local_port),
         }
     }
 
@@ -44,7 +53,7 @@ where
         timestamp: u64,
     ) -> Result<
         (
-            u16,
+            Box<str>,
             GreetedRead<Stream, ChaCha20>,
             GreetedWrite<Stream, ChaCha20>,
         ),
@@ -76,12 +85,12 @@ where
         stream_write.write_all(buf.as_mut()).await?;
 
         Ok((
-            self.conn_local_port,
+            self.conn_id,
             GreetedRead::new(BufDecoder::new(EncryptedRead::new(
                 stream_read,
                 ChaCha20::new(self.key.as_slice().into(), self.nonce.as_slice().into()),
             ))),
-            GreetedWrite::new(self.conn_local_port, stream_write),
+            GreetedWrite::new(stream_write),
         ))
     }
 }
@@ -93,7 +102,7 @@ where
     async fn send_greeting(
         self,
         timestamp: u64,
-    ) -> Result<(u16, impl super::GreetedRead, impl super::GreetedWrite), std::io::Error> {
+    ) -> Result<(Box<str>, impl super::GreetedRead, impl super::GreetedWrite), std::io::Error> {
         self.send_greeting(timestamp).await
     }
 }
@@ -133,7 +142,6 @@ where
 }
 
 pub struct GreetedWrite<Stream, Cipher> {
-    id: u16,
     stream_write: WriteEncrypted<Stream, Cipher>,
 }
 
@@ -142,8 +150,8 @@ where
     Stream: AsyncWrite + Unpin,
     Cipher: StaticCipher,
 {
-    pub fn new(id: u16, stream_write: WriteEncrypted<Stream, Cipher>) -> Self {
-        Self { id, stream_write }
+    pub fn new(stream_write: WriteEncrypted<Stream, Cipher>) -> Self {
+        Self { stream_write }
     }
 
     pub async fn send_msg(&mut self, msg: protocol::msg::ClientMsg) -> Result<(), std::io::Error> {

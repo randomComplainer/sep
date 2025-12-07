@@ -12,7 +12,7 @@ where
     type GreetedRead: protocol::client_agent::GreetedRead;
 
     type Fut: std::future::Future<
-            Output = Result<(u16, Self::GreetedRead, Self::GreetedWrite), std::io::Error>,
+            Output = Result<(Box<str>, Self::GreetedRead, Self::GreetedWrite), std::io::Error>,
         > + Send
         + Unpin
         + 'static;
@@ -25,7 +25,7 @@ where
     TFn: (Fn() -> TFuture) + Clone + Sync + Send + Unpin + 'static,
     TGreetedRead: protocol::client_agent::GreetedRead,
     TGreetedWrite: protocol::client_agent::GreetedWrite,
-    TFuture: std::future::Future<Output = Result<(u16, TGreetedRead, TGreetedWrite), std::io::Error>>
+    TFuture: std::future::Future<Output = Result<(Box<str>, TGreetedRead, TGreetedWrite), std::io::Error>>
         + Send
         + Unpin
         + 'static,
