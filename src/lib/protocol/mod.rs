@@ -64,6 +64,7 @@ fn cal_rand_byte_len(key: &[u8; 32], nonce: &[u8; 12], timestamp: u64) -> usize 
     len
 }
 
+// TODO: use more compact format, like base64
 pub(self) fn create_conn_id(conn_local_port: u16) -> Box<str> {
     let str = format!("{}-{}", get_timestamp(), conn_local_port);
     str.into()

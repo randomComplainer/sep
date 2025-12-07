@@ -72,10 +72,8 @@ where
 
                     debug!("connecting to server");
                     let (conn_id, server_read, server_write) = connect_to_server.connect().await?;
-                    let lifetime_span = info_span!(
-                        "server connection lifetime",
-                        conn_id = ?conn_id
-                    );
+                    let lifetime_span =
+                        info_span!("server connection lifetime", conn_id = conn_id.as_ref());
                     debug!("connected to server");
 
                     server_write_queue_tx
@@ -150,9 +148,13 @@ where
                         }
                     };
 
-                    match server_write.1
+                    match server_write
+                        .1
                         .send(msg)
-                        .instrument(debug_span!("forward client msg to connection", conn_id = ?server_write.0))
+                        .instrument(debug_span!(
+                            "forward client msg to connection",
+                            conn_id = server_write.0.as_ref()
+                        ))
                         .await
                     {
                         Ok(_) => {

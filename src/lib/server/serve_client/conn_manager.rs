@@ -41,7 +41,7 @@ where
                 let (conn_server_msg_tx, conn_server_msg_rx) =
                     handover::channel::<protocol::msg::ServerMsg>();
 
-                let conn_lifetime_span = info_span!("conn lifetime", ?conn_id);
+                let conn_lifetime_span = info_span!("conn lifetime", conn_id = conn_id.as_ref());
 
                 if let Err(_) = client_write_queue_tx
                     .send((conn_id, conn_server_msg_tx))
@@ -118,7 +118,7 @@ where
                                 .send(server_msg)
                                 .instrument(info_span!(
                                     "forward server msg to connection",
-                                    ?conn_id
+                                    conn_id = conn_id.as_ref()
                                 ))
                                 .await
                             {

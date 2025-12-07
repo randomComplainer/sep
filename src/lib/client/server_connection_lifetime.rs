@@ -25,8 +25,9 @@ where
     TFn: (Fn() -> TFuture) + Clone + Sync + Send + Unpin + 'static,
     TGreetedRead: protocol::client_agent::GreetedRead,
     TGreetedWrite: protocol::client_agent::GreetedWrite,
-    TFuture: std::future::Future<Output = Result<(Box<str>, TGreetedRead, TGreetedWrite), std::io::Error>>
-        + Send
+    TFuture: std::future::Future<
+            Output = Result<(Box<str>, TGreetedRead, TGreetedWrite), std::io::Error>,
+        > + Send
         + Unpin
         + 'static,
 {
