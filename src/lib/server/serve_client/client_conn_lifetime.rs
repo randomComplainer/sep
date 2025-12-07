@@ -1,6 +1,5 @@
 use std::ops::Add;
 
-use futures::channel::mpsc;
 use futures::prelude::*;
 use rand::prelude::*;
 use tracing::*;
@@ -17,10 +16,32 @@ pub async fn run(
     //TODO: error handling
     debug!("client connection lifetime task started");
 
-    let duration = std::time::Duration::from_secs(10).add(std::time::Duration::from_mins(
-        rand::rng().random_range(..=10u64),
-    ));
-    let mut time_limit_task = Box::pin(tokio::time::sleep(duration));
+    let (ping_tx, mut ping_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let ping_waiting_task = async move {
+        let mut ping_counter = 0;
+        let mut ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(60)));
+        loop {
+            tokio::select! {
+                _ = ping_timer.as_mut() => {
+                    warn!("ping timeout, exiting");
+                    return Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "ping timeout"));
+                },
+                ping = ping_rx.recv() => {
+                    match ping {
+                        Some(_) => {
+                            debug!(count=ping_counter, "ping");
+                            ping_counter += 1;
+                            ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(60)));
+                        }
+                        None => {
+                            debug!("ping rx is broken, exiting");
+                            return Ok::<_, std::io::Error>(());
+                        }
+                    }
+                }
+            }
+        }
+    }.instrument(info_span!("ping waiting task"));
 
     let reciving_msg_from_client = async move {
         while let Some(msg) = match client_read.recv_msg().await {
@@ -45,7 +66,10 @@ pub async fn run(
                     }
                 }
                 Ping => {
-                    debug!("ping");
+                    if let Err(_) = ping_tx.send(()) {
+                        warn!("ping tx is broken, exiting");
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -54,27 +78,41 @@ pub async fn run(
     };
 
     let sending_msg_to_client = async move {
+        let duration = std::time::Duration::from_secs(10).add(std::time::Duration::from_mins(
+            rand::rng().random_range(..=10u64),
+        ));
+        let mut time_limit_task = Box::pin(tokio::time::sleep(duration));
+        let mut pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(30)));
+        let mut pong_counter = 0;
+
         loop {
-            match futures::future::select(time_limit_task, server_msg_rx.recv().boxed()).await {
-                futures::future::Either::Left(x) => {
-                    debug!("hit connection lifetime limit");
-                    drop(x);
+            tokio::select! {
+                _ = time_limit_task.as_mut() => {
                     client_write
                         .send_msg(protocol::msg::conn::ServerMsg::EndOfStream)
                         .await?;
                     // let _ = client_write.close().await;
-                    drop(client_write);
 
                     return Ok::<_, std::io::Error>(());
-                }
-                futures::future::Either::Right((server_msg_opt, not_yet)) => {
+                },
+                server_msg_opt = server_msg_rx.recv() => {
                     if let Some(server_msg) = server_msg_opt {
-                        time_limit_task = not_yet;
                         debug!("message to client: {:?}", &server_msg);
                         client_write.send_msg(server_msg.into()).await?;
                     } else {
                         return Ok::<_, std::io::Error>(());
                     }
+
+                },
+                _ = pong_timer.as_mut() => {
+                    debug!(count = pong_counter, "pong");
+
+                    client_write.send_msg(protocol::msg::conn::ServerMsg::Pong)
+                        .instrument(debug_span!("send pong", count = pong_counter))
+                        .await?;
+
+                    pong_counter += 1;
+                    pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(30)));
                 }
             }
         }
@@ -83,6 +121,7 @@ pub async fn run(
     tokio::try_join! {
         sending_msg_to_client,
         reciving_msg_from_client,
+        ping_waiting_task,
     }
     .map(|_| ())
 }
