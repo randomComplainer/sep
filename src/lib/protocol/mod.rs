@@ -64,6 +64,10 @@ fn cal_rand_byte_len(key: &[u8; 32], nonce: &[u8; 12], timestamp: u64) -> usize 
     len
 }
 
+pub(self) fn create_conn_id(conn_local_port: u16) -> Box<str> {
+    let str = format!("{}-{}", get_timestamp(), conn_local_port);
+    str.into()
+}
 type ReadEncrypted<S, C> = EncryptedRead<ReadHalf<S>, C>;
 type WriteEncrypted<S, C> = EncryptedWrite<WriteHalf<S>, C>;
 type FramedRead<S, C> = BufDecoder<ReadEncrypted<S, C>>;

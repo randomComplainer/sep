@@ -21,7 +21,7 @@ pub enum Event {
 pub async fn run<GreetedRead, GreetedWrite>(
     mut cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
     evt_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Clone + Unpin + Send + 'static,
-    mut new_conn_rx: handover::Receiver<(GreetedRead, GreetedWrite)>,
+    mut new_conn_rx: handover::Receiver<(Box<str>, GreetedRead, GreetedWrite)>,
 ) -> Result<(), std::io::Error>
 where
     GreetedRead: protocol::server_agent::GreetedRead,
@@ -29,63 +29,69 @@ where
 {
     let (mut conn_scope_handle, conn_scope_task) = task_scope::new_scope::<std::io::Error>();
 
-    // TODO: magic numbers, should be based on connection number limit?
     let (mut client_write_queue_tx, mut client_write_queue_rx) =
-        mpsc::channel::<handover::Sender<protocol::msg::ServerMsg>>(16);
+        mpsc::unbounded::<(Box<str>, handover::Sender<protocol::msg::ServerMsg>)>();
 
     let accepting_new_conn = {
         let evt_tx = evt_tx.clone();
         let mut client_write_queue_tx = client_write_queue_tx.clone();
         async move {
-            while let Some((client_read, client_write)) = new_conn_rx.recv().await {
+            while let Some((conn_id, client_read, client_write)) = new_conn_rx.recv().await {
                 debug!("new client connection incoming");
                 let (conn_server_msg_tx, conn_server_msg_rx) =
                     handover::channel::<protocol::msg::ServerMsg>();
 
-                if let Err(_) = client_write_queue_tx.send(conn_server_msg_tx).await {
+                let conn_lifetime_span = info_span!("conn lifetime", ?conn_id);
+
+                if let Err(_) = client_write_queue_tx
+                    .send((conn_id, conn_server_msg_tx))
+                    .await
+                {
                     warn!("client write queue is broken, exiting");
                     return;
                 }
 
                 let mut evt_tx = evt_tx.clone();
                 conn_scope_handle
-                    .run_async(async move {
-                        if let Err(_) = evt_tx.send(Event::Started).await {
-                            warn!("evt_tx is broken, exiting");
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                "evt_tx is broken",
-                            ));
+                    .run_async(
+                        async move {
+                            if let Err(_) = evt_tx.send(Event::Started).await {
+                                warn!("evt_tx is broken, exiting");
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    "evt_tx is broken",
+                                ));
+                            }
+
+                            let r =
+                                client_conn_lifetime::run(
+                                    client_read,
+                                    client_write,
+                                    evt_tx.clone().with_sync(
+                                        move |msg: protocol::msg::ClientMsg| Event::ClientMsg(msg),
+                                    ),
+                                    conn_server_msg_rx,
+                                )
+                                .instrument(info_span!("client connection lifetime task"))
+                                .await;
+
+                            if let Err(_) = evt_tx.send(Event::Ended).await {
+                                warn!("evt_tx is broken, exiting");
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    "evt_tx is broken",
+                                ));
+                            }
+
+                            if let Err(err) = r {
+                                error!(?err, "client connection lifetime task failed");
+                                return Err(err);
+                            }
+
+                            Ok::<_, std::io::Error>(())
                         }
-
-                        let r = client_conn_lifetime::run(
-                            client_read,
-                            client_write,
-                            evt_tx
-                                .clone()
-                                .with_sync(move |msg: protocol::msg::ClientMsg| {
-                                    Event::ClientMsg(msg)
-                                }),
-                            conn_server_msg_rx,
-                        )
-                        .instrument(info_span!("client connection lifetime task"))
-                        .await;
-
-                        if let Err(_) = evt_tx.send(Event::Ended).await {
-                            warn!("evt_tx is broken, exiting");
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                "evt_tx is broken",
-                            ));
-                        }
-
-                        if let Err(err) = r {
-                            error!(?err, "client connection lifetime task failed");
-                            return Err(err);
-                        }
-
-                        Ok::<_, std::io::Error>(())
-                    })
+                        .instrument(conn_lifetime_span),
+                    )
                     .await;
             }
         }
@@ -99,17 +105,21 @@ where
                     Command::ServerMsg(server_msg) => {
                         let mut server_msg = server_msg;
                         loop {
-                            let mut client_write = match client_write_queue_rx.next().await {
-                                Some(x) => x,
-                                None => {
-                                    warn!("client write queue is broken, exiting");
-                                    return;
-                                }
-                            };
+                            let (conn_id, mut client_write) =
+                                match client_write_queue_rx.next().await {
+                                    Some(x) => x,
+                                    None => {
+                                        warn!("client write queue is broken, exiting");
+                                        return;
+                                    }
+                                };
 
                             if let Err(msg_not_sent_opt) = client_write
                                 .send(server_msg)
-                                .instrument(info_span!("forward server msg"))
+                                .instrument(info_span!(
+                                    "forward server msg to connection",
+                                    ?conn_id
+                                ))
                                 .await
                             {
                                 warn!("client write is broken, dropping client write");
@@ -123,8 +133,10 @@ where
                                     }
                                 }
                             } else {
-                                // queue it back
-                                if let Err(_) = client_write_queue_tx.send(client_write).await {
+                                // queue the sender back
+                                if let Err(_) =
+                                    client_write_queue_tx.send((conn_id, client_write)).await
+                                {
                                     warn!("client write queue is broken, exiting");
                                     return;
                                 }

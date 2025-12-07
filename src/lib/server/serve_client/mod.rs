@@ -37,7 +37,7 @@ impl<TConnectTarget> Into<session_manager::Config<TConnectTarget>> for Config<TC
 }
 
 pub async fn run<GreetedRead, GreetedWrite, TConnectTarget>(
-    new_conn_rx: handover::Receiver<(GreetedRead, GreetedWrite)>,
+    new_conn_rx: handover::Receiver<(Box<str>, GreetedRead, GreetedWrite)>,
     config: Config<TConnectTarget>,
 ) -> Result<(), std::io::Error>
 where
@@ -185,7 +185,7 @@ mod tests {
         let main_task = tokio::spawn(run(new_conn_rx, config));
 
         let (client_agent, server_agent) = protocol::test_utils::create_greeted_pair().await;
-        let server_agent = (server_agent.1, server_agent.2);
+        let server_agent = ("".into(), server_agent.1, server_agent.2);
 
         new_conn_tx
             .send(server_agent)

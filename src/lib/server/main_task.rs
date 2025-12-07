@@ -26,7 +26,7 @@ impl<TConnectTarget> Into<serve_client::Config<TConnectTarget>> for Config<TConn
 }
 
 pub async fn run<GreetedRead, GreetedWrite, TConnectTarget>(
-    mut new_conn_rx: impl Stream<Item = (Box<[u8; 16]>, GreetedRead, GreetedWrite)> + Unpin,
+    mut new_conn_rx: impl Stream<Item = (Box<ClientId>, Box<str>, GreetedRead, GreetedWrite)> + Unpin,
     config: Config<TConnectTarget>,
 ) -> Result<(), std::io::Error>
 where
@@ -34,20 +34,22 @@ where
     GreetedWrite: protocol::server_agent::GreetedWrite,
     TConnectTarget: ConnectTarget,
 {
-    let mut conn_senders =
-        HashMap::<Box<protocol::ClientId>, handover::Sender<(GreetedRead, GreetedWrite)>>::new();
+    let mut conn_senders = HashMap::<
+        Box<protocol::ClientId>,
+        handover::Sender<(Box<str>, GreetedRead, GreetedWrite)>,
+    >::new();
 
     let (worker_ending_tx, mut worker_ending_rx) = mpsc::channel::<(
         Box<protocol::ClientId>,
-        handover::ChannelRef<(GreetedRead, GreetedWrite)>,
+        handover::ChannelRef<(Box<str>, GreetedRead, GreetedWrite)>,
     )>(2);
 
     loop {
         match futures::future::select(new_conn_rx.next(), worker_ending_rx.next()).await {
             future::Either::Left((conn, _)) => {
                 // it should never end
-                let (client_id, client_read, client_write) = conn.unwrap();
-                let conn = (client_read, client_write);
+                let (client_id, conn_id, client_read, client_write) = conn.unwrap();
+                let conn = (conn_id, client_read, client_write);
 
                 if let Err(conn) = {
                     // try to send to existing worker first
@@ -62,13 +64,13 @@ where
                                 }
                             }
                         },
-                        None => Err::<(), (GreetedRead, GreetedWrite)>(conn),
+                        None => Err::<(), (Box<str>, GreetedRead, GreetedWrite)>(conn),
                     }
                 } {
                     // create new worker
 
                     let (mut worker_conn_tx, worker_conn_rx) =
-                        handover::channel::<(GreetedRead, GreetedWrite)>();
+                        handover::channel::<(Box<str>, GreetedRead, GreetedWrite)>();
 
                     let channel_ref = worker_conn_tx.create_channel_ref();
                     let worker = serve_client::run(worker_conn_rx, config.clone().into());
@@ -86,8 +88,12 @@ where
                         .instrument(info_span!("worker task"))
                     });
 
-                    let _ = worker_conn_tx.send(conn).await;
-                    conn_senders.insert(client_id, worker_conn_tx);
+                    if let Err(_) = worker_conn_tx.send(conn).await {
+                        // TODO: temporary, queue it back or something
+                        ()
+                    } else {
+                        conn_senders.insert(client_id, worker_conn_tx);
+                    }
                 };
             }
             future::Either::Right((ended, _)) => {

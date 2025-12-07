@@ -51,7 +51,7 @@ async fn async_main(args: Args) {
 
     let channeling_new_client = async move {
         loop {
-            let (agent, _socket_addr) = listener.accept().await.unwrap();
+            let (conn_id, agent) = listener.accept().await.unwrap();
             tokio::spawn({
                 let mut new_client_conn_tx = new_client_conn_tx.clone();
                 async move {
@@ -66,7 +66,7 @@ async fn async_main(args: Args) {
                         };
 
                     new_client_conn_tx
-                        .send((client_id, client_read, client_write))
+                        .send((client_id, conn_id, client_read, client_write))
                         .await
                         .unwrap();
                 }

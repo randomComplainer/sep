@@ -157,11 +157,10 @@ impl TcpListener {
         Ok(Self { inner, key })
     }
 
-    pub async fn accept(
-        &self,
-    ) -> Result<(Init<tokio::net::TcpStream>, SocketAddr), std::io::Error> {
+    pub async fn accept(&self) -> Result<(Box<str>, Init<tokio::net::TcpStream>), std::io::Error> {
         let (stream, addr) = self.inner.accept().await?;
-        Ok((Init::new(self.key.clone(), stream), addr))
+        let conn_id = create_conn_id(addr.port());
+        Ok((conn_id, Init::new(self.key.clone(), stream)))
     }
 }
 

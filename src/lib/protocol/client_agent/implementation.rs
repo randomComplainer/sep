@@ -8,15 +8,6 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use crate::protocol::*;
 
-fn create_conn_id(conn_local_port: u16) -> Box<str> {
-    let start_time = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let str = format!("{}-{}", start_time, conn_local_port);
-    str.into()
-}
-
 pub struct Init<Stream>
 where
     Stream: AsyncRead + AsyncWrite + 'static + Unpin,
