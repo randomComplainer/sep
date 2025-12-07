@@ -31,12 +31,22 @@ pub async fn run(
             },
         } {
             debug!("message from client: {:?}", &msg);
-            if let Err(_) = client_msg_tx.send(msg).await {
-                warn!("failed to forward client message, exiting");
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "failed to forward client message",
-                ));
+
+            use protocol::msg::conn::ClientMsg::*;
+
+            match msg {
+                Protocol(msg) => {
+                    if let Err(_) = client_msg_tx.send(msg).await {
+                        warn!("failed to forward client message, exiting");
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "failed to forward client message",
+                        ));
+                    }
+                }
+                Ping => {
+                    debug!("ping");
+                }
             }
         }
 
@@ -50,7 +60,7 @@ pub async fn run(
                     debug!("hit connection lifetime limit");
                     drop(x);
                     client_write
-                        .send_msg(protocol::msg::ServerMsg::EndOfStream)
+                        .send_msg(protocol::msg::conn::ServerMsg::EndOfStream)
                         .await?;
                     // let _ = client_write.close().await;
                     drop(client_write);
@@ -61,7 +71,7 @@ pub async fn run(
                     if let Some(server_msg) = server_msg_opt {
                         time_limit_task = not_yet;
                         debug!("message to client: {:?}", &server_msg);
-                        client_write.send_msg(server_msg).await?;
+                        client_write.send_msg(server_msg.into()).await?;
                     } else {
                         return Ok::<_, std::io::Error>(());
                     }

@@ -115,8 +115,11 @@ where
         Self { stream_read }
     }
 
-    pub async fn recv_msg(&mut self) -> Result<Option<msg::ServerMsg>, decode::DecodeError> {
-        let msg = self.stream_read.read_next(msg::server_msg_peeker()).await?;
+    pub async fn recv_msg(&mut self) -> Result<Option<msg::conn::ServerMsg>, decode::DecodeError> {
+        let msg = self
+            .stream_read
+            .read_next(msg::conn::server_msg_peeker())
+            .await?;
 
         Ok(msg)
     }
@@ -127,7 +130,7 @@ where
     Stream: StaticStream,
     Cipher: StaticCipher,
 {
-    async fn recv_msg(&mut self) -> Result<Option<msg::ServerMsg>, decode::DecodeError> {
+    async fn recv_msg(&mut self) -> Result<Option<msg::conn::ServerMsg>, decode::DecodeError> {
         self.recv_msg().await
     }
 }
@@ -145,58 +148,70 @@ where
         Self { stream_write }
     }
 
-    pub async fn send_msg(&mut self, msg: protocol::msg::ClientMsg) -> Result<(), std::io::Error> {
+    pub async fn send_msg(
+        &mut self,
+        msg: protocol::msg::conn::ClientMsg,
+    ) -> Result<(), std::io::Error> {
         // TODO: Do I need calculated size?
         let mut buf = BytesMut::with_capacity(64);
 
         match msg {
-            protocol::msg::ClientMsg::SessionMsg(proxyee_id, session_msg) => {
+            protocol::msg::conn::ClientMsg::Protocol(msg) => {
                 buf.put_u8(0u8);
-                buf.put_u16(proxyee_id);
-                match session_msg {
-                    session::msg::ClientMsg::Request(req) => {
+                match msg {
+                    protocol::msg::ClientMsg::SessionMsg(proxyee_id, session_msg) => {
                         buf.put_u8(0u8);
-                        match &req.addr {
-                            decode::ReadRequestAddr::Ipv4(addr) => {
-                                buf.put_u8(0x01);
-                                buf.put_slice(&addr.octets());
+                        buf.put_u16(proxyee_id);
+                        match session_msg {
+                            session::msg::ClientMsg::Request(req) => {
+                                buf.put_u8(0u8);
+                                match &req.addr {
+                                    decode::ReadRequestAddr::Ipv4(addr) => {
+                                        buf.put_u8(0x01);
+                                        buf.put_slice(&addr.octets());
+                                    }
+                                    decode::ReadRequestAddr::Ipv6(addr) => {
+                                        buf.put_u8(0x04);
+                                        buf.put_slice(&addr.octets());
+                                    }
+                                    decode::ReadRequestAddr::Domain(domain) => {
+                                        buf.put_u8(0x03);
+                                        buf.put_u8(domain.len() as u8);
+                                        // TODO: no copy?
+                                        buf.put_slice(domain.as_ref());
+                                    }
+                                }
+                                buf.put_u16(req.port);
+                                self.stream_write.write_all(&mut buf).await?;
                             }
-                            decode::ReadRequestAddr::Ipv6(addr) => {
-                                buf.put_u8(0x04);
-                                buf.put_slice(&addr.octets());
+                            session::msg::ClientMsg::Data(mut data) => {
+                                buf.put_u8(1u8);
+                                buf.put_u16(data.seq);
+                                buf.put_u16(data.data.len().try_into().unwrap());
+                                self.stream_write.write_all(&mut buf).await?;
+                                self.stream_write.write_all(&mut data.data).await?;
                             }
-                            decode::ReadRequestAddr::Domain(domain) => {
-                                buf.put_u8(0x03);
-                                buf.put_u8(domain.len() as u8);
-                                // TODO: no copy?
-                                buf.put_slice(domain.as_ref());
+                            session::msg::ClientMsg::Ack(ack) => {
+                                buf.put_u8(2u8);
+                                buf.put_u16(ack.seq);
+                                self.stream_write.write_all(&mut buf).await?;
                             }
-                        }
-                        buf.put_u16(req.port);
-                        self.stream_write.write_all(&mut buf).await?;
+                            session::msg::ClientMsg::Eof(eof) => {
+                                buf.put_u8(3u8);
+                                buf.put_u16(eof.seq);
+                                self.stream_write.write_all(&mut buf).await?;
+                            }
+                            session::msg::ClientMsg::ProxyeeIoError(_) => {
+                                buf.put_u8(4u8);
+                                self.stream_write.write_all(&mut buf).await?;
+                            }
+                        };
                     }
-                    session::msg::ClientMsg::Data(mut data) => {
-                        buf.put_u8(1u8);
-                        buf.put_u16(data.seq);
-                        buf.put_u16(data.data.len().try_into().unwrap());
-                        self.stream_write.write_all(&mut buf).await?;
-                        self.stream_write.write_all(&mut data.data).await?;
-                    }
-                    session::msg::ClientMsg::Ack(ack) => {
-                        buf.put_u8(2u8);
-                        buf.put_u16(ack.seq);
-                        self.stream_write.write_all(&mut buf).await?;
-                    }
-                    session::msg::ClientMsg::Eof(eof) => {
-                        buf.put_u8(3u8);
-                        buf.put_u16(eof.seq);
-                        self.stream_write.write_all(&mut buf).await?;
-                    }
-                    session::msg::ClientMsg::ProxyeeIoError(_) => {
-                        buf.put_u8(4u8);
-                        self.stream_write.write_all(&mut buf).await?;
-                    }
-                };
+                }
+            }
+            protocol::msg::conn::ClientMsg::Ping => {
+                buf.put_u8(1u8);
+                self.stream_write.write_all(&mut buf).await?;
             }
         };
 
@@ -213,7 +228,10 @@ where
     Stream: AsyncWrite + Send + Unpin + 'static,
     Cipher: StaticCipher,
 {
-    async fn send_msg(&mut self, msg: protocol::msg::ClientMsg) -> Result<(), std::io::Error> {
+    async fn send_msg(
+        &mut self,
+        msg: protocol::msg::conn::ClientMsg,
+    ) -> Result<(), std::io::Error> {
         self.send_msg(msg).await
     }
 }

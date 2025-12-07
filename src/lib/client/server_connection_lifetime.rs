@@ -68,7 +68,7 @@ pub fn run(
                         };
 
                         let span = debug_span!("send client msg to server", ?client_msg);
-                        server_write.send_msg(client_msg).instrument(span).await?;
+                        server_write.send_msg(client_msg.into()).instrument(span).await?;
                     },
 
                     _ = &mut end_of_server_stream_rx => {
@@ -94,30 +94,37 @@ pub fn run(
             } {
                 debug!("message from server: {:?}", &server_msg);
 
-                match server_msg {
-                    protocol::msg::ServerMsg::SessionMsg(proxyee_id, server_msg) => {
-                        let span = debug_span!(
-                            "forward server msg to session",
-                            session_id = proxyee_id,
-                            ?server_msg
-                        );
+                use protocol::msg::conn::ServerMsg::*;
 
-                        if let Err(_) = server_msg_tx
-                            .send((proxyee_id, server_msg))
-                            .instrument(span)
-                            .await
-                        {
-                            warn!("failed to send server msg to session, exiting");
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                "failed to forward server msg",
-                            ));
+                match server_msg {
+                    Protocol(server_msg) => match server_msg {
+                        protocol::msg::ServerMsg::SessionMsg(proxyee_id, server_msg) => {
+                            let span = debug_span!(
+                                "forward server msg to session",
+                                session_id = proxyee_id,
+                                ?server_msg
+                            );
+
+                            if let Err(_) = server_msg_tx
+                                .send((proxyee_id, server_msg))
+                                .instrument(span)
+                                .await
+                            {
+                                warn!("failed to send server msg to session, exiting");
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    "failed to forward server msg",
+                                ));
+                            }
                         }
-                    }
-                    protocol::msg::ServerMsg::EndOfStream => {
+                    },
+                    EndOfStream => {
                         debug!("end of server messages");
                         end_of_server_stream_tx.send(()).unwrap();
                         return Ok::<_, std::io::Error>(());
+                    }
+                    Pong => {
+                        debug!("pong");
                     }
                 };
             }

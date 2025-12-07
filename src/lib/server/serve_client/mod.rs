@@ -197,7 +197,7 @@ mod tests {
 
         client_agent_write
             .send_msg(
-                (
+                protocol::msg::ClientMsg::SessionMsg(
                     2,
                     session::msg::Request {
                         addr: decode::ReadRequestAddr::Domain("example.com".into()),
@@ -205,41 +205,45 @@ mod tests {
                     }
                     .into(),
                 )
-                    .into(),
+                .into(),
             )
             .await
             .unwrap();
 
         assert_eq!(
             client_agent_read.recv_msg().await.unwrap().unwrap(),
-            (
+            protocol::msg::ServerMsg::SessionMsg(
                 2,
                 session::msg::Reply {
                     bound_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 180),
                 }
                 .into()
             )
-                .into()
+            .into()
         );
 
         assert_eq!(
             client_agent_read.recv_msg().await.unwrap().unwrap(),
-            (2, session::msg::Eof { seq: 0 }.into()).into()
+            protocol::msg::ServerMsg::SessionMsg(2, session::msg::Eof { seq: 0 }.into()).into()
         );
 
         client_agent_write
-            .send_msg((2, session::msg::Ack { seq: 0 }.into()).into())
+            .send_msg(
+                protocol::msg::ClientMsg::SessionMsg(2, session::msg::Ack { seq: 0 }.into()).into(),
+            )
             .await
             .unwrap();
 
         client_agent_write
-            .send_msg((2, session::msg::Eof { seq: 0 }.into()).into())
+            .send_msg(
+                protocol::msg::ClientMsg::SessionMsg(2, session::msg::Eof { seq: 0 }.into()).into(),
+            )
             .await
             .unwrap();
 
         assert_eq!(
             client_agent_read.recv_msg().await.unwrap().unwrap(),
-            protocol::msg::ServerMsg::SessionMsg(2, session::msg::Ack { seq: 0 }.into())
+            protocol::msg::ServerMsg::SessionMsg(2, session::msg::Ack { seq: 0 }.into()).into()
         );
 
         // let connection timeout run out
@@ -247,7 +251,7 @@ mod tests {
 
         assert_eq!(
             client_agent_read.recv_msg().await.unwrap().unwrap(),
-            protocol::msg::ServerMsg::EndOfStream
+            protocol::msg::conn::ServerMsg::EndOfStream
         );
 
         drop(client_agent_read);

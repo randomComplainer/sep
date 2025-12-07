@@ -41,7 +41,7 @@ where
 {
     fn recv_msg(
         &mut self,
-    ) -> impl std::future::Future<Output = Result<Option<protocol::msg::ClientMsg>, DecodeError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Option<msg::conn::ClientMsg>, DecodeError>> + Send;
 }
 
 pub trait GreetedWrite
@@ -50,6 +50,6 @@ where
 {
     fn send_msg(
         &mut self,
-        msg: protocol::msg::ServerMsg,
+        msg: msg::conn::ServerMsg,
     ) -> impl std::future::Future<Output = Result<(), std::io::Error>> + Send;
 }

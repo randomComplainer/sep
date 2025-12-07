@@ -181,67 +181,76 @@ where
         Self { stream_write }
     }
 
-    pub async fn send_msg(&mut self, msg: protocol::msg::ServerMsg) -> Result<(), std::io::Error> {
+    pub async fn send_msg(&mut self, msg: msg::conn::ServerMsg) -> Result<(), std::io::Error> {
         // TODO: Do I need calculated size?
         let mut buf = BytesMut::with_capacity(64);
 
         match msg {
-            msg::ServerMsg::SessionMsg(proxyee_id, server_msg) => {
+            msg::conn::ServerMsg::Protocol(msg) => {
                 buf.put_u8(0u8);
-                buf.put_u16(proxyee_id);
-                match server_msg {
-                    session::msg::ServerMsg::Reply(reply) => {
+                match msg {
+                    msg::ServerMsg::SessionMsg(proxyee_id, server_msg) => {
                         buf.put_u8(0u8);
-                        match &reply.bound_addr {
-                            std::net::SocketAddr::V4(addr) => {
-                                buf.put_u8(0x01);
-                                buf.put_u32(addr.ip().to_bits());
+                        buf.put_u16(proxyee_id);
+                        match server_msg {
+                            session::msg::ServerMsg::Reply(reply) => {
+                                buf.put_u8(0u8);
+                                match &reply.bound_addr {
+                                    std::net::SocketAddr::V4(addr) => {
+                                        buf.put_u8(0x01);
+                                        buf.put_u32(addr.ip().to_bits());
+                                    }
+                                    std::net::SocketAddr::V6(addr) => {
+                                        buf.put_u8(0x04);
+                                        buf.put_slice(&addr.ip().octets());
+                                    }
+                                };
+                                buf.put_u16(reply.bound_addr.port());
+                                self.stream_write.write_all(&mut buf).await?;
                             }
-                            std::net::SocketAddr::V6(addr) => {
-                                buf.put_u8(0x04);
-                                buf.put_slice(&addr.ip().octets());
+                            session::msg::ServerMsg::ReplyError(err) => {
+                                buf.put_u8(1u8);
+                                use session::msg::ConnectionError::*;
+                                buf.put_u8(match err {
+                                    General => 0,
+                                    NetworkUnreachable => 1,
+                                    HostUnreachable => 2,
+                                    ConnectionRefused => 3,
+                                    TtlExpired => 4,
+                                });
+                                self.stream_write.write_all(&mut buf).await?;
+                            }
+                            session::msg::ServerMsg::Data(mut data) => {
+                                buf.put_u8(2u8);
+                                buf.put_u16(data.seq);
+                                buf.put_u16(data.data.len().try_into().unwrap());
+                                self.stream_write.write_all(&mut buf).await?;
+                                self.stream_write.write_all(&mut data.data).await?;
+                            }
+                            session::msg::ServerMsg::Ack(ack) => {
+                                buf.put_u8(3u8);
+                                buf.put_u16(ack.seq);
+                                self.stream_write.write_all(&mut buf).await?;
+                            }
+                            session::msg::ServerMsg::Eof(eof) => {
+                                buf.put_u8(4u8);
+                                buf.put_u16(eof.seq);
+                                self.stream_write.write_all(&mut buf).await?;
+                            }
+                            session::msg::ServerMsg::TargetIoError(_) => {
+                                buf.put_u8(5u8);
+                                self.stream_write.write_all(&mut buf).await?;
                             }
                         };
-                        buf.put_u16(reply.bound_addr.port());
-                        self.stream_write.write_all(&mut buf).await?;
                     }
-                    session::msg::ServerMsg::ReplyError(err) => {
-                        buf.put_u8(1u8);
-                        use session::msg::ConnectionError::*;
-                        buf.put_u8(match err {
-                            General => 0,
-                            NetworkUnreachable => 1,
-                            HostUnreachable => 2,
-                            ConnectionRefused => 3,
-                            TtlExpired => 4,
-                        });
-                        self.stream_write.write_all(&mut buf).await?;
-                    }
-                    session::msg::ServerMsg::Data(mut data) => {
-                        buf.put_u8(2u8);
-                        buf.put_u16(data.seq);
-                        buf.put_u16(data.data.len().try_into().unwrap());
-                        self.stream_write.write_all(&mut buf).await?;
-                        self.stream_write.write_all(&mut data.data).await?;
-                    }
-                    session::msg::ServerMsg::Ack(ack) => {
-                        buf.put_u8(3u8);
-                        buf.put_u16(ack.seq);
-                        self.stream_write.write_all(&mut buf).await?;
-                    }
-                    session::msg::ServerMsg::Eof(eof) => {
-                        buf.put_u8(4u8);
-                        buf.put_u16(eof.seq);
-                        self.stream_write.write_all(&mut buf).await?;
-                    }
-                    session::msg::ServerMsg::TargetIoError(_) => {
-                        buf.put_u8(5u8);
-                        self.stream_write.write_all(&mut buf).await?;
-                    }
-                };
+                }
             }
-            msg::ServerMsg::EndOfStream => {
+            msg::conn::ServerMsg::EndOfStream => {
                 buf.put_u8(1u8);
+                self.stream_write.write_all(&mut buf).await?;
+            }
+            msg::conn::ServerMsg::Pong => {
+                buf.put_u8(2u8);
                 self.stream_write.write_all(&mut buf).await?;
             }
         }
@@ -259,7 +268,7 @@ where
     Stream: StaticStream,
     Cipher: StaticCipher,
 {
-    async fn send_msg(&mut self, msg: protocol::msg::ServerMsg) -> Result<(), std::io::Error> {
+    async fn send_msg(&mut self, msg: msg::conn::ServerMsg) -> Result<(), std::io::Error> {
         self.send_msg(msg).await
     }
 }
@@ -281,8 +290,11 @@ where
         Self { stream_read }
     }
 
-    pub async fn recv_msg(&mut self) -> Result<Option<msg::ClientMsg>, DecodeError> {
-        let msg = self.stream_read.read_next(msg::client_msg_peeker()).await?;
+    pub async fn recv_msg(&mut self) -> Result<Option<msg::conn::ClientMsg>, DecodeError> {
+        let msg = self
+            .stream_read
+            .read_next(msg::conn::client_msg_peeker())
+            .await?;
 
         Ok(msg)
     }
@@ -293,7 +305,7 @@ where
     Stream: StaticStream,
     Cipher: StaticCipher,
 {
-    async fn recv_msg(&mut self) -> Result<Option<protocol::msg::ClientMsg>, DecodeError> {
+    async fn recv_msg(&mut self) -> Result<Option<msg::conn::ClientMsg>, DecodeError> {
         self.recv_msg().await
     }
 }
