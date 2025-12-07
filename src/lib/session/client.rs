@@ -150,7 +150,7 @@ pub async fn run(
     };
 
     let (mut proxyee_to_server_cmd_tx, proxyee_to_server_cmd_rx) =
-        futures::channel::mpsc::channel(1);
+        futures::channel::mpsc::unbounded();
 
     let (buf, proxyee_read) = proxyee_read.into_parts();
     let proxyee_to_server = session::stream_to_sequenced::run(
@@ -167,7 +167,7 @@ pub async fn run(
     .instrument(info_span!("proxyee to server"));
 
     let (mut server_to_proxyee_cmd_tx, server_to_proxyee_cmd_rx) =
-        futures::channel::mpsc::channel(1);
+        futures::channel::mpsc::unbounded();
 
     let server_to_proxyee_early_packages = {
         let mut server_to_proxyee_cmd_tx = server_to_proxyee_cmd_tx.clone();

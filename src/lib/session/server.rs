@@ -103,7 +103,7 @@ where
     let (target_read, target_write) = tokio::io::split(target_stream);
 
     let (mut target_to_client_cmd_tx, cmd_target_to_client_cmd_rx) =
-        futures::channel::mpsc::channel(1);
+        futures::channel::mpsc::unbounded();
 
     let target_to_client = session::stream_to_sequenced::run(
         cmd_target_to_client_cmd_rx,
@@ -118,7 +118,7 @@ where
     )
     .instrument_with_result(info_span!("target to client"));
 
-    let (mut client_to_target_cmd_tx, client_to_target_cmd_rx) = futures::channel::mpsc::channel(1);
+    let (mut client_to_target_cmd_tx, client_to_target_cmd_rx) = futures::channel::mpsc::unbounded();
     let client_to_target = session::sequenced_to_stream::run(
         client_to_target_cmd_rx,
         server_msg_write.clone().with_sync(|evt| match evt {

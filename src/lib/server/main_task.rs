@@ -39,10 +39,10 @@ where
         handover::Sender<(Box<str>, GreetedRead, GreetedWrite)>,
     >::new();
 
-    let (worker_ending_tx, mut worker_ending_rx) = mpsc::channel::<(
+    let (worker_ending_tx, mut worker_ending_rx) = mpsc::unbounded::<(
         Box<protocol::ClientId>,
         handover::ChannelRef<(Box<str>, GreetedRead, GreetedWrite)>,
-    )>(2);
+    )>();
 
     loop {
         match futures::future::select(new_conn_rx.next(), worker_ending_rx.next()).await {

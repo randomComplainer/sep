@@ -13,7 +13,7 @@ type Fut<E> = Pin<Box<dyn futures::Future<Output = Result<(), E>> + Send + 'stat
 
 #[derive(Debug)]
 pub struct ScopeHandle<E> {
-    task_tx: mpsc::Sender<Fut<E>>,
+    task_tx: mpsc::UnboundedSender<Fut<E>>,
 }
 
 impl<E> Clone for ScopeHandle<E> {
@@ -25,7 +25,7 @@ impl<E> Clone for ScopeHandle<E> {
 }
 
 impl<E> ScopeHandle<E> {
-    pub fn new(task_tx: mpsc::Sender<Fut<E>>) -> Self {
+    pub fn new(task_tx: mpsc::UnboundedSender<Fut<E>>) -> Self {
         Self { task_tx }
     }
 }
@@ -49,7 +49,7 @@ impl<E> ScopeHandle<E> {
     }
 }
 
-async fn main_loop<E: Send + 'static>(mut task_rx: mpsc::Receiver<Fut<E>>) -> E {
+async fn main_loop<E: Send + 'static>(mut task_rx: mpsc::UnboundedReceiver<Fut<E>>) -> E {
     let mut list: FuturesUnordered<Fut<E>> = FuturesUnordered::new();
     list.push(std::future::pending().boxed());
     loop {
@@ -77,8 +77,7 @@ async fn main_loop<E: Send + 'static>(mut task_rx: mpsc::Receiver<Fut<E>>) -> E 
 }
 
 pub fn new_scope<E: Sync + Send + 'static>() -> (ScopeHandle<E>, impl Future<Output = E> + Send) {
-    // TODO: unbounded
-    let (task_tx, task_rx) = mpsc::channel(64);
+    let (task_tx, task_rx) = mpsc::unbounded();
     (ScopeHandle::new(task_tx), main_loop(task_rx))
 }
 
