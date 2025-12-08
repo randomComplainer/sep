@@ -85,6 +85,22 @@ pub async fn run(
         let mut pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(30)));
         let mut pong_counter = 0;
 
+        macro_rules! send_msg {
+            ($msg:expr) => {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(4),
+                    client_write.send_msg($msg),
+                )
+                .map(|timeout_result| match timeout_result {
+                    Ok(x) => x,
+                    Err(_) => Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "timeout sending msg to client",
+                    )),
+                })
+            };
+        }
+
         loop {
             tokio::select! {
                 _ = time_limit_task.as_mut() => {
@@ -98,7 +114,7 @@ pub async fn run(
                 server_msg_opt = server_msg_rx.recv() => {
                     if let Some(server_msg) = server_msg_opt {
                         debug!("message to client: {:?}", &server_msg);
-                        client_write.send_msg(server_msg.into()).await?;
+                        send_msg!(server_msg.into()).await?;
                     } else {
                         return Ok::<_, std::io::Error>(());
                     }
@@ -107,7 +123,7 @@ pub async fn run(
                 _ = pong_timer.as_mut() => {
                     debug!(count = pong_counter, "pong");
 
-                    client_write.send_msg(protocol::msg::conn::ServerMsg::Pong)
+                    send_msg!(protocol::msg::conn::ServerMsg::Pong)
                         .instrument(debug_span!("send pong", count = pong_counter))
                         .await?;
 

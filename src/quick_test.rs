@@ -7,19 +7,15 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, DuplexStream, duplex};
 
 use sep_lib::*;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let mut timeout_l = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
+    tokio::time::pause();
 
-    loop {
-        tokio::select! {
-            _ = timeout_l.as_mut() => {
-                break;
-            },
-            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
-                println!("tick");
-                continue;
-            }
-        }
-    }
+    let before = tokio::time::Instant::now();
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    let after = tokio::time::Instant::now();
+
+    println!("sleep took {:?}", after.duration_since(before));
+
+    dbg!("hello");
 }

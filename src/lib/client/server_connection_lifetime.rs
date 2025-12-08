@@ -57,6 +57,25 @@ pub fn run(
             let mut ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(30)));
             let mut ping_counter = 0;
 
+            macro_rules! send_msg {
+                ($msg:expr) => {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(4),
+                            server_write.send_msg($msg)
+                    )
+                    .map(|timeout_result|  
+                        match timeout_result {
+                            Ok(x) => x,
+                            Err(_) => Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "timeout sending msg to server",
+                                )
+                            )
+                        }
+                    )
+                }
+            }
+
             loop {
                 tokio::select! {
                     client_msg = client_msg_rx.recv()
@@ -70,12 +89,12 @@ pub fn run(
                         };
 
                         let span = debug_span!("send client msg to server", ?client_msg);
-                        server_write.send_msg(client_msg.into()).instrument(span).await?;
+                        send_msg!(client_msg.into()).instrument(span).await?;
                     },
                     _ = ping_timer.as_mut() => {
                         debug!(count = ping_counter, "ping");
 
-                        server_write.send_msg(protocol::msg::conn::ClientMsg::Ping)
+                        send_msg!(protocol::msg::conn::ClientMsg::Ping)
                             .instrument(debug_span!("send ping", count = ping_counter))
                             .await?;
 
