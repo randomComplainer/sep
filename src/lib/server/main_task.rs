@@ -9,30 +9,37 @@ use crate::handover;
 use crate::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
-pub struct Config<TConnectTarget> {
+pub struct Config {
     pub max_packet_ahead: u16,
     pub max_packet_size: u16,
-    pub connect_target: TConnectTarget,
 }
 
-impl<TConnectTarget> Into<serve_client::Config<TConnectTarget>> for Config<TConnectTarget> {
-    fn into(self) -> serve_client::Config<TConnectTarget> {
+impl Into<serve_client::Config<crate::connect_target::ConnectTargetImpl>> for Config {
+    fn into(self) -> serve_client::Config<crate::connect_target::ConnectTargetImpl> {
         serve_client::Config {
             max_packet_ahead: self.max_packet_ahead,
             max_packet_size: self.max_packet_size,
-            connect_target: self.connect_target,
+            connect_target: crate::connect_target::ConnectTargetImpl(
+                crate::connect_target::cache::Cache::new(
+                    crate::connect_target::cache::EvictQueue::new(
+                        std::time::Duration::from_secs(60),
+                        5,
+                        tokio::time::Instant::now(),
+                        64,
+                    ),
+                ),
+            ),
         }
     }
 }
 
-pub async fn run<GreetedRead, GreetedWrite, TConnectTarget>(
+pub async fn run<GreetedRead, GreetedWrite>(
     mut new_conn_rx: impl Stream<Item = (Box<ClientId>, Box<str>, GreetedRead, GreetedWrite)> + Unpin,
-    config: Config<TConnectTarget>,
+    config: Config,
 ) -> Result<(), std::io::Error>
 where
     GreetedRead: protocol::server_agent::GreetedRead,
     GreetedWrite: protocol::server_agent::GreetedWrite,
-    TConnectTarget: ConnectTarget,
 {
     let mut conn_senders = HashMap::<
         Box<protocol::ClientId>,

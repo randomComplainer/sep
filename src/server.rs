@@ -82,7 +82,6 @@ async fn async_main(args: Args) {
         sep_lib::server::main_task::Config {
             max_packet_ahead: session::MAX_DATA_AHEAD,
             max_packet_size: session::DATA_BUFF_SIZE,
-            connect_target: sep_lib::connect_target::ConnectTargetImpl,
         },
     );
 

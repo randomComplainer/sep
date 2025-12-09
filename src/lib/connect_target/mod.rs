@@ -1,6 +1,8 @@
-use std::{future::Future, net::SocketAddr};
+use std::{future::Future, net::SocketAddr, str, sync::Arc, time::Instant};
 
 use crate::decode::ReadRequestAddr;
+
+pub mod cache;
 
 pub trait ConnectTarget: Send + 'static + Clone {
     fn connect(
@@ -15,29 +17,26 @@ pub trait ConnectTarget: Send + 'static + Clone {
             ),
             std::io::Error,
         >,
-    > + Send
-    + 'static;
+    > + Send;
 }
 
 #[derive(Clone)]
-pub struct ConnectTargetImpl;
+pub struct ConnectTargetImpl(pub cache::Cache);
 
 impl ConnectTargetImpl {
     async fn resolve_addrs(
+        &self,
         addr: ReadRequestAddr,
         port: u16,
-    ) -> Result<Vec<SocketAddr>, std::io::Error> {
+    ) -> Result<Arc<Vec<SocketAddr>>, ()> {
         let addrs = match addr {
-            ReadRequestAddr::Ipv4(addr) => {
-                vec![SocketAddr::new(addr.into(), port)]
-            }
-            ReadRequestAddr::Ipv6(addr) => {
-                vec![SocketAddr::new(addr.into(), port)]
-            }
+            ReadRequestAddr::Ipv4(addr) => Arc::new(vec![SocketAddr::new(addr.into(), port)]),
+            ReadRequestAddr::Ipv6(addr) => Arc::new(vec![SocketAddr::new(addr.into(), port)]),
             ReadRequestAddr::Domain(addr) => {
-                tokio::net::lookup_host((str::from_utf8(addr.as_ref()).unwrap(), port))
+                let domain = String::from_utf8(addr.into()).unwrap();
+                self.0
+                    .query(domain, port, tokio::time::Instant::now())
                     .await?
-                    .collect()
             }
         };
 
@@ -58,13 +57,15 @@ impl ConnectTarget for ConnectTargetImpl {
             ),
             std::io::Error,
         >,
-    > + Send
-    + 'static {
+    > + Send {
         async move {
             // TODO: DNS cache
-            let addrs = Self::resolve_addrs(addr, port).await?;
-            for addr in addrs {
-                match tokio::net::TcpStream::connect(addr).await {
+            let addrs = self.resolve_addrs(addr, port).await.map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::Other, "failed to resolve domain")
+            })?;
+
+            for addr in addrs.as_ref() {
+                match tokio::net::TcpStream::connect(&addr).await {
                     Ok(stream) => {
                         let addr = stream.local_addr()?;
                         return Ok((stream, addr));
@@ -146,8 +147,7 @@ mod mock {
                 ),
                 std::io::Error,
             >,
-        > + Send
-        + 'static {
+        > + Send {
             let entries = self.0.clone();
 
             async move {
