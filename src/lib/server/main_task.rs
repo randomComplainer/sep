@@ -27,6 +27,17 @@ impl Into<serve_client::Config<crate::connect_target::ConnectTargetImpl>> for Co
                         tokio::time::Instant::now(),
                         64,
                     ),
+                    Box::new(|domain, port| {
+                        Box::pin(async move {
+                            tokio::net::lookup_host((domain, port))
+                                .await
+                                .map(|addrs| addrs.collect::<Vec<_>>())
+                                .map_err(|err| {
+                                    tracing::warn!(?err, "failed to resolve domain");
+                                    ()
+                                })
+                        })
+                    }),
                 ),
             ),
         }

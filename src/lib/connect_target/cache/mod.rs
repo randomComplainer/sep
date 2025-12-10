@@ -1,3 +1,4 @@
+use std::pin::Pin;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use tokio::sync::Mutex;
@@ -8,13 +9,30 @@ mod evict_queue;
 pub use evict_queue::EvictQueue;
 use tokio::time::Instant;
 
+type BoxPin<T> = Pin<Box<T>>;
+
+// AKA async fn(domain: &str, port: u16) -> Result<Vec<SocketAddr>, ()>
+type LookupFn = Box<
+    dyn for<'a> Fn(
+            &'a str,
+            u16,
+        )
+            -> BoxPin<dyn Future<Output = Result<Vec<SocketAddr>, ()>> + Send + Sync + 'a>
+        + Sync
+        + Send
+        + 'static,
+>;
+
 #[derive(Clone)]
 pub struct Cache {
+    // There are absolutely no need to have 2 distinct Arcs,
+    // but it's just for the sake of simplicity
     shared: Arc<Mutex<Shared>>,
+    lookup_fn: Arc<LookupFn>,
 }
 
 impl Cache {
-    pub fn new(evict_queue: EvictQueue) -> Self {
+    pub fn new(evict_queue: EvictQueue, lookup_fn: LookupFn) -> Self {
         let shared = Arc::new(Mutex::new(Shared {
             entries_map: HashMap::with_capacity(
                 evict_queue.bucket_initial_capacity * evict_queue.buckets.len() / 2,
@@ -22,7 +40,10 @@ impl Cache {
             evict_queue,
         }));
 
-        Self { shared }
+        Self {
+            shared,
+            lookup_fn: Arc::new(lookup_fn),
+        }
     }
 
     pub fn query(
@@ -63,18 +84,10 @@ impl Cache {
                     .insert(Arc::clone(&key), EntryState::Querying(set_once.clone()));
                 drop(lock);
 
-                // TODO: inject lookup_host function
-                let r = tokio::net::lookup_host((key.0.as_str(), port))
-                    .await
-                    .map(|addrs| Arc::new(addrs.collect::<Vec<_>>()))
-                    .map_err(|err| {
-                        tracing::warn!(?err, "failed to resolve domain");
-                        ()
-                    });
+                let r = (self.lookup_fn)(key.0.as_str(), port).await.map(Arc::new);
 
                 let mut lock = self.shared.lock().await;
                 if let Ok(addrs) = &r {
-                    // let domain = domain.into();
                     lock.entries_map
                         .insert(Arc::clone(&key), EntryState::Cached(addrs.clone()));
                     lock.evict_queue.insert(key);
