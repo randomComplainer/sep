@@ -36,14 +36,6 @@ impl EvictQueue {
         if v >= self.buckets.len() { 0 } else { v }
     }
 
-    // fn prev_bucket_idx(&self, idx: usize) -> usize {
-    //     if idx == 0 {
-    //         self.buckets.len() - 1
-    //     } else {
-    //         idx - 1
-    //     }
-    // }
-
     pub fn insert(&mut self, entry: Arc<(String, u16)>) {
         self.buckets[self.head].push(entry);
     }

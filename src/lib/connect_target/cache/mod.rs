@@ -112,3 +112,75 @@ struct Shared {
     entries_map: HashMap<Arc<(String, u16)>, EntryState>,
     evict_queue: evict_queue::EvictQueue,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        net::{IpAddr, Ipv4Addr},
+        time::Duration,
+    };
+
+    use super::*;
+
+    fn make_mock(
+        entries: Arc<Mutex<HashMap<(String, u16), Result<Vec<SocketAddr>, ()>>>>,
+    ) -> LookupFn {
+        Box::new(move |domain, port| {
+            let entries = entries.clone();
+            Box::pin(async move {
+                let mut lock = entries.lock().await;
+                match lock.remove(&(domain.to_string(), port)) {
+                    Some(r) => r,
+                    None => {
+                        panic!("unexpected dns request to {}:{}", domain, port);
+                    }
+                }
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn happy_path() {
+        let start_time = Instant::now();
+        let delta = Duration::from_mins(1) + Duration::from_secs(1);
+        let entries = Arc::new(Mutex::new(HashMap::new()));
+
+        let cache = Cache::new(
+            EvictQueue::new(Duration::from_mins(1), 3, start_time, 8),
+            make_mock(Arc::clone(&entries)),
+        );
+
+        let domain = "example.com";
+        let port = 80;
+
+        let mut lock = entries.lock().await;
+        lock.insert(
+            (domain.to_string(), port),
+            Ok(vec![SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                180,
+            )]),
+        );
+        drop(lock);
+
+        let addrs = cache.query(domain.into(), port, start_time).await.unwrap();
+        assert_eq!(1, addrs.len());
+        assert_eq!("127.0.0.1:180", addrs[0].to_string());
+
+        // should not yet be evicted
+        let time = start_time + delta + delta;
+        let addrs = cache.query(domain.into(), port, time).await.unwrap();
+        assert_eq!(1, addrs.len());
+        assert_eq!("127.0.0.1:180", addrs[0].to_string());
+
+        // should be evicted
+        let time = time + delta;
+        let e = tokio::spawn(async move {
+            let addrs = cache.query(domain.into(), port, time).await.unwrap();
+            unreachable!("should not be reached, but got {:?}", addrs);
+        })
+        .await
+        .unwrap_err();
+        assert!(e.is_panic());
+    }
+}
