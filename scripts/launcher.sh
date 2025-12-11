@@ -9,6 +9,6 @@ chmod u+x ${script_dir}/sep-client
 
 mkdir -p ${script_dir}/log
 
-${script_dir}/sep-client --key pass --server ${server_addr}:1081 --log-format json \
+${script_dir}/sep-client --key test-pass --server ${server_addr}:1081 --port 1082 --log-format json \
 	| tee "${script_dir}/log/$(date +"%Y-%m-%d_%H%M")"
 
