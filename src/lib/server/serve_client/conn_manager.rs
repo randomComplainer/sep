@@ -129,7 +129,8 @@ where
                                         continue;
                                     }
                                     None => {
-                                        break;
+                                        error!(conn_id = conn_id.as_ref(), "server message lost");
+                                        panic!("server message lost");
                                     }
                                 }
                             } else {

@@ -113,8 +113,10 @@ pub async fn run(
                 },
                 server_msg_opt = server_msg_rx.recv() => {
                     if let Some(server_msg) = server_msg_opt {
-                        debug!("message to client: {:?}", &server_msg);
-                        send_msg!(server_msg.into()).await?;
+                        let span = debug_span!("message to client", ?server_msg);
+                        send_msg!(server_msg.into())
+                            .instrument(span)
+                            .await?;
                     } else {
                         return Ok::<_, std::io::Error>(());
                     }
@@ -134,10 +136,24 @@ pub async fn run(
         }
     };
 
-    tokio::try_join! {
-        sending_msg_to_client,
-        reciving_msg_from_client,
-        ping_waiting_task,
+    let recv_loop = async move {
+        tokio::try_join! {
+            reciving_msg_from_client,
+            ping_waiting_task,
+        }
+        .map(|_| ())
+    };
+
+    match futures::future::select(Box::pin(sending_msg_to_client), Box::pin(recv_loop)).await {
+        future::Either::Left((send_result, _)) => send_result,
+
+        // do not cancel send_loop
+        future::Either::Right((recv_result, send_loop)) => {
+            let send_result = send_loop.await;
+            match recv_result {
+                Ok(_) => send_result,
+                Err(send_err) => Err(send_err),
+            }
+        }
     }
-    .map(|_| ())
 }

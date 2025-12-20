@@ -207,12 +207,13 @@ pub fn run(
 
         match futures::future::select(Box::pin(send_loop), Box::pin(recv_loop) ).await {
             future::Either::Left((send_result, _) ) => send_result,
+
             // do not cancel send_loop
             future::Either::Right((recv_result, send_loop) ) => {
                 let send_result = send_loop.await;
-                match send_result {
-                    Ok(_) => recv_result,
-                    Err(send_err) => Err(send_err),
+                match recv_result {
+                    Ok(_) => send_result,
+                    Err(recv_err) => Err(recv_err),
                 }
             },
         }
