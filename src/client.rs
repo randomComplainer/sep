@@ -136,19 +136,19 @@ impl RetryState {
     pub async fn wait(&mut self) {
         let now = std::time::Instant::now();
 
-        // no attempt in 10 seconds -> instant retry
-        // else wait for 20 seconds
+        // no attempt in 5 seconds -> instant retry
+        // else wait for 10 seconds
 
         if self
             .history
-            .map(|h| now - h >= std::time::Duration::from_secs(10))
+            .map(|h| now - h >= std::time::Duration::from_secs(5))
             .unwrap_or(true)
         {
             self.history = Some(now);
             return;
         } else {
             self.history = Some(now);
-            tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
     }
 }

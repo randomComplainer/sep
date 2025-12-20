@@ -2,6 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use clap::Parser;
 use futures::prelude::*;
+use rand::{Rng as _, SeedableRng as _};
 use tracing::*;
 
 use sep_lib::prelude::*;
@@ -60,7 +61,10 @@ async fn async_main(args: Args) {
                             Ok(agent) => agent,
                             Err(err) => {
                                 debug!("failed to receive greeting: {}", err);
-                                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                                tokio::time::sleep(std::time::Duration::from_secs(
+                                    rand::rngs::StdRng::from_os_rng().random_range(0..=30u64),
+                                ))
+                                .await;
                                 return;
                             }
                         };
