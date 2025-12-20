@@ -1,3 +1,5 @@
+#![feature(impl_trait_in_bindings)]
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use clap::Parser;
@@ -50,9 +52,9 @@ async fn async_main(args: Args) {
 
     let (new_client_conn_tx, new_client_conn_rx) = futures::channel::mpsc::channel(4);
 
-    let channeling_new_client = async move {
+    let channeling_new_client: impl Future<Output = Result<(), std::io::Error>> = async move {
         loop {
-            let (conn_id, agent) = listener.accept().await.unwrap();
+            let (conn_id, agent) = listener.accept().await?;
             tokio::spawn({
                 let mut new_client_conn_tx = new_client_conn_tx.clone();
                 async move {
@@ -76,8 +78,6 @@ async fn async_main(args: Args) {
                 }
             });
         }
-
-        Ok::<_, std::io::Error>(())
     }
     .instrument(info_span!("channeling new client"));
 

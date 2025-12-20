@@ -1,6 +1,5 @@
 #![feature(impl_trait_in_bindings)]
 
-use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
