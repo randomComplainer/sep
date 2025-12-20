@@ -137,6 +137,8 @@ pub fn run(
             }
         }.instrument(info_span!("pong waiting loop"));
 
+        // dont cancel me, 
+        // or you will risk missing message if it's in the middle of being sent
         let recv_loop = async move {
             while let Some(server_msg) = match server_read
                 .recv_msg()
@@ -196,11 +198,23 @@ pub fn run(
         }
         .instrument(debug_span!("recv loop"));
 
-        tokio::try_join! {
-             send_loop,
-             recv_loop,
-             pong_waiting_loop,
+        let recv_loop = async move {
+            tokio::try_join! {
+                recv_loop,
+                pong_waiting_loop,
+            }.map(|_| ())
+        };
+
+        match futures::future::select(Box::pin(send_loop), Box::pin(recv_loop) ).await {
+            future::Either::Left((send_result, _) ) => send_result,
+            // do not cancel send_loop
+            future::Either::Right((recv_result, send_loop) ) => {
+                let send_result = send_loop.await;
+                match send_result {
+                    Ok(_) => recv_result,
+                    Err(send_err) => Err(send_err),
+                }
+            },
         }
-        .map(|_| ())
     }
 }
