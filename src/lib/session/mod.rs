@@ -8,4 +8,4 @@ pub mod server;
 
 // TODO: magic number, IDK, maybe do some benchmark to find out
 pub const DATA_BUFF_SIZE: u16 = 1024 * 16;
-pub const MAX_DATA_AHEAD: u16 = 12;
+pub const MAX_DATA_AHEAD: u16 = 8;
