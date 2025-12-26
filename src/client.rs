@@ -104,7 +104,7 @@ async fn async_main(args: Args) {
             sep_lib::client::main_task::Config {
                 max_packet_ahead: session::MAX_DATA_AHEAD,
                 max_packet_size: session::DATA_BUFF_SIZE,
-                max_server_conn: 8,
+                max_server_conn: 16,
             },
         )
         .map(Err::<(), std::io::Error>);
