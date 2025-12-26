@@ -26,6 +26,12 @@ while true; do
 	sleep 5;
 done
 
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${ipv4} << EOF
+  ufw allow 1081;
+	systemctl stop sep-server || true;
+	systemctl disable sep-server || true;
+EOF
+
 scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 	"${project_dir}/target/release/sep-server" \
 	root@${ipv4}:/usr/local/bin/sep-server;
@@ -35,11 +41,7 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 	root@${ipv4}:/etc/systemd/system/sep-server.service;
 
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${ipv4} << EOF
-  ufw allow 1081;
 	sed -i 's/{key}/${SEP_KEY}/g' /etc/systemd/system/sep-server.service;
-
-	systemctl stop sep-server || true;
-	systemctl disable sep-server || true;
 
 	systemctl daemon-reexec;
 	systemctl daemon-reload;
