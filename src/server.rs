@@ -27,7 +27,7 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    args.log_parameters.setup_subscriber(3081);
+    args.log_parameters.setup_subscriber();
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()

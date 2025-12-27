@@ -34,7 +34,7 @@ pub mod cli_parameters {
     }
 
     impl LogParameter {
-        pub fn setup_subscriber(&self, tokio_console_port: u16) {
+        pub fn setup_subscriber(&self) {
             let layer = tracing_subscriber::fmt::layer()
                 // .with_writer(std::io::stderr)
                 .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
@@ -45,17 +45,9 @@ pub mod cli_parameters {
 
             #[cfg(debug_assertions)]
             let console_layer = tracing_subscriber::layer::Identity::new();
-            // let console_layer = console_subscriber::Builder::default()
-            //     .with_default_env()
-            //     .server_addr(([127, 0, 0, 1], tokio_console_port))
-            //     .spawn();
-
-            #[cfg(not(debug_assertions))]
-            let console_layer = tracing_subscriber::layer::Identity::new();
 
             let subscriber = subscriber.with(console_layer);
             subscriber.init();
-            // tracing::subscriber::set_global_default(subscriber).unwrap();
         }
     }
 
