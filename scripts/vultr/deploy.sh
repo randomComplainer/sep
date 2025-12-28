@@ -2,6 +2,8 @@
 
 set -e;
 
+export use_ipv6=false;
+
 readonly API_KEY=${VULTR_API_KEY:?api key is not set};
 readonly SEP_KEY=${1:?missing sep key};
 
@@ -14,11 +16,17 @@ readonly instance_id=$(${script_dir}/ensure_server_exists.sh);
 
 cargo build --release;
 
-readonly ipv4=$(${script_dir}/wait_for_instance_to_be_ready.sh "${instance_id}");
-echo "server at ${ipv4}" >&2;
+ip=$(${script_dir}/wait_for_instance_to_be_ready.sh "${instance_id}");
+echo "server at ${ip}" >&2;
+
+if [[ "${use_ipv6}" == "true" ]]; then
+	ip="[${ip}]";
+fi
 
 while true; do
-	if nc -z -w1 "${ipv4}" 22; then
+	# default nc is an old version that does not support ipv6
+	# apt install ncat
+	if nc -z -w1 "${ip}" 22; then
 		break;
 	fi
 
@@ -26,7 +34,7 @@ while true; do
 	sleep 5;
 done
 
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${ipv4} << EOF
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${ip} << EOF
   ufw allow 1081;
 	systemctl stop sep-server || true;
 	systemctl disable sep-server || true;
@@ -34,14 +42,15 @@ EOF
 
 scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 	"${project_dir}/target/release/sep-server" \
-	root@${ipv4}:/usr/local/bin/sep-server;
+	root@${ip}:/usr/local/bin/sep-server;
 
 scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 	"${project_dir}/service/sep-server.service" \
-	root@${ipv4}:/etc/systemd/system/sep-server.service;
+	root@[${ip}]:/etc/systemd/system/sep-server.service;
 
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${ipv4} << EOF
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${ip} << EOF
 	sed -i 's/{key}/${SEP_KEY}/g' /etc/systemd/system/sep-server.service;
+	sed -i 's/{bound_addr}/${ip}:1081/g' /etc/systemd/system/sep-server.service;
 
 	systemctl daemon-reexec;
 	systemctl daemon-reload;
@@ -49,5 +58,5 @@ ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${ipv4} << 
 	systemctl restart sep-server;
 EOF
 
-echo "server deployed at ${ipv4}" >&2;
+echo "server deployed at ${ip}" >&2;
 

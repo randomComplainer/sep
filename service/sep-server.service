@@ -3,7 +3,7 @@ Description=Sep Server
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/sep-server --key {key}
+ExecStart=/usr/local/bin/sep-server --key {key} --bound-addr {bound_addr}
 Restart=on-failure
 User=nobody
 

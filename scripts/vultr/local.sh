@@ -14,7 +14,12 @@ readonly server_ip=$(curl "https://api.vultr.com/v2/instances?label=sep-server" 
 	-X GET \
 	-H "Authorization: Bearer ${API_KEY}" \
 	| jq -r '.instances[].main_ip');
+	# | jq -r '.instances[].v6_main_ip');
 
-cargo run --release --bin sep-client -- --port 1082 --key ${SEP_KEY} --server ${server_ip}:1081 --log-format json \
+cargo run --release --bin sep-client -- \
+	--bound-addr 0.0.0.0:1082 \
+	--key ${SEP_KEY} \
+	--server ${server_ip}:1081 \
+	--log-format json \
 	| tee ./log/vultr.client.json
 

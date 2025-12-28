@@ -1,9 +1,6 @@
 #![feature(impl_trait_in_bindings)]
 
-use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    str::FromStr as _,
-};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use clap::Parser;
 use futures::prelude::*;
@@ -18,11 +15,6 @@ struct Args {
     #[arg(short, long)]
     key: String,
 
-    // #[arg(short, long="addr", default_value_t = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)))]
-    // bound_addr: IpAddr,
-    //
-    // #[arg(short, long, default_value_t = 1081)]
-    // port: u16,
     #[arg(short, long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 1081))]
     bound_addr: SocketAddr,
 

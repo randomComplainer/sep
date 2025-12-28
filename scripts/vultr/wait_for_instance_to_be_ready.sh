@@ -3,7 +3,7 @@
 set -e;
 
 # wait for given instance specified by the instance id to be ready
-# return the ipv4
+# return the ip
 
 readonly API_KEY=${VULTR_API_KEY:?api key is not set};
 readonly instance_id=${1:?missing instance id};
@@ -18,7 +18,11 @@ while true; do
 	echo "instance state: ${instance_state}" >&2;
 
 	if [[ "${instance_state}" == "active" ]]; then
-		echo "${instance_info}" | jq -r '.instance.main_ip';
+		if [[ "${use_ipv6}" == "true" ]]; then
+			echo "${instance_info}" | jq -r '.instance.v6_main_ip';
+		else
+			echo "${instance_info}" | jq -r '.instance.main_ip';
+		fi
 		break;
 	fi
 	

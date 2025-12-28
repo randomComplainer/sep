@@ -6,10 +6,22 @@ set -e;
 
 readonly API_KEY=${VULTR_API_KEY:?api key is not set}
 
-readonly REGION_ID=nrt; # Tokyo
+if [[ "${use_ipv6}" == "true" ]]; then
+	readonly REGION_ID=ewr; # New Jersey
+	readonly PLAN_ID=vc2-1c-0.5gb-v6; # Vultr Cloud 2 - 1 CPU - 0.5 GB RAM
+else
+	readonly REGION_ID=nrt; # Tokyo
+	readonly PLAN_ID=vc2-1c-1gb; # Vultr Cloud 2 - 1 CPU - 1 GB RAM
+fi
 
-# switch to ipv6 when sep supports it
-readonly PLAN_ID=vc2-1c-1gb; # Vultr Cloud 2 - 1 CPU - 1 GB RAM
+# ipv4
+# readonly REGION_ID=nrt; # Tokyo
+# readonly PLAN_ID=vc2-1c-1gb; # Vultr Cloud 2 - 1 CPU - 1 GB RAM
+
+# ipv6
+# readonly REGION_ID=ewr; # New Jersey
+# readonly PLAN_ID=vc2-1c-0.5gb-v6; # Vultr Cloud 2 - 1 CPU - 0.5 GB RAM
+
 readonly OS=2625; # Debian 13 x64 (trixie)
 readonly SSH_KEY_ID="85470f80-9772-4127-88ca-ce645f260379";
 
