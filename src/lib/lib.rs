@@ -43,10 +43,6 @@ pub mod cli_parameters {
 
             let subscriber = tracing_subscriber::registry().with(layer);
 
-            #[cfg(debug_assertions)]
-            let console_layer = tracing_subscriber::layer::Identity::new();
-
-            let subscriber = subscriber.with(console_layer);
             subscriber.init();
         }
     }

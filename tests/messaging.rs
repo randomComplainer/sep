@@ -55,6 +55,55 @@ async fn client_req_v4() {
 }
 
 #[tokio::test]
+async fn client_req_v6() {
+    let req_ip = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x1);
+    let req_port = 1234;
+
+    let ((_client_read, mut client_write), (_, mut server_read, _server_write)) =
+        create_pair().await;
+
+    let client = async move {
+        client_write
+            .send_msg(
+                session::msg::ClientMsg::Request(
+                    session::msg::Request {
+                        addr: decode::ReadRequestAddr::Ipv6(req_ip),
+                        port: req_port,
+                    }
+                    .into(),
+                )
+                .with_session_id(0)
+                .into(),
+            )
+            .await?;
+
+        Ok::<_, std::io::Error>(())
+    };
+
+    let server = async move {
+        let msg = server_read.recv_msg().await.unwrap().unwrap();
+        match msg {
+            protocol::msg::conn::ClientMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
+                proxyee_id,
+                session::msg::ClientMsg::Request(session::msg::Request {
+                    addr: decode::ReadRequestAddr::Ipv6(addr),
+                    port,
+                }),
+            )) => {
+                assert_eq!(proxyee_id, 0);
+                assert_eq!(addr, req_ip);
+                assert_eq!(port, req_port);
+            }
+            _ => panic!("unexpected msg"),
+        }
+
+        Ok::<_, std::io::Error>(())
+    };
+
+    tokio::try_join!(client, server).unwrap();
+}
+
+#[tokio::test]
 async fn client_req_domain() {
     let req_domain = "example.com";
     let req_port = 1234;

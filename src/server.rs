@@ -1,6 +1,9 @@
 #![feature(impl_trait_in_bindings)]
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    str::FromStr as _,
+};
 
 use clap::Parser;
 use futures::prelude::*;
@@ -15,11 +18,13 @@ struct Args {
     #[arg(short, long)]
     key: String,
 
-    #[arg(short, long="addr", default_value_t = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)))]
-    bound_addr: IpAddr,
-
-    #[arg(short, long, default_value_t = 1081)]
-    port: u16,
+    // #[arg(short, long="addr", default_value_t = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)))]
+    // bound_addr: IpAddr,
+    //
+    // #[arg(short, long, default_value_t = 1081)]
+    // port: u16,
+    #[arg(short, long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 1081))]
+    bound_addr: SocketAddr,
 
     #[command(flatten)]
     log_parameters: sep_lib::cli_parameters::LogParameter,
@@ -39,16 +44,14 @@ fn main() {
 async fn async_main(args: Args) {
     info!(?args, "starting server");
 
-    let bound_addr = SocketAddr::new(args.bound_addr, args.port);
-
     let listener = protocol::server_agent::implementation::TcpListener::bind(
-        bound_addr,
+        &args.bound_addr,
         protocol::key_from_string(&args.key).into(),
     )
     .await
     .unwrap();
 
-    info!("Listening at {}...", bound_addr);
+    // info!("Listening at {}...", bound_addr);
 
     let (new_client_conn_tx, new_client_conn_rx) = futures::channel::mpsc::channel(4);
 

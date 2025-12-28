@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 
 use bytes::{BufMut, BytesMut};
@@ -152,7 +152,7 @@ pub struct TcpListener {
 }
 
 impl TcpListener {
-    pub async fn bind(addr: SocketAddr, key: Arc<Key>) -> Result<Self, std::io::Error> {
+    pub async fn bind(addr: &SocketAddr, key: Arc<Key>) -> Result<Self, std::io::Error> {
         let inner = tokio::net::TcpListener::bind(addr).await?;
         Ok(Self { inner, key })
     }

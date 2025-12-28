@@ -18,11 +18,8 @@ struct Args {
     #[arg(short, long)]
     key: String,
 
-    #[arg(long, default_value_t = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)))]
-    bound_addr: IpAddr,
-
-    #[arg(short, long, default_value_t = 1080)]
-    port: u16,
+    #[arg(long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 1080))]
+    bound_addr: SocketAddr,
 
     #[arg(long = "server")]
     server_addr: SocketAddr,
@@ -33,7 +30,6 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    args.log_parameters.setup_subscriber();
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -44,8 +40,7 @@ fn main() {
 
 async fn async_main(args: Args) {
     info!(?args, "starting client");
-
-    let bound_addr = SocketAddr::new(args.bound_addr, args.port);
+    args.log_parameters.setup_subscriber();
 
     let key: Arc<protocol::Key> = protocol::key_from_string(&args.key).into();
     let server_addr = Arc::new(args.server_addr);
@@ -59,11 +54,11 @@ async fn async_main(args: Args) {
         rand::rng().fill_bytes(client_id.as_mut());
         let client_id: Arc<[u8; 16]> = client_id.into();
 
-        let listener = socks5::server_agent::stream::Socks5Listener::bind(bound_addr)
+        let listener = socks5::server_agent::stream::Socks5Listener::bind(args.bound_addr)
             .await
             .unwrap();
 
-        info!("Listening at {}...", bound_addr);
+        info!("Listening at {}...", args.bound_addr);
 
         let (mut new_proxee_tx, new_proxee_rx) = futures::channel::mpsc::channel(4);
         let channeling_new_proxee: impl Future<Output = Result<(), std::io::Error>> = async move {
