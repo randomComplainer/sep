@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+
 use futures::prelude::*;
 use tracing::*;
 
@@ -19,6 +21,7 @@ pub struct Config {
     pub max_server_conn: u16,
 }
 
+#[derive(Debug)]
 struct State {
     pub session_count: usize,
     pub server_conn_count: usize,
@@ -55,7 +58,7 @@ where
 
     // increase conn count sycnhronously
     // actual connecting is done asynchronously
-    // so it will not block you too long on wait
+    // so it will not block you too long on await
     let create_connection = {
         let connect_to_server = connect_to_server.clone();
         let mut connecting_scope_handle = connection_scope_handle.clone();
@@ -104,8 +107,6 @@ where
     };
 
     let client_msg_dispatch_loop = {
-        let create_connection = create_connection.clone();
-        let state_rx = state_rx.clone();
         let mut server_write_queue_tx = server_write_queue_tx.clone();
         async move {
             while let Some(msg) = client_msg_queue_rx
@@ -118,29 +119,7 @@ where
                 let mut msg = msg;
 
                 loop {
-                    let aquire_server_write = {
-                        let server_write_queue_rx = &mut server_write_queue_rx;
-                        let create_connection = create_connection.clone();
-                        let mut state_rx = state_rx.clone();
-                        async move {
-                            tokio::select! {
-                                server_write = server_write_queue_rx.next() => {
-                                    debug!("found idle server write");
-
-                                    server_write
-                                },
-                                lock = state_rx.wait_for(|state| state.server_conn_count < config.max_server_conn as usize) => {
-                                    drop(lock);
-                                    debug!("creating new servere connection");
-                                    create_connection().await;
-                                    server_write_queue_rx.next().await
-                                },
-                            }
-                        }
-                        .instrument(debug_span!("aquire server write"))
-                    };
-
-                    let mut server_write = match aquire_server_write.await {
+                    let mut server_write = match server_write_queue_rx.next().await {
                         Some(x) => x,
                         None => {
                             warn!("server_write_queue_rx is broken, exiting");
@@ -148,6 +127,10 @@ where
                         }
                     };
 
+                    // TODO: review HandOver & ConnectionLifetime's implementation
+                    // to make sure this await does NEVER block
+                    // Or maybe moving sending logic to another task
+                    // (but that way will lose order when requeueing failed msg)
                     match server_write
                         .1
                         .send(msg)
@@ -158,7 +141,7 @@ where
                         .await
                     {
                         Ok(_) => {
-                            // it's just a channel, it's fine to wait it
+                            // queue it back real quick
                             if let Err(_) = server_write_queue_tx
                                 .send(server_write)
                                 .instrument(debug_span!(
@@ -177,7 +160,7 @@ where
                             debug!("retry sending client message");
                             continue;
                         }
-                    }
+                    };
                 }
             }
 
@@ -188,13 +171,17 @@ where
     let keep_alive_loop = {
         let create_connection = create_connection.clone();
         let mut state_rx = state_rx.clone();
+        let max_server_conn = config.max_server_conn;
         async move {
             while let Ok(x) = state_rx
-                .wait_for(|state| state.session_count > 0 && state.server_conn_count == 0)
+                .wait_for(|state| {
+                    let expected = std::cmp::min(max_server_conn as usize, state.session_count * 2);
+                    state.server_conn_count < expected
+                })
                 .await
             {
+                debug!(state = ?x.borrow(), "creating more server connections");
                 drop(x);
-                debug!("no server conn present, create new one for running session");
                 create_connection.clone()().await;
             }
         }

@@ -52,6 +52,8 @@ pub fn run(
         let (end_of_server_stream_tx, end_of_server_stream_rx) =
             tokio::sync::oneshot::channel::<()>();
 
+        // dont cancel me, 
+        // or you will risk missing message if it's in the middle of being sent
         let send_loop = async move {
             let mut end_of_server_stream_rx = Box::pin(end_of_server_stream_rx);
             let mut ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(30)));
@@ -77,6 +79,8 @@ pub fn run(
             }
 
             loop {
+                // TODO: extract ping loop out of this loop
+                // to make sure client message get recived asap
                 tokio::select! {
                     client_msg = client_msg_rx.recv()
                         .instrument(debug_span!("receive client msg to send"))
@@ -137,8 +141,6 @@ pub fn run(
             }
         }.instrument(info_span!("pong waiting loop"));
 
-        // dont cancel me, 
-        // or you will risk missing message if it's in the middle of being sent
         let recv_loop = async move {
             while let Some(server_msg) = match server_read
                 .recv_msg()
