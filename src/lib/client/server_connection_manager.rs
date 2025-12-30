@@ -3,6 +3,7 @@ use std::borrow::Borrow;
 use futures::prelude::*;
 use tracing::*;
 
+use super::client_msg_dispatch;
 use crate::handover;
 use crate::prelude::*;
 
@@ -36,15 +37,6 @@ pub async fn run<ServerConnector>(
 where
     ServerConnector: super::server_connection_lifetime::ServerConnector + Send,
 {
-    // There will be active connections
-    // and any connection that is closed by server but not yet removed from the queue
-    // (they will be removed when we try to send a message to them)
-    // so keep the queue unbounded for now
-    let (server_write_queue_tx, mut server_write_queue_rx) = futures::channel::mpsc::unbounded::<(
-        Box<str>,
-        handover::Sender<protocol::msg::ClientMsg>,
-    )>();
-
     let (connection_scope_handle, connection_scope_task) =
         task_scope::new_scope::<std::io::Error>();
 
@@ -53,17 +45,17 @@ where
         server_conn_count: 0,
     });
 
-    let (mut client_msg_queue_tx, mut client_msg_queue_rx) =
-        futures::channel::mpsc::unbounded::<protocol::msg::ClientMsg>();
+    let (mut client_msg_dispatch_cmd_tx, client_msg_dispatch_task) =
+        super::client_msg_dispatch::run();
 
     // increase conn count sycnhronously
     // actual connecting is done asynchronously
     // so it will not block you too long on await
     let create_connection = {
         let connect_to_server = connect_to_server.clone();
+        let mut client_msg_dispatch_cmd_tx = client_msg_dispatch_cmd_tx.clone();
         let mut connecting_scope_handle = connection_scope_handle.clone();
         let evt_tx = evt_tx.clone();
-        let mut server_write_queue_tx = server_write_queue_tx.clone();
         let state_tx = state_tx.clone();
         async move || {
             state_tx.send_modify(|old| {
@@ -79,10 +71,13 @@ where
                         info_span!("server connection lifetime", conn_id = conn_id.as_ref());
                     debug!("connected to server");
 
-                    server_write_queue_tx
-                        .send((conn_id, conn_client_msg_tx))
+                    client_msg_dispatch_cmd_tx
+                        .send(client_msg_dispatch::Command::Sender(
+                            conn_id,
+                            conn_client_msg_tx,
+                        ))
                         .await
-                        .expect("server_write_queue_tx is broken");
+                        .expect("conn_client_msg_tx is broken");
 
                     super::server_connection_lifetime::run(
                         server_read,
@@ -103,68 +98,6 @@ where
                     Ok::<_, std::io::Error>(())
                 })
                 .await;
-        }
-    };
-
-    let client_msg_dispatch_loop = {
-        let mut server_write_queue_tx = server_write_queue_tx.clone();
-        async move {
-            while let Some(msg) = client_msg_queue_rx
-                .next()
-                .instrument(debug_span!("receive next client msg to forward"))
-                .await
-            {
-                debug!(?msg, "new client msg to forward");
-
-                let mut msg = msg;
-
-                loop {
-                    let mut server_write = match server_write_queue_rx.next().await {
-                        Some(x) => x,
-                        None => {
-                            warn!("server_write_queue_rx is broken, exiting");
-                            return;
-                        }
-                    };
-
-                    // TODO: review HandOver & ConnectionLifetime's implementation
-                    // to make sure this await does NEVER block
-                    // Or maybe moving sending logic to another task
-                    // (but that way will lose order when requeueing failed msg)
-                    match server_write
-                        .1
-                        .send(msg)
-                        .instrument(debug_span!(
-                            "forward client msg to connection",
-                            conn_id = server_write.0.as_ref()
-                        ))
-                        .await
-                    {
-                        Ok(_) => {
-                            // queue it back real quick
-                            if let Err(_) = server_write_queue_tx
-                                .send(server_write)
-                                .instrument(debug_span!(
-                                    "sucessfully send msg to server, queue server write back"
-                                ))
-                                .await
-                            {
-                                warn!("server_write_queue_tx is broken, exiting");
-                                return;
-                            }
-                            break;
-                        }
-                        Err(msg_opt) => {
-                            debug!("server_write is closed");
-                            msg = msg_opt.expect("client msg consumed unexpectedly");
-                            debug!("retry sending client message");
-                            continue;
-                        }
-                    };
-                }
-            }
-
-            debug!("end of client_msg stream, exiting");
         }
     };
 
@@ -192,14 +125,16 @@ where
             debug!(?cmd, "new cmd");
             match cmd {
                 Command::SendClientMsg(client_msg) => {
-                    client_msg_queue_tx
-                        .send(protocol::msg::ClientMsg::SessionMsg(
-                            client_msg.0,
-                            client_msg.1,
+                    if let Err(_) = client_msg_dispatch_cmd_tx
+                        .send(client_msg_dispatch::Command::ClientMsg(
+                            protocol::msg::ClientMsg::SessionMsg(client_msg.0, client_msg.1),
                         ))
-                        .instrument(debug_span!("forward client msg to queue"))
+                        .instrument(debug_span!("forward client msg for dispatch"))
                         .await
-                        .unwrap();
+                    {
+                        warn!("client_msg_dispatch_cmd_tx is broken, exiting");
+                        return;
+                    }
                 }
                 Command::SessionStarted(_) => {
                     state_tx.send_modify(|state| {
@@ -221,9 +156,9 @@ where
         connection_scope_task
             .map(|e| Err::<(), _>(e))
             .instrument(info_span!("connection scope task")),
-        client_msg_dispatch_loop
+        client_msg_dispatch_task
             .map(|x| Ok::<_, std::io::Error>(x))
-            .instrument(info_span!("client msg dispatch loop")),
+            .instrument(info_span!("client msg dispatch task")),
         keep_alive_loop
             .map(|x| Ok::<_, std::io::Error>(x))
             .instrument(info_span!("keep_alive_loop")),
