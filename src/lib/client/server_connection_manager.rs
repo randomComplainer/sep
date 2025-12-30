@@ -3,8 +3,8 @@ use std::borrow::Borrow;
 use futures::prelude::*;
 use tracing::*;
 
-use super::client_msg_dispatch;
 use crate::handover;
+use crate::message_dispatch;
 use crate::prelude::*;
 
 #[derive(Debug)]
@@ -45,8 +45,7 @@ where
         server_conn_count: 0,
     });
 
-    let (mut client_msg_dispatch_cmd_tx, client_msg_dispatch_task) =
-        super::client_msg_dispatch::run();
+    let (mut client_msg_dispatch_cmd_tx, client_msg_dispatch_task) = message_dispatch::run();
 
     // increase conn count sycnhronously
     // actual connecting is done asynchronously
@@ -72,7 +71,7 @@ where
                     debug!("connected to server");
 
                     client_msg_dispatch_cmd_tx
-                        .send(client_msg_dispatch::Command::Sender(
+                        .send(message_dispatch::Command::Sender(
                             conn_id,
                             conn_client_msg_tx,
                         ))
@@ -126,7 +125,7 @@ where
             match cmd {
                 Command::SendClientMsg(client_msg) => {
                     if let Err(_) = client_msg_dispatch_cmd_tx
-                        .send(client_msg_dispatch::Command::ClientMsg(
+                        .send(message_dispatch::Command::Msg(
                             protocol::msg::ClientMsg::SessionMsg(client_msg.0, client_msg.1),
                         ))
                         .instrument(debug_span!("forward client msg for dispatch"))

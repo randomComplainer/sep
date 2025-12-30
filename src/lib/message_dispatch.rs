@@ -1,24 +1,33 @@
+use std::fmt::Debug;
+
 use futures::prelude::*;
 use tracing::*;
 
 use crate::handover;
 use crate::prelude::*;
 
-type ConnId = Box<str>;
-
-pub enum Command {
-    ClientMsg(protocol::msg::ClientMsg),
-    Sender(ConnId, handover::Sender<protocol::msg::ClientMsg>),
+pub enum Command<ConnId, Msg>
+where
+    Msg: Send + 'static,
+{
+    Msg(Msg),
+    Sender(ConnId, handover::Sender<Msg>),
 }
 
-pub fn run() -> (
-    futures::channel::mpsc::UnboundedSender<Command>,
+// send given messages to senders
+// senders are reused until it returns Err
+pub fn run<ConnId, Msg>() -> (
+    futures::channel::mpsc::UnboundedSender<Command<ConnId, Msg>>,
     impl Future<Output = ()>,
-) {
-    let (cmd_tx, mut cmd_rx) = futures::channel::mpsc::unbounded::<Command>();
+)
+where
+    ConnId: Debug + Send + 'static,
+    Msg: 'static + Send + Debug,
+{
+    let (cmd_tx, mut cmd_rx) = futures::channel::mpsc::unbounded::<Command<ConnId, Msg>>();
 
     let (sender_queue_tx, sender_queue_rx) =
-        async_channel::unbounded::<(ConnId, handover::Sender<protocol::msg::ClientMsg>)>();
+        async_channel::unbounded::<(ConnId, handover::Sender<Msg>)>();
 
     // error on borken channel
     let (mut sending_scope_handle, sending_scope_task) = task_scope::new_scope::<()>();
@@ -26,10 +35,10 @@ pub fn run() -> (
     let send = {
         let sender_queue_tx = sender_queue_tx.clone();
 
-        move |msg: protocol::msg::ClientMsg| {
+        move |msg: Msg| {
             let sender_queue_tx = sender_queue_tx.clone();
             let sender_queue_rx = sender_queue_rx.clone();
-            let scope = info_span!("forward client msg to connection", msg = ?msg);
+            let forward_span = info_span!("forward message to connection", msg = ?msg);
 
             async move {
                 let mut msg = msg;
@@ -43,7 +52,9 @@ pub fn run() -> (
                         }
                     };
 
-                    match sender.send(msg).await {
+                    let span = info_span!("forward message to connection", ?msg, ?conn_id);
+
+                    match sender.send(msg).instrument(span).await {
                         Ok(()) => {
                             if let Err(_) = sender_queue_tx.send((conn_id, sender)).await {
                                 warn!("sender_queue_tx is broken, exiting");
@@ -53,22 +64,22 @@ pub fn run() -> (
                         }
                         Err(msg_opt) => {
                             debug!("server_write is closed");
-                            msg = msg_opt.expect("client msg consumed unexpectedly");
-                            debug!("retry sending client message");
+                            msg = msg_opt.expect("message consumed unexpectedly");
+                            debug!("retry sending message");
                             continue;
                         }
                     };
                 }
             }
-            .instrument(scope)
+            .instrument(forward_span)
         }
     };
 
     let cmd_loop = async move {
         while let Some(cmd) = cmd_rx.next().await {
             match cmd {
-                Command::ClientMsg(client_msg) => {
-                    sending_scope_handle.run_async(send(client_msg)).await;
+                Command::Msg(msg) => {
+                    sending_scope_handle.run_async(send(msg)).await;
                 }
                 Command::Sender(conn_id, sender) => {
                     if let Err(_) = sender_queue_tx.send((conn_id, sender)).await {

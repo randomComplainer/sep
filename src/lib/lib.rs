@@ -6,6 +6,7 @@ pub mod future_ext;
 pub mod handover;
 pub mod sink_ext;
 pub mod task_scope;
+mod message_dispatch;
 
 #[macro_use]
 pub mod decode;

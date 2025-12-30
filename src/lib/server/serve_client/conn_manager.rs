@@ -4,6 +4,7 @@ use tracing::*;
 
 use super::client_conn_lifetime;
 use crate::handover;
+use crate::message_dispatch;
 use crate::prelude::*;
 
 #[derive(Debug)]
@@ -29,12 +30,12 @@ where
 {
     let (mut conn_scope_handle, conn_scope_task) = task_scope::new_scope::<std::io::Error>();
 
-    let (mut client_write_queue_tx, mut client_write_queue_rx) =
-        mpsc::unbounded::<(Box<str>, handover::Sender<protocol::msg::ServerMsg>)>();
+    let (mut server_msg_dispatch_cmd_tx, server_msg_dispatch_task) =
+        message_dispatch::run::<Box<str>, protocol::msg::ServerMsg>();
 
     let accepting_new_conn = {
         let evt_tx = evt_tx.clone();
-        let mut client_write_queue_tx = client_write_queue_tx.clone();
+        let mut server_msg_dispatch_cmd_tx = server_msg_dispatch_cmd_tx.clone();
         async move {
             while let Some((conn_id, client_read, client_write)) = new_conn_rx.recv().await {
                 debug!("new client connection incoming");
@@ -43,8 +44,11 @@ where
 
                 let conn_lifetime_span = info_span!("conn lifetime", conn_id = conn_id.as_ref());
 
-                if let Err(_) = client_write_queue_tx
-                    .send((conn_id, conn_server_msg_tx))
+                if let Err(_) = server_msg_dispatch_cmd_tx
+                    .send(message_dispatch::Command::Sender(
+                        conn_id,
+                        conn_server_msg_tx,
+                    ))
                     .await
                 {
                     warn!("client write queue is broken, exiting");
@@ -103,46 +107,12 @@ where
             while let Some(cmd) = cmd_rx.next().await {
                 match cmd {
                     Command::ServerMsg(server_msg) => {
-                        let mut server_msg = server_msg;
-                        loop {
-                            let (conn_id, mut client_write) =
-                                match client_write_queue_rx.next().await {
-                                    Some(x) => x,
-                                    None => {
-                                        warn!("client write queue is broken, exiting");
-                                        return;
-                                    }
-                                };
-
-                            if let Err(msg_not_sent_opt) = client_write
-                                .send(server_msg)
-                                .instrument(info_span!(
-                                    "forward server msg to connection",
-                                    conn_id = conn_id.as_ref()
-                                ))
-                                .await
-                            {
-                                warn!("client write is broken, dropping client write");
-                                match msg_not_sent_opt {
-                                    Some(msg_not_sent) => {
-                                        server_msg = msg_not_sent;
-                                        continue;
-                                    }
-                                    None => {
-                                        error!(conn_id = conn_id.as_ref(), "server message lost");
-                                        panic!("server message lost");
-                                    }
-                                }
-                            } else {
-                                // queue the sender back
-                                if let Err(_) =
-                                    client_write_queue_tx.send((conn_id, client_write)).await
-                                {
-                                    warn!("client write queue is broken, exiting");
-                                    return;
-                                }
-                                break;
-                            }
+                        if let Err(_) = server_msg_dispatch_cmd_tx
+                            .send(message_dispatch::Command::Msg(server_msg))
+                            .await
+                        {
+                            warn!("server_msg_dispatch_cmd_tx is broken, exiting");
+                            return;
                         }
                     }
                 }
@@ -154,6 +124,7 @@ where
     tokio::select! {
         _ = accepting_new_conn => Ok(()),
         _ = receiving_cmd => Ok(()),
+        _ = server_msg_dispatch_task.instrument(info_span!("server msg dispatch task")) => Ok(()),
         e = conn_scope_task.instrument(info_span!("conn scope task")) => Err(e),
     }
 }
