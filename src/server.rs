@@ -79,8 +79,8 @@ async fn async_main(args: Args) {
     let main_task = sep_lib::server::main_task::run(
         new_client_conn_rx,
         sep_lib::server::main_task::Config {
-            max_packet_ahead: session::MAX_DATA_AHEAD,
             max_packet_size: session::DATA_BUFF_SIZE,
+            max_bytes_ahead: session::MAX_BYTES_AHEAD,
         },
     );
 

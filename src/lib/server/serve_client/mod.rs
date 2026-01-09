@@ -11,16 +11,16 @@ mod session_manager;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config<TConnectTarget> {
-    pub max_packet_ahead: u16,
     pub max_packet_size: u16,
+    pub max_bytes_ahead: u32,
     pub connect_target: TConnectTarget,
 }
 
 impl<TConnectTarget> Into<session::server::Config<TConnectTarget>> for Config<TConnectTarget> {
     fn into(self) -> session::server::Config<TConnectTarget> {
         session::server::Config {
-            max_packet_ahead: self.max_packet_ahead,
             max_packet_size: self.max_packet_size,
+            max_bytes_ahead: self.max_bytes_ahead,
             connect_target: self.connect_target,
         }
     }
@@ -29,8 +29,8 @@ impl<TConnectTarget> Into<session::server::Config<TConnectTarget>> for Config<TC
 impl<TConnectTarget> Into<session_manager::Config<TConnectTarget>> for Config<TConnectTarget> {
     fn into(self) -> session_manager::Config<TConnectTarget> {
         session_manager::Config {
-            max_packet_ahead: self.max_packet_ahead,
             max_packet_size: self.max_packet_size,
+            max_bytes_ahead: self.max_bytes_ahead,
             connect_target: self.connect_target,
         }
     }
@@ -163,105 +163,105 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-    use super::*;
-
-    // TODO: fix this test
-    // Temporarily disabled because of unpredictable Ping/Pong messages
-    // #[test_log::test(tokio::test)]
-    async fn happy_path() {
-        let (mut new_conn_tx, new_conn_rx) = handover::channel();
-        let config = Config {
-            max_packet_ahead: 4,
-            max_packet_size: 1024,
-            connect_target: crate::connect_target::make_mock([(
-                (ReadRequestAddr::Domain("example.com".into()), 80),
-                Ok((
-                    tokio_test::io::Builder::new().build(),
-                    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 180),
-                )),
-            )]),
-        };
-
-        let main_task = tokio::spawn(run(new_conn_rx, config));
-
-        let (client_agent, server_agent) = protocol::test_utils::create_greeted_pair().await;
-        let server_agent = ("".into(), server_agent.1, server_agent.2);
-
-        new_conn_tx
-            .send(server_agent)
-            .await
-            .map_err(|_| ())
-            .unwrap();
-
-        let (mut client_agent_read, mut client_agent_write) = client_agent;
-
-        client_agent_write
-            .send_msg(
-                protocol::msg::ClientMsg::SessionMsg(
-                    2,
-                    session::msg::Request {
-                        addr: decode::ReadRequestAddr::Domain("example.com".into()),
-                        port: 80,
-                    }
-                    .into(),
-                )
-                .into(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(
-            client_agent_read.recv_msg().await.unwrap().unwrap(),
-            protocol::msg::ServerMsg::SessionMsg(
-                2,
-                session::msg::Reply {
-                    bound_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 180),
-                }
-                .into()
-            )
-            .into()
-        );
-
-        assert_eq!(
-            client_agent_read.recv_msg().await.unwrap().unwrap(),
-            protocol::msg::ServerMsg::SessionMsg(2, session::msg::Eof { seq: 0 }.into()).into()
-        );
-
-        client_agent_write
-            .send_msg(
-                protocol::msg::ClientMsg::SessionMsg(2, session::msg::Ack { seq: 0 }.into()).into(),
-            )
-            .await
-            .unwrap();
-
-        client_agent_write
-            .send_msg(
-                protocol::msg::ClientMsg::SessionMsg(2, session::msg::Eof { seq: 0 }.into()).into(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(
-            client_agent_read.recv_msg().await.unwrap().unwrap(),
-            protocol::msg::ServerMsg::SessionMsg(2, session::msg::Ack { seq: 0 }.into()).into()
-        );
-
-        // let connection timeout run out
-        tokio::time::pause();
-
-        assert_eq!(
-            client_agent_read.recv_msg().await.unwrap().unwrap(),
-            protocol::msg::conn::ServerMsg::EndOfStream
-        );
-
-        drop(client_agent_read);
-        drop(client_agent_write);
-
-        let result = main_task.await;
-        assert!(result.unwrap().is_ok());
-    }
-
-    // TODO: test more
+    // use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    //
+    // use super::*;
+    //
+    // // TODO: fix this test
+    // // Temporarily disabled because of unpredictable Ping/Pong messages
+    // // #[test_log::test(tokio::test)]
+    // async fn happy_path() {
+    //     let (mut new_conn_tx, new_conn_rx) = handover::channel();
+    //     let config = Config {
+    //         max_packet_ahead: 4,
+    //         max_packet_size: 1024,
+    //         connect_target: crate::connect_target::make_mock([(
+    //             (ReadRequestAddr::Domain("example.com".into()), 80),
+    //             Ok((
+    //                 tokio_test::io::Builder::new().build(),
+    //                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 180),
+    //             )),
+    //         )]),
+    //     };
+    //
+    //     let main_task = tokio::spawn(run(new_conn_rx, config));
+    //
+    //     let (client_agent, server_agent) = protocol::test_utils::create_greeted_pair().await;
+    //     let server_agent = ("".into(), server_agent.1, server_agent.2);
+    //
+    //     new_conn_tx
+    //         .send(server_agent)
+    //         .await
+    //         .map_err(|_| ())
+    //         .unwrap();
+    //
+    //     let (mut client_agent_read, mut client_agent_write) = client_agent;
+    //
+    //     client_agent_write
+    //         .send_msg(
+    //             protocol::msg::ClientMsg::SessionMsg(
+    //                 2,
+    //                 session::msg::Request {
+    //                     addr: decode::ReadRequestAddr::Domain("example.com".into()),
+    //                     port: 80,
+    //                 }
+    //                 .into(),
+    //             )
+    //             .into(),
+    //         )
+    //         .await
+    //         .unwrap();
+    //
+    //     assert_eq!(
+    //         client_agent_read.recv_msg().await.unwrap().unwrap(),
+    //         protocol::msg::ServerMsg::SessionMsg(
+    //             2,
+    //             session::msg::Reply {
+    //                 bound_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 180),
+    //             }
+    //             .into()
+    //         )
+    //         .into()
+    //     );
+    //
+    //     assert_eq!(
+    //         client_agent_read.recv_msg().await.unwrap().unwrap(),
+    //         protocol::msg::ServerMsg::SessionMsg(2, session::msg::Eof { seq: 0 }.into()).into()
+    //     );
+    //
+    //     client_agent_write
+    //         .send_msg(
+    //             protocol::msg::ClientMsg::SessionMsg(2, session::msg::Ack { seq: 0 }.into()).into(),
+    //         )
+    //         .await
+    //         .unwrap();
+    //
+    //     client_agent_write
+    //         .send_msg(
+    //             protocol::msg::ClientMsg::SessionMsg(2, session::msg::Eof { seq: 0 }.into()).into(),
+    //         )
+    //         .await
+    //         .unwrap();
+    //
+    //     assert_eq!(
+    //         client_agent_read.recv_msg().await.unwrap().unwrap(),
+    //         protocol::msg::ServerMsg::SessionMsg(2, session::msg::Ack { seq: 0 }.into()).into()
+    //     );
+    //
+    //     // let connection timeout run out
+    //     tokio::time::pause();
+    //
+    //     assert_eq!(
+    //         client_agent_read.recv_msg().await.unwrap().unwrap(),
+    //         protocol::msg::conn::ServerMsg::EndOfStream
+    //     );
+    //
+    //     drop(client_agent_read);
+    //     drop(client_agent_write);
+    //
+    //     let result = main_task.await;
+    //     assert!(result.unwrap().is_ok());
+    // }
+    //
+    // // TODO: test more
 }

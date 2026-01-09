@@ -100,18 +100,19 @@ impl std::fmt::Debug for Data {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Ack {
-    pub seq: u16,
+    // pub seq: u16,
+    pub bytes: u32,
 }
 
 pub struct AckReader {
-    pub seq: U16Reader,
+    pub bytes: U32Reader,
 }
 
 impl Reader for AckReader {
     type Value = Ack;
     fn read(&self, buf: &mut BytesMut) -> Ack {
         Ack {
-            seq: self.seq.read(buf),
+            bytes: self.bytes.read(buf),
         }
     }
 }
@@ -119,7 +120,7 @@ impl Reader for AckReader {
 pub fn ack_peeker() -> impl Peeker<Ack, Reader = AckReader> {
     peek::wrap(|cursor| {
         Ok(Some(AckReader {
-            seq: crate::peek!(u16_peeker().peek(cursor)),
+            bytes: crate::peek!(u32_peeker().peek(cursor)),
         }))
     })
 }
@@ -151,6 +152,22 @@ pub fn eof_peeker() -> impl Peeker<Eof, Reader = EofReader> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub struct EOFAck;
+
+pub struct EOFAckReader;
+
+impl Reader for EOFAckReader {
+    type Value = EOFAck;
+    fn read(&self, _buf: &mut BytesMut) -> EOFAck {
+        EOFAck
+    }
+}
+
+pub fn eof_ack_peeker() -> impl Peeker<EOFAck, Reader = EOFAckReader> {
+    peek::wrap(|_cursor| Ok(Some(EOFAckReader)))
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub struct IoError;
 pub struct IoErrorReader;
 
@@ -171,6 +188,7 @@ pub enum ClientMsg {
     Data(#[from] Data),
     Ack(#[from] Ack),
     Eof(#[from] Eof),
+    EofAck(#[from] EOFAck),
     ProxyeeIoError(#[from] IoError),
 }
 
@@ -179,6 +197,7 @@ pub enum ClientMsgReader {
     Data(DataReader),
     Ack(AckReader),
     Eof(EofReader),
+    EofAck(EOFAckReader),
     ProxyeeIoError(IoErrorReader),
 }
 
@@ -191,6 +210,7 @@ impl Reader for ClientMsgReader {
             Self::Data(reader) => ClientMsg::Data(reader.read(buf)),
             Self::Ack(reader) => ClientMsg::Ack(reader.read(buf)),
             Self::Eof(reader) => ClientMsg::Eof(reader.read(buf)),
+            Self::EofAck(reader) => ClientMsg::EofAck(reader.read(buf)),
             Self::ProxyeeIoError(reader) => ClientMsg::ProxyeeIoError(reader.read(buf)),
         }
     }
@@ -203,7 +223,8 @@ pub fn client_msg_peeker() -> impl Peeker<ClientMsg, Reader = ClientMsgReader> {
             1 => ClientMsgReader::Data(crate::peek!(data_peeker().peek(cursor))),
             2 => ClientMsgReader::Ack(crate::peek!(ack_peeker().peek(cursor))),
             3 => ClientMsgReader::Eof(crate::peek!(eof_peeker().peek(cursor))),
-            4 => ClientMsgReader::ProxyeeIoError(crate::peek!(error_peeker().peek(cursor))),
+            4 => ClientMsgReader::EofAck(crate::peek!(eof_ack_peeker().peek(cursor))),
+            5 => ClientMsgReader::ProxyeeIoError(crate::peek!(error_peeker().peek(cursor))),
             x => {
                 return Err(decode::unknown_enum_code("client session message", x).into());
             }
@@ -278,6 +299,7 @@ pub enum ServerMsg {
     Data(#[from] Data),
     Ack(#[from] Ack),
     Eof(#[from] Eof),
+    EofAck(#[from] EOFAck),
     TargetIoError(#[from] IoError),
 }
 
@@ -287,6 +309,7 @@ pub enum ServerMsgReader {
     Data(DataReader),
     Ack(AckReader),
     Eof(EofReader),
+    EofAck(EOFAckReader),
     TargetIoError(IoErrorReader),
 }
 
@@ -300,6 +323,7 @@ impl Reader for ServerMsgReader {
             Self::Data(reader) => ServerMsg::Data(reader.read(buf)),
             Self::Ack(reader) => ServerMsg::Ack(reader.read(buf)),
             Self::Eof(reader) => ServerMsg::Eof(reader.read(buf)),
+            Self::EofAck(reader) => ServerMsg::EofAck(reader.read(buf)),
             Self::TargetIoError(reader) => ServerMsg::TargetIoError(reader.read(buf)),
         }
     }
@@ -313,7 +337,8 @@ pub fn server_msg_peeker() -> impl Peeker<ServerMsg, Reader = ServerMsgReader> {
             2 => ServerMsgReader::Data(crate::peek!(data_peeker().peek(cursor))),
             3 => ServerMsgReader::Ack(crate::peek!(ack_peeker().peek(cursor))),
             4 => ServerMsgReader::Eof(crate::peek!(eof_peeker().peek(cursor))),
-            5 => ServerMsgReader::TargetIoError(crate::peek!(error_peeker().peek(cursor))),
+            5 => ServerMsgReader::EofAck(crate::peek!(eof_ack_peeker().peek(cursor))),
+            6 => ServerMsgReader::TargetIoError(crate::peek!(error_peeker().peek(cursor))),
             x => {
                 return Err(decode::unknown_enum_code("server session message", x).into());
             }

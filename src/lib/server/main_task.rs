@@ -10,15 +10,15 @@ use crate::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
-    pub max_packet_ahead: u16,
     pub max_packet_size: u16,
+    pub max_bytes_ahead: u32,
 }
 
 impl Into<serve_client::Config<crate::connect_target::ConnectTargetImpl>> for Config {
     fn into(self) -> serve_client::Config<crate::connect_target::ConnectTargetImpl> {
         serve_client::Config {
-            max_packet_ahead: self.max_packet_ahead,
             max_packet_size: self.max_packet_size,
+            max_bytes_ahead: self.max_bytes_ahead,
             connect_target: crate::connect_target::ConnectTargetImpl(
                 crate::connect_target::cache::Cache::new(
                     crate::connect_target::cache::EvictQueue::new(

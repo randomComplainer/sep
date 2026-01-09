@@ -193,7 +193,7 @@ where
                             }
                             session::msg::ClientMsg::Ack(ack) => {
                                 buf.put_u8(2u8);
-                                buf.put_u16(ack.seq);
+                                buf.put_u32(ack.bytes);
                                 self.stream_write.write_all(&mut buf).await?;
                             }
                             session::msg::ClientMsg::Eof(eof) => {
@@ -201,8 +201,12 @@ where
                                 buf.put_u16(eof.seq);
                                 self.stream_write.write_all(&mut buf).await?;
                             }
-                            session::msg::ClientMsg::ProxyeeIoError(_) => {
+                            session::msg::ClientMsg::EofAck(_) => {
                                 buf.put_u8(4u8);
+                                self.stream_write.write_all(&mut buf).await?;
+                            }
+                            session::msg::ClientMsg::ProxyeeIoError(_) => {
+                                buf.put_u8(5u8);
                                 self.stream_write.write_all(&mut buf).await?;
                             }
                         };

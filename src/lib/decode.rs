@@ -146,6 +146,25 @@ pub const fn u16_peeker() -> impl Peeker<u16, Reader = U16Reader> {
     })
 }
 
+pub struct U32Reader;
+impl Reader for U32Reader {
+    type Value = u32;
+    fn read(&self, buf: &mut BytesMut) -> u32 {
+        u32::from_be_bytes(buf.split_to(4).as_ref().try_into().unwrap())
+    }
+}
+
+pub const fn u32_peeker() -> impl Peeker<u32, Reader = U32Reader> {
+    peek::wrap(|cursor| {
+        Ok(if cursor.remaining() < 4 {
+            None
+        } else {
+            cursor.advance(4);
+            Some(U32Reader)
+        })
+    })
+}
+
 pub struct U64Reader;
 impl Reader for U64Reader {
     type Value = u64;

@@ -19,16 +19,16 @@ pub enum Event {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config<TConnectTarget> {
-    pub max_packet_ahead: u16,
     pub max_packet_size: u16,
+    pub max_bytes_ahead: u32,
     pub connect_target: TConnectTarget,
 }
 
 impl<TConnectTarget> Into<session::server::Config<TConnectTarget>> for Config<TConnectTarget> {
     fn into(self) -> session::server::Config<TConnectTarget> {
         session::server::Config {
-            max_packet_ahead: self.max_packet_ahead,
             max_packet_size: self.max_packet_size,
+            max_bytes_ahead: self.max_bytes_ahead,
             connect_target: self.connect_target,
         }
     }

@@ -298,7 +298,7 @@ async fn client_ack() {
         async move {
             client_write
                 .send_msg(
-                    session::msg::ClientMsg::Ack(session::msg::Ack { seq: 4 })
+                    session::msg::ClientMsg::Ack(session::msg::Ack { bytes: 4 })
                         .with_session_id(1)
                         .into(),
                 )
@@ -313,10 +313,10 @@ async fn client_ack() {
         match msg {
             protocol::msg::conn::ClientMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
-                session::msg::ClientMsg::Ack(session::msg::Ack { seq }),
+                session::msg::ClientMsg::Ack(session::msg::Ack { bytes }),
             )) => {
                 assert_eq!(proxyee_id, 1);
-                assert_eq!(seq, 4);
+                assert_eq!(bytes, 4);
             }
             _ => panic!("unexpected msg"),
         }
@@ -338,10 +338,10 @@ async fn server_ack() {
             match msg {
                 protocol::msg::conn::ServerMsg::Protocol(protocol::msg::ServerMsg::SessionMsg(
                     proxyee_id,
-                    session::msg::ServerMsg::Ack(session::msg::Ack { seq }),
+                    session::msg::ServerMsg::Ack(session::msg::Ack { bytes }),
                 )) => {
                     assert_eq!(proxyee_id, 0);
-                    assert_eq!(seq, 4);
+                    assert_eq!(bytes, 4);
                 }
                 _ => panic!("unexpected msg"),
             };
@@ -353,7 +353,7 @@ async fn server_ack() {
     let server = async move {
         server_write
             .send_msg(
-                session::msg::ServerMsg::Ack(session::msg::Ack { seq: 4 })
+                session::msg::ServerMsg::Ack(session::msg::Ack { bytes: 4 })
                     .with_session_id(0)
                     .into(),
             )

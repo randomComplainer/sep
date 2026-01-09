@@ -16,16 +16,16 @@ pub enum ClientError {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
-    pub max_packet_ahead: u16,
     pub max_packet_size: u16,
     pub max_server_conn: u16,
+    pub max_bytes_ahead: u32,
 }
 
 impl Into<session_manager::Config> for Config {
     fn into(self) -> session_manager::Config {
         session_manager::Config {
-            max_packet_ahead: self.max_packet_ahead,
             max_packet_size: self.max_packet_size,
+            max_bytes_ahead: self.max_bytes_ahead,
         }
     }
 }
