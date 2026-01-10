@@ -152,18 +152,18 @@ pub fn eof_peeker() -> impl Peeker<Eof, Reader = EofReader> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct EOFAck;
+pub struct EofAck;
 
 pub struct EOFAckReader;
 
 impl Reader for EOFAckReader {
-    type Value = EOFAck;
-    fn read(&self, _buf: &mut BytesMut) -> EOFAck {
-        EOFAck
+    type Value = EofAck;
+    fn read(&self, _buf: &mut BytesMut) -> EofAck {
+        EofAck
     }
 }
 
-pub fn eof_ack_peeker() -> impl Peeker<EOFAck, Reader = EOFAckReader> {
+pub fn eof_ack_peeker() -> impl Peeker<EofAck, Reader = EOFAckReader> {
     peek::wrap(|_cursor| Ok(Some(EOFAckReader)))
 }
 
@@ -188,7 +188,7 @@ pub enum ClientMsg {
     Data(#[from] Data),
     Ack(#[from] Ack),
     Eof(#[from] Eof),
-    EofAck(#[from] EOFAck),
+    EofAck(#[from] EofAck),
     ProxyeeIoError(#[from] IoError),
 }
 
@@ -299,7 +299,7 @@ pub enum ServerMsg {
     Data(#[from] Data),
     Ack(#[from] Ack),
     Eof(#[from] Eof),
-    EofAck(#[from] EOFAck),
+    EofAck(#[from] EofAck),
     TargetIoError(#[from] IoError),
 }
 

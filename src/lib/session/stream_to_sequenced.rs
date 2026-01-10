@@ -11,7 +11,7 @@ use super::msg;
 #[derive(Debug, From)]
 pub enum Command {
     Ack(#[from] msg::Ack),
-    EofAck(#[from] msg::EOFAck),
+    EofAck(#[from] msg::EofAck),
 }
 
 #[derive(Debug, From)]
@@ -67,6 +67,9 @@ async fn stream_reading_loop(
                 return Err(err);
             }
         };
+
+        debug!(n = n, "read bytes");
+
         total_read += n as u64;
 
         if n == 0 {
@@ -88,6 +91,7 @@ async fn stream_reading_loop(
 
         let lock = match acked_rx
             .wait_for(|acked| total_read - *acked <= config.max_bytes_ahead as u64)
+            .instrument(info_span!("wait for enough bytes acked to continue"))
             .await
         {
             Ok(lock) => lock,

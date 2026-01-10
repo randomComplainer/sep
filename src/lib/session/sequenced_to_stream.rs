@@ -1,5 +1,3 @@
-use std::sync::{Arc, atomic::AtomicU32};
-
 use derive_more::From;
 use futures::prelude::*;
 use tokio::io::{AsyncWrite, AsyncWriteExt as _};
@@ -18,23 +16,7 @@ pub enum Command {
 #[derive(Debug, From)]
 pub enum Event {
     Ack(#[from] msg::Ack),
-    EofAck(#[from] msg::EOFAck),
-}
-
-// return Ok(()) on broken channel
-macro_rules! try_emit_evt {
-    ($evt_tx:ident, $evt:ident) => {
-        let sp = info_span!("emit event:", evt = ?$evt);
-
-        if let Err(_) = $evt_tx
-            .send($evt)
-            .instrument(sp)
-            .await
-        {
-            error!("event channel is broken, exiting");
-            return Ok(());
-        }
-    }
+    EofAck(#[from] msg::EofAck),
 }
 
 pub struct Config {
@@ -42,51 +24,122 @@ pub struct Config {
     pub max_packet_size: u16,
 }
 
-async fn streaming_loop(
-    mut stream_to_write: impl AsyncWrite + Unpin + Send + 'static,
-    mut data_rx: impl Stream<Item = StreamEntry> + Unpin,
-    mut evt_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Unpin,
-    buffed_bytes: Arc<AtomicU32>,
-) -> Result<(), std::io::Error> {
-    while let Some(StreamEntry(seq, entry)) = data_rx
-        .next()
-        .instrument(debug_span!("receive local stream entry"))
-        .await
-    {
-        match entry {
-            StreamEntryValue::Data(data) => {
-                let len = data.len();
-                debug!(seq, data = len, "stream entry: data");
-                stream_to_write
-                    .write_all(data.as_ref())
-                    .instrument(info_span!("write to stream", seq, len = data.len()))
-                    .await?;
+struct State<Stream, EvtTx> {
+    config: Config,
+    next_seq: u16,
+    buffed_bytes: u32,
+    buffed_entries: std::collections::BinaryHeap<std::cmp::Reverse<StreamEntry>>,
+    stream_to_write: Stream,
+    evt_tx: EvtTx,
+}
 
-                buffed_bytes.fetch_sub(len as u32, std::sync::atomic::Ordering::SeqCst);
+impl<Stream, EvtTx, EvtTxErr> State<Stream, EvtTx>
+where
+    Stream: AsyncWrite + Unpin + Send + 'static,
+    EvtTxErr: std::fmt::Debug,
+    EvtTx: Sink<Event, Error = EvtTxErr> + Unpin + Send + 'static,
+{
+    pub fn new(config: Config, stream_to_write: Stream, evt_tx: EvtTx) -> Self {
+        let estimated_buffered_packets =
+            (config.max_bytes_ahead as usize / config.max_packet_size as usize) + 1;
 
-                let evt = msg::Ack {
-                    bytes: data.len() as u32,
-                }
-                .into();
-
-                try_emit_evt!(evt_tx, evt);
-            }
-            StreamEntryValue::Eof => {
-                debug!(seq, "stream entry: eof");
-
-                assert_eq!(0, buffed_bytes.load(std::sync::atomic::Ordering::SeqCst));
-
-                let evt = msg::EOFAck.into();
-                try_emit_evt!(evt_tx, evt);
-                info!(seq = seq, "eof reached, streaming exits");
-                return Ok(());
-            }
+        Self {
+            config,
+            next_seq: 0,
+            buffed_bytes: 0,
+            buffed_entries: std::collections::BinaryHeap::with_capacity(estimated_buffered_packets),
+            stream_to_write,
+            evt_tx,
         }
     }
 
-    error!("stream entry channel is broken, exiting");
+    pub async fn handle_command(mut self, cmd: Command) -> Result<Option<Self>, std::io::Error> {
+        debug!(cmd = ?cmd, "command received");
 
-    Ok(())
+        match cmd {
+            Command::Data(data) => {
+                let len = data.data.len() as u32;
+
+                self.buffed_entries
+                    .push(std::cmp::Reverse(StreamEntry::data(data.seq, data.data)));
+
+                self.buffed_bytes += len;
+
+                debug!("buffed bytes: {}", self.buffed_bytes);
+
+                if self.buffed_bytes > self.config.max_bytes_ahead {
+                    panic!("too many data buffered");
+                }
+            }
+            Command::Eof(eof) => {
+                self.buffed_entries
+                    .push(std::cmp::Reverse(StreamEntry::eof(eof.seq)));
+            }
+        };
+
+        let mut bytes_written = 0u32;
+        while self
+            .buffed_entries
+            .peek()
+            .map(|e| e.0.0 == self.next_seq)
+            .unwrap_or(false)
+        {
+            let stream_entry = self.buffed_entries.pop().unwrap();
+            let seq = stream_entry.0.0;
+
+            match stream_entry.0.1 {
+                StreamEntryValue::Data(data) => {
+                    let len = data.len();
+
+                    self.stream_to_write
+                        .write_all(data.as_ref())
+                        .instrument(info_span!("write to stream", seq, ?len))
+                        .await?;
+
+                    self.buffed_bytes -= len as u32;
+                    bytes_written += len as u32;
+                }
+                StreamEntryValue::Eof => {
+                    assert_eq!(0, self.buffed_bytes);
+                    assert_eq!(0, self.buffed_entries.len());
+
+                    if bytes_written > 0 {
+                        let evt = msg::Ack {
+                            bytes: bytes_written as u32,
+                        }
+                        .into();
+                        let sp = info_span!("emit event:", evt = ?evt);
+                        if let Err(_) = self.evt_tx.send(evt).instrument(sp).await {
+                            error!("event channel is broken, exiting");
+                            return Ok(None);
+                        }
+                    }
+
+                    let evt = msg::EofAck.into();
+                    let sp = info_span!("emit event:", evt = ?evt);
+                    if let Err(_) = self.evt_tx.send(evt).instrument(sp).await {
+                        error!("event channel is broken, exiting");
+                        return Ok(None);
+                    }
+                }
+            };
+            self.next_seq += 1;
+        }
+
+        if bytes_written > 0 {
+            let evt = msg::Ack {
+                bytes: bytes_written as u32,
+            }
+            .into();
+            let sp = info_span!("emit event:", evt = ?evt);
+            if let Err(_) = self.evt_tx.send(evt).instrument(sp).await {
+                error!("event channel is broken, exiting");
+                return Ok(None);
+            }
+        }
+
+        Ok(Some(self))
+    }
 }
 
 pub async fn run(
@@ -95,81 +148,16 @@ pub async fn run(
     stream_to_write: impl AsyncWrite + Unpin + Send + 'static,
     config: Config,
 ) -> Result<(), std::io::Error> {
-    // stream interactions are on separate Future to avoid blocking command sender
+    let mut state = State::new(config, stream_to_write, evt_tx);
 
-    let estimated_buffered_packets =
-        (config.max_bytes_ahead as usize / config.max_packet_size as usize) + 1;
-
-    let mut next_seq = 0u16;
-    let buffed_bytes = Arc::new(AtomicU32::new(0));
-    let (mut local_stream_data_tx, local_stream_data_rx) =
-        futures::channel::mpsc::channel(estimated_buffered_packets);
-
-    let mut heap = std::collections::BinaryHeap::<std::cmp::Reverse<StreamEntry>>::with_capacity(
-        estimated_buffered_packets,
-    );
-
-    let cmd_receiving_task = {
-        let buffed_bytes = buffed_bytes.clone();
-        async move {
-            while let Some(cmd) = cmd_rx
-                .next()
-                .instrument(debug_span!("receive command"))
-                .await
-            {
-                debug!(cmd = ?cmd, "command received");
-
-                match cmd {
-                    Command::Data(data) => {
-                        let len = data.data.len() as u32;
-
-                        heap.push(std::cmp::Reverse(StreamEntry::data(data.seq, data.data)));
-
-                        buffed_bytes.fetch_add(len, std::sync::atomic::Ordering::SeqCst);
-
-                        let buffed_bytes = buffed_bytes.load(std::sync::atomic::Ordering::SeqCst);
-
-                        debug!("buffed bytes: {}", buffed_bytes);
-
-                        if buffed_bytes > config.max_bytes_ahead {
-                            panic!("too many data buffered");
-                        }
-                    }
-                    Command::Eof(eof) => {
-                        heap.push(std::cmp::Reverse(StreamEntry::eof(eof.seq)));
-                    }
-                };
-
-                while heap.peek().map(|e| e.0.0 == next_seq).unwrap_or(false) {
-                    let stream_entry = heap.pop().unwrap();
-                    let span = debug_span!("send stream entry", seq = stream_entry.0.0);
-                    if let Err(_) = local_stream_data_tx
-                        .send(stream_entry.0)
-                        .instrument(span)
-                        .await
-                    {
-                        error!("local stream channel is broken, exiting");
-                        return Ok(());
-                    }
-
-                    next_seq += 1;
-                }
-            }
-
-            error!("command channel is broken, exiting");
-            return Ok::<_, std::io::Error>(());
+    while let Some(cmd) = cmd_rx.next().await {
+        state = match state.handle_command(cmd).await? {
+            Some(new_state) => new_state,
+            None => break,
         }
     }
-    .instrument(info_span!("command receiving task"));
 
-    let streaming_task =
-        streaming_loop(stream_to_write, local_stream_data_rx, evt_tx, buffed_bytes)
-            .instrument(info_span!("streaming loop"));
-
-    tokio::select! {
-        r = streaming_task => r,
-        r = cmd_receiving_task => r
-    }
+    Ok(())
 }
 
 #[cfg(test)]
