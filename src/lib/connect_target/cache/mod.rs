@@ -27,6 +27,7 @@ type LookupFn = Box<
 pub struct Cache {
     // There are absolutely no need to have 2 distinct Arcs,
     // but it's just for the sake of simplicity
+    // TODO: RWLock?
     shared: Arc<Mutex<Shared>>,
     lookup_fn: Arc<LookupFn>,
 }

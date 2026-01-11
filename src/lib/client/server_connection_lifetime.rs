@@ -56,7 +56,7 @@ pub fn run(
         // or you will risk missing message if it's in the middle of being sent
         let send_loop = async move {
             let mut end_of_server_stream_rx = Box::pin(end_of_server_stream_rx);
-            let mut ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(30)));
+            let mut ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(1)));
             let mut ping_counter = 0;
 
             macro_rules! send_msg {
@@ -103,7 +103,7 @@ pub fn run(
                             .await?;
 
                         ping_counter += 1;
-                        ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(30)));
+                        ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(1)));
                     },
                     _ = &mut end_of_server_stream_rx => {
                         debug!("end of server messages notified");
@@ -117,7 +117,7 @@ pub fn run(
         let (pong_tx, mut pong_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
         let pong_waiting_loop = async move {
             let mut pong_counter = 0;
-            let mut pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(60)));
+            let mut pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(5)));
             loop {
                 tokio::select! {
                     _ = pong_timer.as_mut() => {
@@ -129,7 +129,7 @@ pub fn run(
                             Some(_) => {
                                 debug!(count=pong_counter, "pong");
                                 pong_counter += 1;
-                                pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(60)));
+                                pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(5)));
                             }
                             None => {
                                 debug!("pong rx is broken, exiting");
