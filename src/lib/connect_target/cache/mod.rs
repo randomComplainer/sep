@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::pin::Pin;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
@@ -27,7 +28,6 @@ type LookupFn = Box<
 pub struct Cache {
     // There are absolutely no need to have 2 distinct Arcs,
     // but it's just for the sake of simplicity
-    // TODO: RWLock?
     shared: Arc<Mutex<Shared>>,
     lookup_fn: Arc<LookupFn>,
 }
@@ -54,6 +54,8 @@ impl Cache {
         now: Instant,
     ) -> impl Future<Output = Result<Arc<Vec<SocketAddr>>, ()>> + Send {
         async move {
+            // TDOD: could distinct locks for evict_queue and entries be better?
+
             // be very careful here
             // drop this lock before awaiting
             let mut lock = self.shared.lock().await;
@@ -85,10 +87,21 @@ impl Cache {
                     .insert(Arc::clone(&key), EntryState::Querying(set_once.clone()));
                 drop(lock);
 
-                let r = (self.lookup_fn)(key.0.as_str(), port).await.map(Arc::new);
+                let lookup_reslt = (self.lookup_fn)(key.0.as_str(), port)
+                    .await
+                    .map(|mut addrs| {
+                        addrs.sort_by(|l, r| match (l.is_ipv6(), r.is_ipv6()) {
+                            (true, true) => Ordering::Equal,
+                            (false, false) => Ordering::Equal,
+                            (true, false) => Ordering::Less,
+                            (false, true) => Ordering::Greater,
+                        });
+                        addrs
+                    })
+                    .map(Arc::new);
 
                 let mut lock = self.shared.lock().await;
-                if let Ok(addrs) = &r {
+                if let Ok(addrs) = &lookup_reslt {
                     lock.entries_map
                         .insert(Arc::clone(&key), EntryState::Cached(addrs.clone()));
                     lock.evict_queue.insert(key);
@@ -96,9 +109,9 @@ impl Cache {
                     lock.entries_map.remove(&key);
                 }
 
-                set_once.set(r.clone()).unwrap();
+                set_once.set(lookup_reslt.clone()).unwrap();
                 drop(lock);
-                r
+                lookup_reslt
             }
         }
     }
