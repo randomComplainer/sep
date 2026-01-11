@@ -19,9 +19,6 @@ cargo build --release;
 ip=$(${script_dir}/wait_for_instance_to_be_ready.sh "${instance_id}");
 echo "server at ${ip}" >&2;
 
-if [[ "${use_ipv6}" == "true" ]]; then
-	ip="[${ip}]";
-fi
 
 while true; do
 	# default nc is an old version that does not support ipv6
@@ -48,9 +45,14 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 	"${project_dir}/service/sep-server.service" \
 	root@[${ip}]:/etc/systemd/system/sep-server.service;
 
+bound_ip=${ip};
+if [[ "${use_ipv6}" == "true" ]]; then
+	bound_ip="[${ip}]";
+fi
+
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${ip} << EOF
 	sed -i 's/{key}/${SEP_KEY}/g' /etc/systemd/system/sep-server.service;
-	sed -i 's/{bound_addr}/${ip}:1081/g' /etc/systemd/system/sep-server.service;
+	sed -i 's/{bound_addr}/${bound_ip}:1081/g' /etc/systemd/system/sep-server.service;
 
 	systemctl daemon-reexec;
 	systemctl daemon-reload;

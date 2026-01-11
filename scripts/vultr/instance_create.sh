@@ -6,13 +6,13 @@ set -e;
 
 readonly API_KEY=${VULTR_API_KEY:?api key is not set}
 
-if [[ "${use_ipv6}" == "true" ]]; then
-	readonly REGION_ID=ewr; # New Jersey
-	readonly PLAN_ID=vc2-1c-0.5gb-v6; # Vultr Cloud 2 - 1 CPU - 0.5 GB RAM
-else
+# if [[ "${use_ipv6}" == "true" ]]; then
+# 	readonly REGION_ID=ewr; # New Jersey
+# 	readonly PLAN_ID=vc2-1c-0.5gb-v6; # Vultr Cloud 2 - 1 CPU - 0.5 GB RAM
+# else
 	readonly REGION_ID=nrt; # Tokyo
 	readonly PLAN_ID=vc2-1c-1gb; # Vultr Cloud 2 - 1 CPU - 1 GB RAM
-fi
+# fi
 
 # ipv4
 # readonly REGION_ID=nrt; # Tokyo
@@ -31,6 +31,7 @@ readonly post_data="{
 	\"label\" : \"sep-server\",
 	\"os_id\" : ${OS},
 	\"backups\" : \"disabled\",
+	\"enable_ipv6\": true,
 	\"sshkey_id\" : [\"${SSH_KEY_ID}\"]
 }";
 
