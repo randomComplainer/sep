@@ -12,7 +12,7 @@ where
     type GreetedRead: protocol::client_agent::GreetedRead;
 
     type Fut: std::future::Future<
-            Output = Result<(Box<str>, Self::GreetedRead, Self::GreetedWrite), std::io::Error>,
+            Output = Result<(protocol::ConnId, Self::GreetedRead, Self::GreetedWrite), std::io::Error>,
         > + Send
         + Unpin
         + 'static;
@@ -26,7 +26,7 @@ where
     TGreetedRead: protocol::client_agent::GreetedRead,
     TGreetedWrite: protocol::client_agent::GreetedWrite,
     TFuture: std::future::Future<
-            Output = Result<(Box<str>, TGreetedRead, TGreetedWrite), std::io::Error>,
+            Output = Result<(protocol::ConnId, TGreetedRead, TGreetedWrite), std::io::Error>,
         > + Send
         + Unpin
         + 'static,
@@ -56,7 +56,7 @@ pub fn run(
         // or you will risk missing message if it's in the middle of being sent
         let send_loop = async move {
             let mut end_of_server_stream_rx = Box::pin(end_of_server_stream_rx);
-            let mut ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(1)));
+            let mut ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(0)));
             let mut ping_counter = 0;
 
             macro_rules! send_msg {

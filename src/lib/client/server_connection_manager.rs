@@ -66,8 +66,7 @@ where
 
                     debug!("connecting to server");
                     let (conn_id, server_read, server_write) = connect_to_server.connect().await?;
-                    let lifetime_span =
-                        info_span!("server connection lifetime", conn_id = conn_id.as_ref());
+                    let lifetime_span = info_span!("server connection lifetime", ?conn_id);
                     debug!("connected to server");
 
                     client_msg_dispatch_cmd_tx

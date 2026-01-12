@@ -49,11 +49,11 @@ async fn async_main(args: Args) {
 
     let channeling_new_client: impl Future<Output = Result<(), std::io::Error>> = async move {
         loop {
-            let (conn_id, agent) = listener.accept().await?;
+            let agent = listener.accept().await?;
             tokio::spawn({
                 let mut new_client_conn_tx = new_client_conn_tx.clone();
                 async move {
-                    let (client_id, client_read, client_write) =
+                    let (client_id, conn_id, client_read, client_write) =
                         match agent.recv_greeting(protocol::get_timestamp()).await {
                             Ok(agent) => agent,
                             Err(err) => {

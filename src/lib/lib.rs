@@ -4,9 +4,9 @@
 pub mod connect_target;
 pub mod future_ext;
 pub mod handover;
+mod message_dispatch;
 pub mod sink_ext;
 pub mod task_scope;
-mod message_dispatch;
 
 #[macro_use]
 pub mod decode;

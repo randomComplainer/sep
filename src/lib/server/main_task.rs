@@ -7,6 +7,7 @@ use tracing::*;
 use super::serve_client;
 use crate::handover;
 use crate::prelude::*;
+use crate::protocol::ConnId;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
@@ -45,7 +46,7 @@ impl Into<serve_client::Config<crate::connect_target::ConnectTargetImpl>> for Co
 }
 
 pub async fn run<GreetedRead, GreetedWrite>(
-    mut new_conn_rx: impl Stream<Item = (Box<ClientId>, Box<str>, GreetedRead, GreetedWrite)> + Unpin,
+    mut new_conn_rx: impl Stream<Item = (Box<ClientId>, ConnId, GreetedRead, GreetedWrite)> + Unpin,
     config: Config,
 ) -> Result<(), std::io::Error>
 where
@@ -54,12 +55,12 @@ where
 {
     let mut conn_senders = HashMap::<
         Box<protocol::ClientId>,
-        handover::Sender<(Box<str>, GreetedRead, GreetedWrite)>,
+        handover::Sender<(ConnId, GreetedRead, GreetedWrite)>,
     >::new();
 
     let (worker_ending_tx, mut worker_ending_rx) = mpsc::unbounded::<(
         Box<protocol::ClientId>,
-        handover::ChannelRef<(Box<str>, GreetedRead, GreetedWrite)>,
+        handover::ChannelRef<(ConnId, GreetedRead, GreetedWrite)>,
     )>();
 
     loop {
@@ -82,13 +83,13 @@ where
                                 }
                             }
                         },
-                        None => Err::<(), (Box<str>, GreetedRead, GreetedWrite)>(conn),
+                        None => Err::<(), (ConnId, GreetedRead, GreetedWrite)>(conn),
                     }
                 } {
                     // create new worker
 
                     let (mut worker_conn_tx, worker_conn_rx) =
-                        handover::channel::<(Box<str>, GreetedRead, GreetedWrite)>();
+                        handover::channel::<(ConnId, GreetedRead, GreetedWrite)>();
 
                     let channel_ref = worker_conn_tx.create_channel_ref();
                     let worker = serve_client::run(worker_conn_rx, config.clone().into());

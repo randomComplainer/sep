@@ -1,4 +1,3 @@
-use futures::channel::mpsc;
 use futures::prelude::*;
 use tracing::*;
 
@@ -22,7 +21,7 @@ pub enum Event {
 pub async fn run<GreetedRead, GreetedWrite>(
     mut cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
     evt_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Clone + Unpin + Send + 'static,
-    mut new_conn_rx: handover::Receiver<(Box<str>, GreetedRead, GreetedWrite)>,
+    mut new_conn_rx: handover::Receiver<(protocol::ConnId, GreetedRead, GreetedWrite)>,
 ) -> Result<(), std::io::Error>
 where
     GreetedRead: protocol::server_agent::GreetedRead,
@@ -31,7 +30,7 @@ where
     let (mut conn_scope_handle, conn_scope_task) = task_scope::new_scope::<std::io::Error>();
 
     let (mut server_msg_dispatch_cmd_tx, server_msg_dispatch_task) =
-        message_dispatch::run::<Box<str>, protocol::msg::ServerMsg>();
+        message_dispatch::run::<protocol::ConnId, protocol::msg::ServerMsg>();
 
     let accepting_new_conn = {
         let evt_tx = evt_tx.clone();
@@ -42,7 +41,7 @@ where
                 let (conn_server_msg_tx, conn_server_msg_rx) =
                     handover::channel::<protocol::msg::ServerMsg>();
 
-                let conn_lifetime_span = info_span!("conn lifetime", conn_id = conn_id.as_ref());
+                let conn_lifetime_span = info_span!("conn lifetime", ?conn_id);
 
                 if let Err(_) = server_msg_dispatch_cmd_tx
                     .send(message_dispatch::Command::Sender(

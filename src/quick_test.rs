@@ -14,18 +14,13 @@ use sep_lib::*;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let domain = std::env::args().nth(1).unwrap();
+    let a = 123u16;
+    let b = 33333u64;
 
-    let mut addrs = tokio::net::lookup_host(domain)
-        .await
-        .unwrap()
-        .collect::<Vec<_>>();
+    let mut bytes = [1u8; 2+8];
 
-    addrs.sort_by(|l, r| match (l.is_ipv6(), r.is_ipv6()) {
-        (true, true) => Ordering::Equal,
-        (false, false) => Ordering::Equal,
-        (true, false) => Ordering::Less,
-        (false, true) => Ordering::Greater,
-    });
-    dbg!(addrs);
+    bytes[0..2].copy_from_slice(&a.to_be_bytes());
+    bytes[2..10].copy_from_slice(&b.to_be_bytes());
+
+    dbg!(bytes);
 }

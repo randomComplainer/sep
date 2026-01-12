@@ -32,7 +32,10 @@ pub trait Init {
     async fn recv_greeting(
         self,
         server_timestamp: u64,
-    ) -> Result<(Box<ClientId>, Self::GreetedRead, Self::GreetedWrite), InitError<Self::Stream>>;
+    ) -> Result<
+        (Box<ClientId>, ConnId, Self::GreetedRead, Self::GreetedWrite),
+        InitError<Self::Stream>,
+    >;
 }
 
 pub trait GreetedRead

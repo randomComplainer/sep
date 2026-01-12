@@ -9,7 +9,7 @@ pub trait Init {
         self,
         timestamp: u64,
     ) -> impl Future<
-        Output = Result<(Box<str>, impl GreetedRead, impl GreetedWrite), std::io::Error>,
+        Output = Result<(ConnId, impl GreetedRead, impl GreetedWrite), std::io::Error>,
     > + Send;
 }
 

@@ -4,6 +4,7 @@ use tracing::*;
 
 use crate::handover;
 use crate::prelude::*;
+use crate::protocol::ConnId;
 
 mod client_conn_lifetime;
 mod conn_manager;
@@ -37,7 +38,7 @@ impl<TConnectTarget> Into<session_manager::Config<TConnectTarget>> for Config<TC
 }
 
 pub async fn run<GreetedRead, GreetedWrite, TConnectTarget>(
-    new_conn_rx: handover::Receiver<(Box<str>, GreetedRead, GreetedWrite)>,
+    new_conn_rx: handover::Receiver<(ConnId, GreetedRead, GreetedWrite)>,
     config: Config<TConnectTarget>,
 ) -> Result<(), std::io::Error>
 where

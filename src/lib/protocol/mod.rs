@@ -64,11 +64,21 @@ fn cal_rand_byte_len(key: &[u8; 32], nonce: &[u8; 12], timestamp: u64) -> usize 
     len
 }
 
-// TODO: use more compact format, like base64
-pub(self) fn create_conn_id(conn_local_port: u16) -> Box<str> {
-    let str = format!("{}-{}", get_timestamp(), conn_local_port);
-    str.into()
+#[derive(Debug, Clone, Copy)]
+pub struct ConnId {
+    pub timestamp: u64,
+    pub client_port: u16,
 }
+
+impl ConnId {
+    pub fn new(timestamp: u64, client_port: u16) -> Self {
+        Self {
+            timestamp,
+            client_port,
+        }
+    }
+}
+
 type ReadEncrypted<S, C> = EncryptedRead<ReadHalf<S>, C>;
 type WriteEncrypted<S, C> = EncryptedWrite<WriteHalf<S>, C>;
 type FramedRead<S, C> = BufDecoder<ReadEncrypted<S, C>>;
@@ -85,7 +95,6 @@ pub mod test_utils {
     use chacha20::ChaCha20;
     use tokio::io::{DuplexStream, duplex};
 
-    use super::client_agent::Init as _;
     use crate::prelude::*;
     use protocol::{client_agent, server_agent};
 
@@ -106,7 +115,8 @@ pub mod test_utils {
             nonce,
             client_steam,
         );
-        let server_agent = protocol::server_agent::implementation::Init::new(key, server_stream);
+        let server_agent =
+            protocol::server_agent::implementation::Init::new(key, server_stream, 10);
 
         (client_agent, server_agent)
     }
@@ -126,6 +136,9 @@ pub mod test_utils {
         let client_agent = client_agent.send_greeting(12).await.unwrap();
         let server_agent = server_agent.recv_greeting(12).await.unwrap();
 
-        ((client_agent.1, client_agent.2), server_agent)
+        (
+            (client_agent.1, client_agent.2),
+            (server_agent.0, server_agent.2, server_agent.3),
+        )
     }
 }

@@ -13,9 +13,6 @@ pub async fn run(
     mut client_msg_tx: impl Sink<protocol::msg::ClientMsg> + Unpin + Send + 'static,
     mut server_msg_rx: handover::Receiver<protocol::msg::ServerMsg>,
 ) -> Result<(), std::io::Error> {
-    //TODO: error handling
-    debug!("client connection lifetime task started");
-
     let (ping_tx, mut ping_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let ping_waiting_task = async move {
         let mut ping_counter = 0;
@@ -82,7 +79,7 @@ pub async fn run(
             rand::rng().random_range(..=10u64),
         ));
         let mut time_limit_task = Box::pin(tokio::time::sleep(duration));
-        let mut pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(1)));
+        let mut pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(0)));
         let mut pong_counter = 0;
 
         macro_rules! send_msg {

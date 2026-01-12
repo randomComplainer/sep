@@ -1,10 +1,12 @@
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::{BufMut, BytesMut};
 use chacha20::ChaCha20;
 use chacha20::cipher::KeyIvInit;
 use tokio::io::AsyncReadExt;
+use tracing::Instrument as _;
+use tracing::*;
 
 use super::*;
 use crate::decode::*;
@@ -15,14 +17,19 @@ where
 {
     key: Arc<[u8; 32]>,
     stream: Stream,
+    client_port: u16,
 }
 
 impl<Stream> Init<Stream>
 where
     Stream: StaticStream,
 {
-    pub fn new(key: Arc<Key>, stream: Stream) -> Self {
-        Self { key, stream }
+    pub fn new(key: Arc<Key>, stream: Stream, client_port: u16) -> Self {
+        Self {
+            key,
+            stream,
+            client_port,
+        }
     }
 
     pub async fn recv_greeting(
@@ -30,7 +37,8 @@ where
         server_timestamp: u64,
     ) -> Result<
         (
-            Box<[u8; 16]>,
+            Box<protocol::ClientId>,
+            protocol::ConnId,
             GreetedRead<Stream, ChaCha20>,
             GreetedWrite<Stream, ChaCha20>,
         ),
@@ -49,7 +57,8 @@ where
         server_timestamp: u64,
     ) -> Result<
         (
-            Box<[u8; 16]>,
+            Box<protocol::ClientId>,
+            protocol::ConnId,
             GreetedRead<Stream, ChaCha20>,
             GreetedWrite<Stream, ChaCha20>,
         ),
@@ -73,59 +82,66 @@ where
                 opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
             })?;
 
-        if u64::abs_diff(client_timestamp, server_timestamp) > 30 {
-            return Err(InitError::InvalidGreeting(
-                "invalid timestamp",
-                stream_read
-                    .into_parts()
-                    .1
-                    .into_parts()
-                    .0
-                    .unsplit(stream_write),
-            ));
+        let conn_id = protocol::ConnId::new(client_timestamp, self.client_port);
+
+        async move {
+            if u64::abs_diff(client_timestamp, server_timestamp) > 30 {
+                return Err(InitError::InvalidGreeting(
+                    "invalid timestamp",
+                    stream_read
+                        .into_parts()
+                        .1
+                        .into_parts()
+                        .0
+                        .unsplit(stream_write),
+                ));
+            }
+
+            let rand_byte_len = cal_rand_byte_len(&self.key, &nonce, client_timestamp);
+
+            if rand_byte_len > RAND_BYTE_LEN_MAX {
+                return Err(InitError::InvalidGreeting(
+                    "rand_byte_len > RAND_BYTE_LEN_MAX",
+                    stream_read
+                        .into_parts()
+                        .1
+                        .into_parts()
+                        .0
+                        .unsplit(stream_write),
+                ));
+            }
+
+            let _rand_bytes = stream_read
+                .read_next(slice_peeker_fixed_len(rand_byte_len.try_into().unwrap()))
+                .await
+                .map_err(InitError::from_decode_error)
+                .and_then(|opt| {
+                    opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
+                })?;
+
+            let client_id: Box<[u8; 16]> = stream_read
+                .read_next(slice_peeker_fixed_len(16))
+                .await
+                .map_err(InitError::from_decode_error)
+                .and_then(|opt| {
+                    opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
+                })?
+                .to_vec() //TODO: no copy
+                .try_into()
+                .unwrap();
+
+            Ok((
+                client_id,
+                conn_id,
+                GreetedRead::new(stream_read),
+                GreetedWrite::new(EncryptedWrite::new(
+                    stream_write,
+                    ChaCha20::new(self.key.as_slice().into(), nonce.as_slice().into()),
+                )),
+            ))
         }
-
-        let rand_byte_len = cal_rand_byte_len(&self.key, &nonce, client_timestamp);
-
-        if rand_byte_len > RAND_BYTE_LEN_MAX {
-            return Err(InitError::InvalidGreeting(
-                "rand_byte_len > RAND_BYTE_LEN_MAX",
-                stream_read
-                    .into_parts()
-                    .1
-                    .into_parts()
-                    .0
-                    .unsplit(stream_write),
-            ));
-        }
-
-        let _rand_bytes = stream_read
-            .read_next(slice_peeker_fixed_len(rand_byte_len.try_into().unwrap()))
-            .await
-            .map_err(InitError::from_decode_error)
-            .and_then(|opt| {
-                opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
-            })?;
-
-        let client_id: Box<[u8; 16]> = stream_read
-            .read_next(slice_peeker_fixed_len(16))
-            .await
-            .map_err(InitError::from_decode_error)
-            .and_then(|opt| {
-                opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
-            })?
-            .to_vec() //TODO: no copy
-            .try_into()
-            .unwrap();
-
-        Ok((
-            client_id,
-            GreetedRead::new(stream_read),
-            GreetedWrite::new(EncryptedWrite::new(
-                stream_write,
-                ChaCha20::new(self.key.as_slice().into(), nonce.as_slice().into()),
-            )),
-        ))
+        .instrument(debug_span!("accept greeting", ?conn_id))
+        .await
     }
 }
 
@@ -140,7 +156,8 @@ where
     async fn recv_greeting(
         self,
         server_timestamp: u64,
-    ) -> Result<(Box<ClientId>, Self::GreetedRead, Self::GreetedWrite), InitError<Stream>> {
+    ) -> Result<(Box<ClientId>, ConnId, Self::GreetedRead, Self::GreetedWrite), InitError<Stream>>
+    {
         self.recv_greeting(server_timestamp).await
     }
 }
@@ -157,10 +174,9 @@ impl TcpListener {
         Ok(Self { inner, key })
     }
 
-    pub async fn accept(&self) -> Result<(Box<str>, Init<tokio::net::TcpStream>), std::io::Error> {
-        let (stream, addr) = self.inner.accept().await?;
-        let conn_id = create_conn_id(addr.port());
-        Ok((conn_id, Init::new(self.key.clone(), stream)))
+    pub async fn accept(&self) -> Result<Init<tokio::net::TcpStream>, std::io::Error> {
+        let (stream, client_addr) = self.inner.accept().await?;
+        Ok(Init::new(self.key.clone(), stream, client_addr.port()))
     }
 }
 
