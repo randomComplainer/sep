@@ -49,97 +49,102 @@ pub fn run(
     + 'static,
 ) -> impl Future<Output = Result<(), std::io::Error>> + Send {
     async move {
-        let (end_of_server_stream_tx, end_of_server_stream_rx) =
-            tokio::sync::oneshot::channel::<()>();
+        let end_of_stream_notifier= tokio::sync::SetOnce::<()>::new();
 
         // dont cancel me, 
         // or you will risk missing message if it's in the middle of being sent
-        let send_loop = async move {
-            let mut end_of_server_stream_rx = Box::pin(end_of_server_stream_rx);
-            let mut ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(0)));
-            let mut ping_counter = 0;
+        let send_loop = {
+            let end_of_stream_notifier = end_of_stream_notifier.clone();
+            async move {
+                let mut ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(0)));
+                let mut ping_counter = 0;
 
-            macro_rules! send_msg {
-                ($msg:expr) => {
-                    tokio::time::timeout(
-                        std::time::Duration::from_secs(4),
+                macro_rules! send_msg {
+                    ($msg:expr) => {
+                        tokio::time::timeout(
+                            std::time::Duration::from_secs(4),
                             server_write.send_msg($msg)
-                    )
-                    .map(|timeout_result|  
-                        match timeout_result {
-                            Ok(x) => x,
-                            Err(_) => Err(std::io::Error::new(
-                                std::io::ErrorKind::TimedOut,
-                                "timeout sending msg to server",
-                                )
+                        )
+                            .map(|timeout_result|  
+                                match timeout_result {
+                                    Ok(x) => x,
+                                    Err(_) => Err(std::io::Error::new(
+                                            std::io::ErrorKind::TimedOut,
+                                            "timeout sending msg to server",
+                                    )
+                                    )
+                                }
                             )
-                        }
-                    )
-                }
-            }
-
-            loop {
-                // TODO: extract ping loop out of this loop
-                // to make sure client message get recived asap
-                tokio::select! {
-                    client_msg = client_msg_rx.recv()
-                        .instrument(debug_span!("receive client msg to send"))
-                        => {
-                        let client_msg = match client_msg {
-                            Some(client_msg) => client_msg,
-                            None => {
-                                return Ok::<_, std::io::Error>(());
-                            }
-                        };
-
-                        let span = debug_span!("send client msg to server", ?client_msg);
-                        send_msg!(client_msg.into()).instrument(span).await?;
-                    },
-                    _ = ping_timer.as_mut() => {
-                        debug!(count = ping_counter, "ping");
-
-                        send_msg!(protocol::msg::conn::ClientMsg::Ping)
-                            .instrument(debug_span!("send ping", count = ping_counter))
-                            .await?;
-
-                        ping_counter += 1;
-                        ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(1)));
-                    },
-                    _ = &mut end_of_server_stream_rx => {
-                        debug!("end of server messages notified");
-                        return Ok::<_, std::io::Error>(());
                     }
                 }
-            }
-        }
+
+                loop {
+                    // TODO: extract ping loop out of this loop
+                    // to make sure client message get recived asap
+                    tokio::select! {
+                        client_msg = client_msg_rx.recv()
+                            .instrument(debug_span!("receive client msg to send"))
+                            => {
+                                let client_msg = match client_msg {
+                                    Some(client_msg) => client_msg,
+                                    None => {
+                                        return Ok::<_, std::io::Error>(());
+                                    }
+                                };
+
+                                let span = debug_span!("send client msg to server", ?client_msg);
+                                send_msg!(client_msg.into()).instrument(span).await?;
+                            },
+                            _ = ping_timer.as_mut() => {
+                                debug!(count = ping_counter, "ping");
+
+                                send_msg!(protocol::msg::conn::ClientMsg::Ping)
+                                    .instrument(debug_span!("send ping", count = ping_counter))
+                                    .await?;
+
+                                ping_counter += 1;
+                                ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(1)));
+                            },
+                            _ = end_of_stream_notifier.wait() => {
+                                debug!("end of server messages notified");
+                                return Ok::<_, std::io::Error>(());
+                            }
+                    }
+                }
+        }}
         .instrument(debug_span!("send loop"));
 
         let (pong_tx, mut pong_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-        let pong_waiting_loop = async move {
-            let mut pong_counter = 0;
-            let mut pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(5)));
-            loop {
-                tokio::select! {
-                    _ = pong_timer.as_mut() => {
-                        warn!("pong timeout, exiting");
-                        return Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "pong timeout"));
-                    },
-                    pong = pong_rx.recv() => {
-                        match pong {
-                            Some(_) => {
-                                debug!(count=pong_counter, "pong");
-                                pong_counter += 1;
-                                pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(5)));
+        let pong_waiting_loop = {
+            let end_of_stream_notifier = end_of_stream_notifier.clone();
+            async move {
+                let mut pong_counter = 0;
+                let mut pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(5)));
+                loop {
+                    tokio::select! {
+                        _ = pong_timer.as_mut() => {
+                            warn!("pong timeout, exiting");
+                            return Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "pong timeout"));
+                        },
+                        pong = pong_rx.recv() => {
+                            match pong {
+                                Some(_) => {
+                                    debug!(count=pong_counter, "pong");
+                                    pong_counter += 1;
+                                    pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(5)));
+                                }
+                                None => {
+                                    debug!("pong rx is broken, exiting");
+                                    return Ok::<_, std::io::Error>(());
+                                }
                             }
-                            None => {
-                                debug!("pong rx is broken, exiting");
-                                return Ok::<_, std::io::Error>(());
-                            }
+                        },
+                        _ = end_of_stream_notifier.wait() => {
+                            return Ok::<_, std::io::Error>(());
                         }
                     }
                 }
-            }
-        }.instrument(info_span!("pong waiting loop"));
+        } }.instrument(info_span!("pong waiting loop"));
 
         let recv_loop = async move {
             while let Some(server_msg) = match server_read
@@ -181,7 +186,7 @@ pub fn run(
                     },
                     EndOfStream => {
                         debug!("end of server messages");
-                        let _ = end_of_server_stream_tx.send(());
+                        let _ = end_of_stream_notifier.set(());
                         return Ok::<_, std::io::Error>(());
                     }
                     Pong => {

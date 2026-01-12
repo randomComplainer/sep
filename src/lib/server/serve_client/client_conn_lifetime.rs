@@ -101,10 +101,10 @@ pub async fn run(
         loop {
             tokio::select! {
                 _ = time_limit_task.as_mut() => {
-                    client_write
-                        .send_msg(protocol::msg::conn::ServerMsg::EndOfStream)
+                    let span = debug_span!("send end of stream to client");
+                    send_msg!(protocol::msg::conn::ServerMsg::EndOfStream)
+                        .instrument(span)
                         .await?;
-                    // let _ = client_write.close().await;
 
                     return Ok::<_, std::io::Error>(());
                 },
