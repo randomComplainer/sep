@@ -38,7 +38,7 @@ where
         move |msg: Msg| {
             let sender_queue_tx = sender_queue_tx.clone();
             let sender_queue_rx = sender_queue_rx.clone();
-            let forward_span = info_span!("forward message to connection", msg = ?msg);
+            let outer_span = info_span!("forward message outer", msg = ?msg);
 
             async move {
                 let mut msg = msg;
@@ -71,7 +71,7 @@ where
                     };
                 }
             }
-            .instrument(forward_span)
+            .instrument(outer_span)
         }
     };
 

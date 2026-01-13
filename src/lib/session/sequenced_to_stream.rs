@@ -1,7 +1,7 @@
 use derive_more::From;
 use futures::prelude::*;
 use tokio::io::{AsyncWrite, AsyncWriteExt as _};
-use tracing::*;
+use tracing::Instrument as _;
 
 use crate::session::sequence::{StreamEntry, StreamEntryValue};
 
@@ -33,6 +33,17 @@ struct State<Stream, EvtTx> {
     evt_tx: EvtTx,
 }
 
+macro_rules! try_emit_evt {
+    ($evt_tx:expr, $evt:ident) => {
+        tracing::trace!(?$evt, "emit event");
+        let sp = tracing::trace_span!("emit event:", evt = ?$evt);
+        if let Err(_) = $evt_tx.send($evt).instrument(sp).await {
+            tracing::error!("event channel is broken, exiting");
+            return Ok(None);
+        }
+    }
+}
+
 impl<Stream, EvtTx, EvtTxErr> State<Stream, EvtTx>
 where
     Stream: AsyncWrite + Unpin + Send + 'static,
@@ -54,7 +65,7 @@ where
     }
 
     pub async fn handle_command(mut self, cmd: Command) -> Result<Option<Self>, std::io::Error> {
-        debug!(cmd = ?cmd, "command received");
+        tracing::trace!(cmd = ?cmd, "command received");
 
         match cmd {
             Command::Data(data) => {
@@ -65,7 +76,7 @@ where
 
                 self.buffed_bytes += len;
 
-                debug!("buffed bytes: {}", self.buffed_bytes);
+                tracing::trace!("buffed bytes: {}", self.buffed_bytes);
 
                 if self.buffed_bytes > self.config.max_bytes_ahead {
                     panic!("too many data buffered");
@@ -93,7 +104,7 @@ where
 
                     self.stream_to_write
                         .write_all(data.as_ref())
-                        .instrument(info_span!("write to stream", seq, ?len))
+                        .instrument(tracing::trace_span!("write to stream", seq, ?len))
                         .await?;
 
                     self.buffed_bytes -= len as u32;
@@ -108,19 +119,12 @@ where
                             bytes: bytes_written as u32,
                         }
                         .into();
-                        let sp = info_span!("emit event:", evt = ?evt);
-                        if let Err(_) = self.evt_tx.send(evt).instrument(sp).await {
-                            error!("event channel is broken, exiting");
-                            return Ok(None);
-                        }
+
+                        try_emit_evt!(self.evt_tx, evt);
                     }
 
                     let evt = msg::EofAck.into();
-                    let sp = info_span!("emit event:", evt = ?evt);
-                    if let Err(_) = self.evt_tx.send(evt).instrument(sp).await {
-                        error!("event channel is broken, exiting");
-                        return Ok(None);
-                    }
+                    try_emit_evt!(self.evt_tx, evt);
                 }
             };
             self.next_seq += 1;
@@ -131,11 +135,7 @@ where
                 bytes: bytes_written as u32,
             }
             .into();
-            let sp = info_span!("emit event:", evt = ?evt);
-            if let Err(_) = self.evt_tx.send(evt).instrument(sp).await {
-                error!("event channel is broken, exiting");
-                return Ok(None);
-            }
+            try_emit_evt!(self.evt_tx, evt);
         }
 
         Ok(Some(self))

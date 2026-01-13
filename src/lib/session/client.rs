@@ -1,5 +1,5 @@
 use futures::prelude::*;
-use tracing::*;
+use tracing::Instrument as _;
 
 use super::msg;
 use crate::prelude::*;
@@ -45,41 +45,48 @@ pub async fn run(
     // TODO: duplicated code
     let (_, proxyee) = match proxyee
         .receive_greeting_message()
-        .instrument(info_span!("receive greeting message from proxyee"))
+        .instrument(tracing::trace_span!(
+            "receive greeting message from proxyee"
+        ))
         .await
     {
         Ok(x) => x,
         Err(err) => {
-            error!("socks5 error: {:?}", err);
+            tracing::error!("socks5 error: {:?}", err);
             return;
         }
     };
 
     let (proxyee_req, proxyee) = match proxyee
         .send_method_selection_message(0)
-        .instrument(info_span!("send method selection message to proxyee"))
+        .instrument(tracing::trace_span!(
+            "send method selection message to proxyee"
+        ))
         .await
     {
         Ok(x) => x,
         Err(err) => {
-            error!("socks5 error: {:?}", err);
+            tracing::error!("socks5 error: {:?}", err);
             return;
         }
     };
 
-    info!(addr = ?proxyee_req.addr, port = proxyee_req.port, "request addr");
+    tracing::info!(addr = ?proxyee_req.addr, port = proxyee_req.port, "request addr");
 
+    let client_msg = msg::Request {
+        addr: proxyee_req.addr,
+        port: proxyee_req.port,
+    }
+    .into();
+    tracing::debug!(client_msg = ?client_msg, "client msg");
     match server_write
-        .send(msg::ClientMsg::Request(msg::Request {
-            addr: proxyee_req.addr,
-            port: proxyee_req.port,
-        }))
-        .instrument(info_span!("send request to server"))
+        .send(client_msg)
+        .instrument(tracing::trace_span!("send request to server"))
         .await
     {
         Ok(_) => (),
         Err(err) => {
-            error!("falied to send request to server, exiting: {:?}", err);
+            tracing::error!("falied to send request to server, exiting: {:?}", err);
             return;
         }
     };
@@ -94,42 +101,45 @@ pub async fn run(
         loop {
             match server_read
                 .next()
-                .instrument(info_span!("receive reply from server"))
+                .instrument(tracing::trace_span!("receive reply from server"))
                 .await
             {
-                Some(msg) => match msg {
-                    msg::ServerMsg::Reply(msg) => {
-                        break (msg, early_target_packages);
+                Some(msg) => {
+                    tracing::debug!(msg = ?msg, "server msg");
+                    match msg {
+                        msg::ServerMsg::Reply(msg) => {
+                            break (msg, early_target_packages);
+                        }
+                        msg::ServerMsg::ReplyError(err) => {
+                            use session::msg::ConnectionError::*;
+                            let _ = proxyee
+                                .reply_error(match err {
+                                    General => 1,
+                                    NetworkUnreachable => 3,
+                                    HostUnreachable => 4,
+                                    ConnectionRefused => 5,
+                                    TtlExpired => 6,
+                                })
+                                .instrument(tracing::trace_span!("send reply error to proxyee"))
+                                .await;
+                            return;
+                        }
+                        msg::ServerMsg::Data(data) => {
+                            early_target_packages.push(data.into());
+                        }
+                        msg::ServerMsg::Eof(eof) => {
+                            early_target_packages.push(eof.into());
+                        }
+                        msg => {
+                            panic!("unexpected server msg while receiving reply: [{:?}]", msg);
+                        }
                     }
-                    msg::ServerMsg::ReplyError(err) => {
-                        use session::msg::ConnectionError::*;
-                        let _ = proxyee
-                            .reply_error(match err {
-                                General => 1,
-                                NetworkUnreachable => 3,
-                                HostUnreachable => 4,
-                                ConnectionRefused => 5,
-                                TtlExpired => 6,
-                            })
-                            .instrument(info_span!("send reply error to proxyee"))
-                            .await;
-                        return;
-                    }
-                    msg::ServerMsg::Data(data) => {
-                        early_target_packages.push(data.into());
-                    }
-                    msg::ServerMsg::Eof(eof) => {
-                        early_target_packages.push(eof.into());
-                    }
-                    msg => {
-                        panic!("unexpected server msg while receiving reply: [{:?}]", msg);
-                    }
-                },
+                }
                 None => {
-                    error!("server read is broken, exiting");
+                    tracing::error!("server read is broken, exiting");
                     let _ = proxyee
                         .reply_error(1)
-                        .instrument(info_span!("send reply error to proxyee"))
+                        .instrument(tracing::trace_span!("send reply error to proxyee"))
                         .await;
 
                     return;
@@ -140,13 +150,13 @@ pub async fn run(
 
     let (proxyee_read, proxyee_write) = match proxyee
         .reply(reply.bound_addr)
-        .instrument(info_span!("reply to proxyee"))
+        .instrument(tracing::trace_span!("reply to proxyee"))
         .await
     {
         Ok(x) => x,
         Err(err) => {
             // TODO: notify server
-            error!("falied to reply to proxyee: {:?}", err);
+            tracing::error!("falied to reply to proxyee: {:?}", err);
             return;
         }
     };
@@ -157,16 +167,20 @@ pub async fn run(
     let (buf, proxyee_read) = proxyee_read.into_parts();
     let proxyee_to_server = session::stream_to_sequenced::run(
         proxyee_to_server_cmd_rx,
-        server_write.clone().with_sync(|evt| match evt {
-            session::stream_to_sequenced::Event::Data(data) => data.into(),
-            session::stream_to_sequenced::Event::Eof(eof) => eof.into(),
-            session::stream_to_sequenced::Event::IoError(err) => err.into(),
+        server_write.clone().with_sync(|evt| {
+            let client_msg: session::msg::ClientMsg = match evt {
+                session::stream_to_sequenced::Event::Data(data) => data.into(),
+                session::stream_to_sequenced::Event::Eof(eof) => eof.into(),
+                session::stream_to_sequenced::Event::IoError(err) => err.into(),
+            };
+            tracing::debug!(client_msg = ?client_msg, "client msg");
+            client_msg
         }),
         proxyee_read,
         Some(buf),
         config.into(),
     )
-    .instrument(info_span!("proxyee to server"));
+    .instrument(tracing::trace_span!("proxyee to server"));
 
     let (mut server_to_proxyee_cmd_tx, server_to_proxyee_cmd_rx) =
         futures::channel::mpsc::unbounded();
@@ -180,18 +194,22 @@ pub async fn run(
             Ok::<_, std::io::Error>(())
         }
     }
-    .instrument(info_span!("server to proxyee early packages"));
+    .instrument(tracing::trace_span!("server to proxyee early packages"));
 
     let server_to_proxyee = session::sequenced_to_stream::run(
         server_to_proxyee_cmd_rx,
-        server_write.clone().with_sync(|evt| match evt {
-            session::sequenced_to_stream::Event::Ack(ack) => ack.into(),
-            session::sequenced_to_stream::Event::EofAck(eof_ack) => eof_ack.into(),
+        server_write.clone().with_sync(|evt| {
+            let client_msg: session::msg::ClientMsg = match evt {
+                session::sequenced_to_stream::Event::Ack(ack) => ack.into(),
+                session::sequenced_to_stream::Event::EofAck(eof_ack) => eof_ack.into(),
+            };
+            tracing::debug!(client_msg = ?client_msg, "client msg");
+            client_msg
         }),
         proxyee_write,
         config.into(),
     )
-    .instrument(info_span!("server to proxyee"));
+    .instrument(tracing::trace_span!("server to proxyee"));
 
     let server_to_proxyee = async move {
         tokio::try_join!(server_to_proxyee, server_to_proxyee_early_packages).map(|_| ())
@@ -200,47 +218,49 @@ pub async fn run(
     let server_msg_handling = async move {
         while let Some(msg) = server_read
             .next()
-            .instrument(info_span!("read next msg from server"))
+            .instrument(tracing::trace_span!("read next msg from server"))
             .await
         {
-            debug!("server msg: {:?}", msg);
+            tracing::debug!(?msg, "server msg");
             match msg {
                 msg::ServerMsg::Data(data) => {
                     let cmd = data.into();
-                    let span = info_span!("send command to server to proxyee task", cmd = ?cmd);
+                    let span =
+                        tracing::trace_span!("send command to server to proxyee task", cmd = ?cmd);
                     if let Err(_) = server_to_proxyee_cmd_tx.send(cmd).instrument(span).await {
-                        debug!("server to proxyee command channel is broken");
-                        continue;
+                        tracing::debug!("server to proxyee command channel is broken");
+                        return;
                     }
                 }
                 msg::ServerMsg::Eof(eof) => {
                     let cmd = eof.into();
-                    let span = info_span!("send command to server to proxyee task", cmd = ?cmd);
+                    let span =
+                        tracing::trace_span!("send command to server to proxyee task", cmd = ?cmd);
                     if let Err(_) = server_to_proxyee_cmd_tx.send(cmd).instrument(span).await {
-                        debug!("server to proxyee command channel is broken");
-                        continue;
+                        tracing::debug!("server to proxyee command channel is broken");
+                        return;
                     }
                 }
                 msg::ServerMsg::Ack(ack) => {
-                    let span = tracing::debug_span!("forward ack to server", ack = ?ack);
+                    let span = tracing::trace_span!("send ack command to proxyee task", ack = ?ack);
                     if let Err(_) = proxyee_to_server_cmd_tx
                         .send(ack.into())
                         .instrument(span)
                         .await
                     {
-                        debug!("proxyee to server command channel is broken");
-                        continue;
+                        tracing::debug!("proxyee to server command channel is broken");
+                        return;
                     }
                 }
                 msg::ServerMsg::EofAck(eof_ack) => {
-                    let span = tracing::debug_span!("forward eof ack to server");
+                    let span = tracing::trace_span!("send eof ack command to proxyee task");
                     if let Err(_) = proxyee_to_server_cmd_tx
                         .send(eof_ack.into())
                         .instrument(span)
                         .await
                     {
-                        debug!("proxyee to server command channel is broken");
-                        continue;
+                        tracing::debug!("proxyee to server command channel is broken");
+                        return;
                     }
                 }
                 msg::ServerMsg::TargetIoError(_) => {
@@ -250,9 +270,9 @@ pub async fn run(
             }
         }
 
-        warn!("end of server message, exiting");
+        tracing::warn!("end of server message, exiting");
     }
-    .instrument(info_span!("server_msg_handling"));
+    .instrument(tracing::trace_span!("server_msg_handling"));
 
     let streaming = async move {
         // streaming tasks error on Io Error, which doesn't matter

@@ -4,7 +4,7 @@ use bytes::BytesMut;
 use derive_more::From;
 use futures::prelude::*;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
-use tracing::*;
+use tracing::Instrument as _;
 
 use super::msg;
 
@@ -29,14 +29,15 @@ pub struct Config {
 // return Ok(()) on broken channel
 macro_rules! try_emit_evt {
     ($evt_tx:ident, $evt:ident) => {
-        let sp = info_span!("emit event:", evt = ?$evt);
+        tracing::trace!(?$evt, "emit event");
+        let sp = tracing::trace_span!("emit event:", evt = ?$evt);
 
         if let Err(_) = $evt_tx
             .send($evt)
             .instrument(sp)
             .await
         {
-            error!("event channel is broken, exiting");
+            tracing::error!("event channel is broken, exiting");
             return Ok(());
         }
     }
@@ -56,47 +57,53 @@ async fn stream_reading_loop(
         let mut buf = bytes::BytesMut::with_capacity(config.max_packet_size as usize);
         let n = match stream_to_read
             .read_buf(&mut buf)
-            .instrument(info_span!("read from stream"))
+            .instrument(tracing::trace_span!("read from stream"))
             .await
         {
             Ok(n) => n,
             Err(err) => {
-                error!("stream read error: {:?}", err);
+                tracing::error!("stream read error: {:?}", err);
                 let evt = msg::IoError.into();
                 try_emit_evt!(evt_tx, evt);
                 return Err(err);
             }
         };
 
-        debug!(n = n, "read bytes");
+        tracing::trace!(n = n, "read bytes");
 
         total_read += n as u64;
 
         if n == 0 {
             let evt = msg::Eof { seq }.into();
             try_emit_evt!(evt_tx, evt);
-            info!(seq = seq, "stream eof reached, wait for eof to be acked");
+            tracing::trace!(seq = seq, "stream eof reached, wait for eof to be acked");
 
             let lock = acked_rx
                 .wait_for(|acked| *acked >= total_read)
+                .instrument(tracing::trace_span!("wait for all remaining bytes acked"))
                 .await
                 .expect("acked_rx is broken");
             drop(lock);
 
-            eof_acked_rx.notified().await;
-            info!("eof acked");
+            eof_acked_rx
+                .notified()
+                .instrument(tracing::trace_span!("wait for eof acked"))
+                .await;
+            tracing::trace!("eof acked");
 
             return Ok(());
         }
 
         let lock = match acked_rx
             .wait_for(|acked| total_read - *acked <= config.max_bytes_ahead as u64)
-            .instrument(info_span!("wait for enough bytes acked to continue"))
+            .instrument(tracing::trace_span!(
+                "wait for enough bytes acked to continue"
+            ))
             .await
         {
             Ok(lock) => lock,
             Err(_) => {
-                error!("acked_rx is broken, exiting");
+                tracing::error!("acked_rx is broken, exiting");
                 return Ok(());
             }
         };
@@ -140,7 +147,7 @@ pub async fn run(
         let eof_acked_tx = Arc::clone(&eof_acked_notify);
         async move {
             while let Some(cmd) = cmd_rx.next().await {
-                debug!(cmd = ?cmd, "command received");
+                tracing::trace!(cmd = ?cmd, "command received");
                 match cmd {
                     Command::Ack(ack) => {
                         acked_tx.send_modify(|old| *old += ack.bytes as u64);
@@ -151,12 +158,12 @@ pub async fn run(
                 }
             }
 
-            error!("command channel is broken, exiting");
+            tracing::warn!("command channel is broken, exiting");
 
             return Ok::<_, std::io::Error>(());
         }
     }
-    .instrument(info_span!("command receiving task"));
+    .instrument(tracing::trace_span!("command receiving task"));
 
     let stream_reading_task = stream_reading_loop(
         seq,
@@ -166,7 +173,7 @@ pub async fn run(
         eof_acked_notify,
         config,
     )
-    .instrument(info_span!("stream reading task"));
+    .instrument(tracing::trace_span!("stream reading task"));
 
     // cmd_receiving_task doesn't end by itself,
     // only when cmd_rx is broken

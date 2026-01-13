@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use futures::prelude::*;
-use tracing::*;
+use tracing::Instrument as _;
 
 use super::msg;
 use crate::prelude::*;
@@ -44,7 +44,7 @@ where
 {
     let req = match client_msg_read
         .next()
-        .instrument(info_span!("receive request from client"))
+        .instrument(tracing::trace_span!("receive request from client"))
         .await
     {
         Some(msg) => match msg {
@@ -54,50 +54,51 @@ where
             }
         },
         None => {
-            error!("client read is broken, exiting");
+            tracing::error!("client read is broken, exiting");
             return Ok(());
         }
     };
 
-    info!(
-        "request received, addr = {:?}, port = {}",
-        req.addr, req.port
-    );
+    tracing::debug!(addr = ?req.addr, port = ?req.port, "request received");
 
     let (target_stream, local_addr) = match config
         .connect_target
         .connect(req.addr, req.port)
-        .instrument(info_span!("conneet to target"))
+        .instrument(tracing::trace_span!("conneet to target"))
         .await
     {
         Ok(stream) => stream,
         Err(err) => {
-            error!("connect target failed: {:?}", err);
+            tracing::debug!("connect target failed: {:?}", err);
 
             match server_msg_write
                 .send(msg::ServerMsg::ReplyError(err.into()))
-                .instrument(info_span!("send reply error to client"))
+                .instrument(tracing::trace_span!("send reply error to client"))
                 .await
             {
                 Ok(_) => {
                     return Ok(());
                 }
                 Err(err) => {
-                    error!("falied to send reply error to client: {:?}", err);
+                    tracing::error!("falied to send reply error to client: {:?}", err);
                     return Ok(());
                 }
             }
         }
     };
 
+    let server_msg = msg::Reply {
+        bound_addr: local_addr,
+    }
+    .into();
+    tracing::debug!(server_msg = ?server_msg, "server msg");
+
     if let Err(_) = server_msg_write
-        .send(msg::ServerMsg::Reply(msg::Reply {
-            bound_addr: local_addr,
-        }))
-        .instrument(info_span!("send reply to client"))
+        .send(server_msg)
+        .instrument(tracing::trace_span!("send reply to client"))
         .await
     {
-        error!("falied to send reply to client, exiting");
+        tracing::error!("falied to send reply to client, exiting");
         return Ok(());
     };
 
@@ -108,16 +109,20 @@ where
 
     let target_to_client = session::stream_to_sequenced::run(
         cmd_target_to_client_cmd_rx,
-        server_msg_write.clone().with_sync(|evt| match evt {
-            session::stream_to_sequenced::Event::Data(data) => data.into(),
-            session::stream_to_sequenced::Event::Eof(eof) => eof.into(),
-            session::stream_to_sequenced::Event::IoError(err) => err.into(),
+        server_msg_write.clone().with_sync(|evt| {
+            let server_msg = match evt {
+                session::stream_to_sequenced::Event::Data(data) => data.into(),
+                session::stream_to_sequenced::Event::Eof(eof) => eof.into(),
+                session::stream_to_sequenced::Event::IoError(err) => err.into(),
+            };
+            tracing::debug!(server_msg = ?server_msg, "server msg");
+            server_msg
         }),
         target_read,
         None,
         config.clone().into(),
     )
-    .instrument_with_result(info_span!("target to client"));
+    .instrument_with_result(tracing::trace_span!("target to client"));
 
     let (mut client_to_target_cmd_tx, client_to_target_cmd_rx) =
         futures::channel::mpsc::unbounded();
@@ -130,32 +135,33 @@ where
         target_write,
         config.into(),
     )
-    .instrument_with_result(info_span!("client to target"));
+    .instrument_with_result(tracing::trace_span!("client to target"));
 
     let client_msg_handling = async move {
         while let Some(msg) = client_msg_read.next().await {
+            tracing::debug!(client_msg = ?msg, "client msg");
             match msg {
                 msg::ClientMsg::Data(data) => {
                     if let Err(_) = client_to_target_cmd_tx.send(data.into()).await {
-                        debug!("client to target command channel is broken");
+                        tracing::debug!("client to target command channel is broken");
                         continue;
                     }
                 }
                 msg::ClientMsg::Ack(ack) => {
                     if let Err(_) = target_to_client_cmd_tx.send(ack.into()).await {
-                        debug!("target to client command channel is broken");
+                        tracing::debug!("target to client command channel is broken");
                         continue;
                     }
                 }
                 msg::ClientMsg::Eof(eof) => {
                     if let Err(_) = client_to_target_cmd_tx.send(eof.into()).await {
-                        debug!("client to target command channel is broken");
+                        tracing::debug!("client to target command channel is broken");
                         continue;
                     }
                 }
                 msg::ClientMsg::EofAck(eof_ack) => {
                     if let Err(_) = target_to_client_cmd_tx.send(eof_ack.into()).await {
-                        debug!("target to client command channel is broken");
+                        tracing::debug!("target to client command channel is broken");
                         continue;
                     }
                 }
@@ -166,7 +172,7 @@ where
             }
         }
     }
-    .instrument_with_result(info_span!("client message handling"));
+    .instrument_with_result(tracing::trace_span!("client message handling"));
 
     let streaming = async move { tokio::try_join!(target_to_client, client_to_target).map(|_| ()) };
 

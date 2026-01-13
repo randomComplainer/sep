@@ -16,7 +16,7 @@ pub async fn run(
     let (ping_tx, mut ping_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let ping_waiting_task = async move {
         let mut ping_counter = 0;
-        let mut ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(5)));
+        let mut ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
         loop {
             tokio::select! {
                 _ = ping_timer.as_mut() => {
@@ -28,7 +28,7 @@ pub async fn run(
                         Some(_) => {
                             debug!(count=ping_counter, "ping");
                             ping_counter += 1;
-                            ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(5)));
+                            ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
                         }
                         None => {
                             debug!("ping rx is broken, exiting");
@@ -127,7 +127,7 @@ pub async fn run(
                         .await?;
 
                     pong_counter += 1;
-                    pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(1)));
+                    pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(5)));
                 }
             }
         }

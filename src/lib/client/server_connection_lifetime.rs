@@ -103,7 +103,7 @@ pub fn run(
                                     .await?;
 
                                 ping_counter += 1;
-                                ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(1)));
+                                ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(5)));
                             },
                             _ = end_of_stream_notifier.wait() => {
                                 debug!("end of server messages notified");
@@ -114,103 +114,73 @@ pub fn run(
         }}
         .instrument(debug_span!("send loop"));
 
-        let (pong_tx, mut pong_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-        let pong_waiting_loop = {
-            let end_of_stream_notifier = end_of_stream_notifier.clone();
-            async move {
-                let mut pong_counter = 0;
-                let mut pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(5)));
-                loop {
-                    tokio::select! {
-                        _ = pong_timer.as_mut() => {
-                            warn!("pong timeout, exiting");
-                            return Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "pong timeout"));
-                        },
-                        pong = pong_rx.recv() => {
-                            match pong {
-                                Some(_) => {
-                                    debug!(count=pong_counter, "pong");
-                                    pong_counter += 1;
-                                    pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(5)));
-                                }
-                                None => {
-                                    debug!("pong rx is broken, exiting");
-                                    return Ok::<_, std::io::Error>(());
-                                }
-                            }
-                        },
-                        _ = end_of_stream_notifier.wait() => {
-                            return Ok::<_, std::io::Error>(());
-                        }
-                    }
-                }
-        } }.instrument(info_span!("pong waiting loop"));
-
         let recv_loop = async move {
-            while let Some(server_msg) = match server_read
-                .recv_msg()
-                .instrument(debug_span!("receive server msg"))
-                .await
-            {
-                Ok(server_msg) => server_msg,
-                Err(e) => match e {
-                    DecodeError::Io(err) => return Err(err),
-                    DecodeError::InvalidStream(err) => panic!("invalid stream: {:?}", err),
-                },
-            } {
-                debug!("message from server: {:?}", &server_msg);
+            let mut pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
+            let mut pong_counter = 0;
 
-                use protocol::msg::conn::ServerMsg::*;
-
-                match server_msg {
-                    Protocol(server_msg) => match server_msg {
-                        protocol::msg::ServerMsg::SessionMsg(proxyee_id, server_msg) => {
-                            let span = debug_span!(
-                                "forward server msg to session",
-                                session_id = proxyee_id,
-                                ?server_msg
-                            );
-
-                            if let Err(_) = server_msg_tx
-                                .send((proxyee_id, server_msg))
-                                .instrument(span)
-                                .await
-                            {
-                                warn!("failed to send server msg to session, exiting");
+            loop {
+                tokio::select! {
+                    _ = pong_timer.as_mut() => {
+                        warn!("pong timeout, exiting");
+                        return Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "pong timeout"));
+                    },
+                    msg = server_read.recv_msg() => {
+                        let server_msg = match msg {
+                            Err(err) => match err {
+                                DecodeError::Io(err) => return Err(err),
+                                DecodeError::InvalidStream(err) => panic!("invalid stream: {:?}", err),
+                            },
+                            Ok(Some(msg)) => msg,
+                            Ok(None) => {
                                 return Err(std::io::Error::new(
-                                    std::io::ErrorKind::Other,
-                                    "failed to forward server msg",
+                                    std::io::ErrorKind::UnexpectedEof,
+                                    "unexpected end of server read stream",
                                 ));
                             }
-                        }
-                    },
-                    EndOfStream => {
-                        debug!("end of server messages");
-                        let _ = end_of_stream_notifier.set(());
-                        return Ok::<_, std::io::Error>(());
-                    }
-                    Pong => {
-                        if let Err(_) = pong_tx.send(()) {
-                            warn!("pong tx is broken, exiting");
-                            return Ok(());
-                        }
-                    }
-                };
-            }
+                        };
 
-            Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "unexpected end of server read stream",
-            ))
+                        debug!("message from server: {:?}", &server_msg);
+
+                        use protocol::msg::conn::ServerMsg::*;
+
+                        match server_msg {
+                            Protocol(server_msg) => match server_msg {
+                                protocol::msg::ServerMsg::SessionMsg(proxyee_id, server_msg) => {
+                                    let span = debug_span!(
+                                        "forward server msg to session",
+                                        session_id = proxyee_id,
+                                        ?server_msg
+                                    );
+
+                                    if let Err(_) = server_msg_tx
+                                        .send((proxyee_id, server_msg))
+                                            .instrument(span)
+                                            .await
+                                    {
+                                        warn!("failed to send server msg to session, exiting");
+                                        return Err(std::io::Error::new(
+                                                std::io::ErrorKind::Other,
+                                                "failed to forward server msg",
+                                        ));
+                                    }
+                                }
+                            },
+                            EndOfStream => {
+                                debug!("end of server messages");
+                                let _ = end_of_stream_notifier.set(());
+                                return Ok::<_, std::io::Error>(());
+                            }
+                            Pong => {
+                                debug!(count=pong_counter, "pong");
+                                pong_counter += 1;
+                                pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
+                            }
+                        };
+                    }
+                }   
+            }
         }
         .instrument(debug_span!("recv loop"));
-
-        let recv_loop = async move {
-            tokio::try_join! {
-                recv_loop,
-                pong_waiting_loop,
-            }.map(|_| ())
-        };
 
         match futures::future::select(Box::pin(send_loop), Box::pin(recv_loop) ).await {
             future::Either::Left((send_result, _) ) => send_result,

@@ -1,0 +1,27 @@
+def with_fields(filter):
+	select(.fields | filter);
+
+def with_spans(filter):
+	select((.spans | type == "array") and (.spans | any(filter)));
+
+def levels:
+	["ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
+
+def with_level(filter):
+	select((.level | type == "string") and (.level | filter));
+
+# gte
+def level($level_filter_str):
+	with_level(. as $entry_level 
+		| (levels | index($level_filter_str | ascii_upcase)) >= (levels | index($entry_level))
+	);
+
+def req_url(url): 
+	with_fields(
+		(.message=="request addr" and (.addr | contains(url))) or 	# client
+		(.message=="request received" and (.addr | contains(url)))  # server
+	);
+
+def session(session_id):
+	with_spans(.session_id==session_id and .name=="session");
+

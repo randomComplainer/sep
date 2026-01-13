@@ -64,10 +64,19 @@ fn cal_rand_byte_len(key: &[u8; 32], nonce: &[u8; 12], timestamp: u64) -> usize 
     len
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct ConnId {
     pub timestamp: u64,
     pub client_port: u16,
+}
+
+impl std::fmt::Debug for ConnId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ConnId")
+            .field(&self.timestamp)
+            .field(&self.client_port)
+            .finish()
+    }
 }
 
 impl ConnId {

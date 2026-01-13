@@ -77,7 +77,7 @@ where
                         .await
                         .expect("conn_client_msg_tx is broken");
 
-                    super::server_connection_lifetime::run(
+                    let conn_result = super::server_connection_lifetime::run(
                         server_read,
                         server_write,
                         conn_client_msg_rx,
@@ -85,13 +85,16 @@ where
                             .clone()
                             .with_sync(move |client_msg| Event::ServerMsg(client_msg)),
                     )
-                    .inspect(|_| {
-                        state_tx.send_modify(|old| {
-                            old.server_conn_count -= 1;
-                        })
-                    })
-                    .instrument_with_result(lifetime_span)
-                    .await?;
+                    .instrument(lifetime_span)
+                    .await;
+
+                    state_tx.send_modify(|old| {
+                        old.server_conn_count -= 1;
+                    });
+
+                    if let Err(err) = conn_result {
+                        warn!(?err, "server connection lifetime task failed");
+                    }
 
                     Ok::<_, std::io::Error>(())
                 })
@@ -111,7 +114,7 @@ where
                 })
                 .await
             {
-                debug!(state = ?x.borrow(), "creating more server connections");
+                debug!(state = ?&*x, "creating more server connections");
                 drop(x);
                 create_connection.clone()().await;
             }
