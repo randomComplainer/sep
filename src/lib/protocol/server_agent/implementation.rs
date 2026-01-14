@@ -269,7 +269,7 @@ where
                 buf.put_u8(1u8);
                 self.stream_write.write_all(&mut buf).await?;
             }
-            msg::conn::ServerMsg::Pong => {
+            msg::conn::ServerMsg::Ping => {
                 buf.put_u8(2u8);
                 self.stream_write.write_all(&mut buf).await?;
             }

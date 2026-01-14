@@ -115,14 +115,14 @@ pub fn run(
         .instrument(debug_span!("send loop"));
 
         let recv_loop = async move {
-            let mut pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
-            let mut pong_counter = 0;
+            let mut ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
+            let mut ping_counter = 0;
 
             loop {
                 tokio::select! {
-                    _ = pong_timer.as_mut() => {
-                        warn!("pong timeout, exiting");
-                        return Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "pong timeout"));
+                    _ = ping_timer.as_mut() => {
+                        warn!("ping timeout, exiting");
+                        return Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "ping timeout"));
                     },
                     msg = server_read.recv_msg() => {
                         let server_msg = match msg {
@@ -170,10 +170,10 @@ pub fn run(
                                 let _ = end_of_stream_notifier.set(());
                                 return Ok::<_, std::io::Error>(());
                             }
-                            Pong => {
-                                debug!(count=pong_counter, "pong");
-                                pong_counter += 1;
-                                pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
+                            Ping => {
+                                debug!(count=ping_counter, "ping");
+                                ping_counter += 1;
+                                ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
                             }
                         };
                     }

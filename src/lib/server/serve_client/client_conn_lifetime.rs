@@ -2,7 +2,7 @@ use std::ops::Add;
 
 use futures::prelude::*;
 use rand::prelude::*;
-use tracing::*;
+use tracing::Instrument as _;
 
 use crate::handover;
 use crate::prelude::*;
@@ -20,25 +20,25 @@ pub async fn run(
         loop {
             tokio::select! {
                 _ = ping_timer.as_mut() => {
-                    warn!("ping timeout, exiting");
+                    tracing::warn!("ping timeout, exiting");
                     return Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "ping timeout"));
                 },
                 ping = ping_rx.recv() => {
                     match ping {
                         Some(_) => {
-                            debug!(count=ping_counter, "ping");
+                            tracing::trace!(count=ping_counter, "ping");
                             ping_counter += 1;
                             ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
                         }
                         None => {
-                            debug!("ping rx is broken, exiting");
+                            tracing::trace!("ping rx is broken, exiting");
                             return Ok::<_, std::io::Error>(());
                         }
                     }
                 }
             }
         }
-    }.instrument(info_span!("ping waiting task"));
+    }.instrument(tracing::trace_span!("ping waiting task"));
 
     let reciving_msg_from_client = async move {
         while let Some(msg) = match client_read.recv_msg().await {
@@ -48,23 +48,20 @@ pub async fn run(
                 DecodeError::InvalidStream(err) => panic!("invalid stream: {:?}", err),
             },
         } {
-            debug!("message from client: {:?}", &msg);
+            tracing::debug!("message from client: {:?}", &msg);
 
             use protocol::msg::conn::ClientMsg::*;
 
             match msg {
                 Protocol(msg) => {
                     if let Err(_) = client_msg_tx.send(msg).await {
-                        warn!("failed to forward client message, exiting");
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "failed to forward client message",
-                        ));
+                        tracing::warn!("failed to forward client message, exiting");
+                        return Ok(());
                     }
                 }
                 Ping => {
                     if let Err(_) = ping_tx.send(()) {
-                        warn!("ping tx is broken, exiting");
+                        tracing::warn!("ping tx is broken, exiting");
                         return Ok(());
                     }
                 }
@@ -79,8 +76,8 @@ pub async fn run(
             rand::rng().random_range(..=10u64),
         ));
         let mut time_limit_task = Box::pin(tokio::time::sleep(duration));
-        let mut pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(0)));
-        let mut pong_counter = 0;
+        let mut ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(0)));
+        let mut ping_counter = 0;
 
         macro_rules! send_msg {
             ($msg:expr) => {
@@ -101,7 +98,7 @@ pub async fn run(
         loop {
             tokio::select! {
                 _ = time_limit_task.as_mut() => {
-                    let span = debug_span!("send end of stream to client");
+                    let span = tracing::trace_span!("send end of stream to client");
                     send_msg!(protocol::msg::conn::ServerMsg::EndOfStream)
                         .instrument(span)
                         .await?;
@@ -110,7 +107,7 @@ pub async fn run(
                 },
                 server_msg_opt = server_msg_rx.recv() => {
                     if let Some(server_msg) = server_msg_opt {
-                        let span = debug_span!("message to client", ?server_msg);
+                        let span = tracing::trace_span!("message to client", ?server_msg);
                         send_msg!(server_msg.into())
                             .instrument(span)
                             .await?;
@@ -119,15 +116,15 @@ pub async fn run(
                     }
 
                 },
-                _ = pong_timer.as_mut() => {
-                    debug!(count = pong_counter, "pong");
+                _ = ping_timer.as_mut() => {
+                    tracing::trace!(count = ping_counter, "ping");
 
-                    send_msg!(protocol::msg::conn::ServerMsg::Pong)
-                        .instrument(debug_span!("send pong", count = pong_counter))
+                    send_msg!(protocol::msg::conn::ServerMsg::Ping)
+                        .instrument(tracing::trace_span!("send ping", count = ping_counter))
                         .await?;
 
-                    pong_counter += 1;
-                    pong_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(5)));
+                    ping_counter += 1;
+                    ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(5)));
                 }
             }
         }

@@ -16,13 +16,13 @@ pub mod conn {
     pub enum ServerMsg {
         Protocol(super::ServerMsg),
         EndOfStream,
-        Pong,
+        Ping,
     }
 
     pub enum ServerMsgReader {
         Protocol(super::ServerMsgReader),
         EndOfStream,
-        Pong,
+        Ping,
     }
 
     impl Reader for ServerMsgReader {
@@ -33,7 +33,7 @@ pub mod conn {
             match self {
                 Self::Protocol(protocol) => ServerMsg::Protocol(protocol.read(buf)),
                 Self::EndOfStream => ServerMsg::EndOfStream,
-                Self::Pong => ServerMsg::Pong,
+                Self::Ping => ServerMsg::Ping,
             }
         }
     }
@@ -45,7 +45,7 @@ pub mod conn {
                     ServerMsgReader::Protocol(crate::peek!(super::server_msg_peeker().peek(cursor)))
                 }
                 1 => ServerMsgReader::EndOfStream,
-                2 => ServerMsgReader::Pong,
+                2 => ServerMsgReader::Ping,
                 x => {
                     return Err(
                         decode::unknown_enum_code("connection level server message", x).into(),
