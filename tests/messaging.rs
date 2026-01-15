@@ -1,7 +1,10 @@
 #![feature(assert_matches)]
 use std::net::SocketAddr;
 
-use sep_lib::prelude::*;
+use sep_lib::{
+    prelude::*,
+    protocol::{MessageReader as _, MessageWriter as _},
+};
 
 use protocol::test_utils::create_greeted_pair as create_pair;
 
@@ -34,7 +37,7 @@ async fn client_req_v4() {
     let server = async move {
         let msg = server_read.recv_msg().await.unwrap().unwrap();
         match msg {
-            protocol::msg::conn::ClientMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
+            protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
                 session::msg::ClientMsg::Request(session::msg::Request {
                     addr: decode::ReadRequestAddr::Ipv4(addr),
@@ -83,7 +86,7 @@ async fn client_req_v6() {
     let server = async move {
         let msg = server_read.recv_msg().await.unwrap().unwrap();
         match msg {
-            protocol::msg::conn::ClientMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
+            protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
                 session::msg::ClientMsg::Request(session::msg::Request {
                     addr: decode::ReadRequestAddr::Ipv6(addr),
@@ -129,7 +132,7 @@ async fn client_req_domain() {
     let server = async move {
         let msg = server_read.recv_msg().await.unwrap().unwrap();
         match msg {
-            protocol::msg::conn::ClientMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
+            protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
                 session::msg::ClientMsg::Request(session::msg::Request {
                     addr: decode::ReadRequestAddr::Domain(addr),
@@ -161,7 +164,7 @@ async fn server_reply_v4() {
         let msg = client_read.recv_msg().await.unwrap().unwrap();
 
         match msg {
-            protocol::msg::conn::ServerMsg::Protocol(protocol::msg::ServerMsg::SessionMsg(
+            protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ServerMsg::SessionMsg(
                 proxyee_id,
                 session::msg::ServerMsg::Reply(session::msg::Reply {
                     bound_addr: recv_addr,
@@ -221,7 +224,7 @@ async fn client_data() {
     let server = async move {
         let msg = server_read.recv_msg().await.unwrap().unwrap();
         match msg {
-            protocol::msg::conn::ClientMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
+            protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
                 session::msg::ClientMsg::Data(session::msg::Data {
                     seq,
@@ -253,7 +256,7 @@ async fn server_data() {
             let msg = client_read.recv_msg().await.unwrap().unwrap();
 
             match msg {
-                protocol::msg::conn::ServerMsg::Protocol(protocol::msg::ServerMsg::SessionMsg(
+                protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ServerMsg::SessionMsg(
                     proxyee_id,
                     session::msg::ServerMsg::Data(session::msg::Data {
                         seq,
@@ -311,7 +314,7 @@ async fn client_ack() {
     let server = async move {
         let msg = server_read.recv_msg().await.unwrap().unwrap();
         match msg {
-            protocol::msg::conn::ClientMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
+            protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
                 session::msg::ClientMsg::Ack(session::msg::Ack { bytes }),
             )) => {
@@ -336,7 +339,7 @@ async fn server_ack() {
         async move {
             let msg = client_read.recv_msg().await.unwrap().unwrap();
             match msg {
-                protocol::msg::conn::ServerMsg::Protocol(protocol::msg::ServerMsg::SessionMsg(
+                protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ServerMsg::SessionMsg(
                     proxyee_id,
                     session::msg::ServerMsg::Ack(session::msg::Ack { bytes }),
                 )) => {
@@ -387,7 +390,7 @@ async fn client_eof() {
     let server = async move {
         let msg = server_read.recv_msg().await.unwrap().unwrap();
         match msg {
-            protocol::msg::conn::ClientMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
+            protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
                 session::msg::ClientMsg::Eof(session::msg::Eof { seq }),
             )) => {
@@ -412,7 +415,7 @@ async fn server_eof() {
         async move {
             let msg = client_read.recv_msg().await.unwrap().unwrap();
             match msg {
-                protocol::msg::conn::ServerMsg::Protocol(protocol::msg::ServerMsg::SessionMsg(
+                protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ServerMsg::SessionMsg(
                     proxyee_id,
                     session::msg::ServerMsg::Eof(session::msg::Eof { seq }),
                 )) => {

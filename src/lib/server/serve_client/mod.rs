@@ -6,7 +6,6 @@ use crate::handover;
 use crate::prelude::*;
 use crate::protocol::ConnId;
 
-mod client_conn_lifetime;
 mod conn_manager;
 mod session_manager;
 
@@ -42,8 +41,10 @@ pub async fn run<GreetedRead, GreetedWrite, TConnectTarget>(
     config: Config<TConnectTarget>,
 ) -> Result<(), std::io::Error>
 where
-    GreetedRead: protocol::server_agent::GreetedRead,
-    GreetedWrite: protocol::server_agent::GreetedWrite,
+    GreetedRead:
+        protocol::MessageReader<Message = protocol::msg::conn::ConnMsg<protocol::msg::ClientMsg>>,
+    GreetedWrite:
+        protocol::MessageWriter<Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>>,
     TConnectTarget: ConnectTarget,
 {
     let (session_manager_evt_tx, mut session_manager_evt_rx) =

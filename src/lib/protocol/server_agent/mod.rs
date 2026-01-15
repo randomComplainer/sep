@@ -37,22 +37,3 @@ pub trait Init {
         InitError<Self::Stream>,
     >;
 }
-
-pub trait GreetedRead
-where
-    Self: Send + 'static,
-{
-    fn recv_msg(
-        &mut self,
-    ) -> impl std::future::Future<Output = Result<Option<msg::conn::ClientMsg>, DecodeError>> + Send;
-}
-
-pub trait GreetedWrite
-where
-    Self: Send + 'static,
-{
-    fn send_msg(
-        &mut self,
-        msg: msg::conn::ServerMsg,
-    ) -> impl std::future::Future<Output = Result<(), std::io::Error>> + Send;
-}

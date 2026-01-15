@@ -5,6 +5,7 @@ pub mod connect_target;
 pub mod future_ext;
 pub mod handover;
 mod message_dispatch;
+mod protocol_conn_lifetime;
 pub mod sink_ext;
 pub mod task_scope;
 

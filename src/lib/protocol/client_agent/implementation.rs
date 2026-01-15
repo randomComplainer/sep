@@ -93,7 +93,18 @@ where
     async fn send_greeting(
         self,
         timestamp: u64,
-    ) -> Result<(ConnId, impl super::GreetedRead, impl super::GreetedWrite), std::io::Error> {
+    ) -> Result<
+        (
+            ConnId,
+            impl protocol::MessageReader<
+                Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>,
+            >,
+            impl protocol::MessageWriter<
+                Message = protocol::msg::conn::ConnMsg<protocol::msg::ClientMsg>,
+            >,
+        ),
+        std::io::Error,
+    > {
         self.send_greeting(timestamp).await
     }
 }
@@ -114,24 +125,22 @@ where
     pub fn new(stream_read: FramedRead<Stream, Cipher>) -> Self {
         Self { stream_read }
     }
-
-    pub async fn recv_msg(&mut self) -> Result<Option<msg::conn::ServerMsg>, decode::DecodeError> {
-        let msg = self
-            .stream_read
-            .read_next(msg::conn::server_msg_peeker())
-            .await?;
-
-        Ok(msg)
-    }
 }
 
-impl<Stream, Cipher> super::GreetedRead for GreetedRead<Stream, Cipher>
+impl<Stream, Cipher> protocol::MessageReader for GreetedRead<Stream, Cipher>
 where
     Stream: StaticStream,
     Cipher: StaticCipher,
 {
-    async fn recv_msg(&mut self) -> Result<Option<msg::conn::ServerMsg>, decode::DecodeError> {
-        self.recv_msg().await
+    type Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>;
+
+    async fn recv_msg(&mut self) -> Result<Option<Self::Message>, decode::DecodeError> {
+        let msg = self
+            .stream_read
+            .read_next(msg::conn::conn_msg_peeker(msg::server_msg_peeker()))
+            .await?;
+
+        Ok(msg)
     }
 }
 
@@ -147,16 +156,21 @@ where
     pub fn new(stream_write: WriteEncrypted<Stream, Cipher>) -> Self {
         Self { stream_write }
     }
+}
 
-    pub async fn send_msg(
-        &mut self,
-        msg: protocol::msg::conn::ClientMsg,
-    ) -> Result<(), std::io::Error> {
+impl<Stream, Cipher> protocol::MessageWriter for GreetedWrite<Stream, Cipher>
+where
+    Stream: AsyncWrite + Send + Unpin + 'static,
+    Cipher: StaticCipher,
+{
+    type Message = protocol::msg::conn::ConnMsg<protocol::msg::ClientMsg>;
+
+    async fn send_msg(&mut self, msg: Self::Message) -> Result<(), std::io::Error> {
         // TODO: Do I need calculated size?
         let mut buf = BytesMut::with_capacity(64);
 
         match msg {
-            protocol::msg::conn::ClientMsg::Protocol(msg) => {
+            protocol::msg::conn::ConnMsg::Protocol(msg) => {
                 buf.put_u8(0u8);
                 match msg {
                     protocol::msg::ClientMsg::SessionMsg(proxyee_id, session_msg) => {
@@ -213,29 +227,16 @@ where
                     }
                 }
             }
-            protocol::msg::conn::ClientMsg::Ping => {
+            protocol::msg::conn::ConnMsg::Ping => {
                 buf.put_u8(1u8);
+                self.stream_write.write_all(&mut buf).await?;
+            }
+            protocol::msg::conn::ConnMsg::EndOfStream => {
+                buf.put_u8(2u8);
                 self.stream_write.write_all(&mut buf).await?;
             }
         };
 
         Ok(())
-    }
-
-    pub async fn close(self) -> Result<(), std::io::Error> {
-        self.stream_write.close().await
-    }
-}
-
-impl<Stream, Cipher> super::GreetedWrite for GreetedWrite<Stream, Cipher>
-where
-    Stream: AsyncWrite + Send + Unpin + 'static,
-    Cipher: StaticCipher,
-{
-    async fn send_msg(
-        &mut self,
-        msg: protocol::msg::conn::ClientMsg,
-    ) -> Result<(), std::io::Error> {
-        self.send_msg(msg).await
     }
 }

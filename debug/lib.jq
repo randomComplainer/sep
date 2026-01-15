@@ -10,6 +10,7 @@ def levels:
 def with_level(filter):
 	select((.level | type == "string") and (.level | filter));
 
+
 # gte
 def level($level_filter_str):
 	with_level(. as $entry_level 
@@ -25,3 +26,5 @@ def req_url(url):
 def session(session_id):
 	with_spans(.session_id==session_id and .name=="session");
 
+def no_ping:
+	.span.msg != "Ping" and .fields.message != "ping";

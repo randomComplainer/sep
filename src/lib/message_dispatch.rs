@@ -1,17 +1,18 @@
 use std::fmt::Debug;
 
 use futures::prelude::*;
+use tokio::sync::oneshot;
 use tracing::*;
 
-use crate::handover;
 use crate::prelude::*;
+use crate::protocol_conn_lifetime::SendEntry;
 
 pub enum Command<ConnId, Msg>
 where
     Msg: Send + 'static,
 {
     Msg(Msg),
-    Sender(ConnId, handover::Sender<Msg>),
+    Sender(ConnId, oneshot::Sender<SendEntry<Msg>>),
 }
 
 // send given messages to senders
@@ -27,52 +28,59 @@ where
     let (cmd_tx, mut cmd_rx) = futures::channel::mpsc::unbounded::<Command<ConnId, Msg>>();
 
     let (sender_queue_tx, sender_queue_rx) =
-        async_channel::unbounded::<(ConnId, handover::Sender<Msg>)>();
+        async_channel::unbounded::<(ConnId, oneshot::Sender<SendEntry<Msg>>)>();
 
     // error on borken channel
     let (mut sending_scope_handle, sending_scope_task) = task_scope::new_scope::<()>();
 
-    let send = {
-        let sender_queue_tx = sender_queue_tx.clone();
+    let send = move |msg: Msg| {
+        let sender_queue_rx = sender_queue_rx.clone();
+        let outer_span = tracing::trace_span!("dispatch message", msg = ?msg);
 
-        move |msg: Msg| {
-            let sender_queue_tx = sender_queue_tx.clone();
-            let sender_queue_rx = sender_queue_rx.clone();
-            let outer_span = info_span!("forward message outer", msg = ?msg);
+        async move {
+            let mut msg = msg;
 
-            async move {
-                let mut msg = msg;
+            loop {
+                let (conn_id, sender) = match sender_queue_rx.recv().await {
+                    Ok(x) => x,
+                    Err(_) => {
+                        warn!("sender_queue_rx is broken, exiting");
+                        return Err(());
+                    }
+                };
 
-                loop {
-                    let (conn_id, mut sender) = match sender_queue_rx.recv().await {
-                        Ok(x) => x,
+                let span = tracing::trace_span!("forward message to conn", ?conn_id);
+
+                match async move {
+                    let (ack_tx, ack_rx) = oneshot::channel::<()>();
+
+                    if let Err((msg_rejected, _)) = sender.send((msg, ack_tx)) {
+                        tracing::trace!("server_write is closed, retry sending message");
+                        return Err(msg_rejected);
+                    }
+
+                    match ack_rx.await {
+                        Ok(()) => Ok(()),
                         Err(_) => {
-                            warn!("sender_queue_rx is broken, exiting");
-                            return Err(());
+                            error!("message lost");
+                            panic!("message lost")
                         }
-                    };
-
-                    let span = info_span!("forward message to connection", ?msg, ?conn_id);
-
-                    match sender.send(msg).instrument(span).await {
-                        Ok(()) => {
-                            if let Err(_) = sender_queue_tx.send((conn_id, sender)).await {
-                                warn!("sender_queue_tx is broken, exiting");
-                                return Err(());
-                            }
-                            return Ok(());
-                        }
-                        Err(msg_opt) => {
-                            debug!("server_write is closed");
-                            msg = msg_opt.expect("message consumed unexpectedly");
-                            debug!("retry sending message");
-                            continue;
-                        }
-                    };
+                    }
+                }
+                .instrument(span)
+                .await
+                {
+                    Ok(()) => {
+                        return Ok(());
+                    }
+                    Err(msg_rejected) => {
+                        msg = msg_rejected;
+                        continue;
+                    }
                 }
             }
-            .instrument(outer_span)
         }
+        .instrument(outer_span)
     };
 
     let cmd_loop = async move {
@@ -81,8 +89,8 @@ where
                 Command::Msg(msg) => {
                     sending_scope_handle.run_async(send(msg)).await;
                 }
-                Command::Sender(conn_id, sender) => {
-                    if let Err(_) = sender_queue_tx.send((conn_id, sender)).await {
+                Command::Sender(conn_id, entry) => {
+                    if let Err(_) = sender_queue_tx.send((conn_id, entry)).await {
                         warn!("sender_queue_tx is broken, exiting");
                         return;
                     }

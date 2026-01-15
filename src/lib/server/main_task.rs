@@ -50,8 +50,10 @@ pub async fn run<GreetedRead, GreetedWrite>(
     config: Config,
 ) -> Result<(), std::io::Error>
 where
-    GreetedRead: protocol::server_agent::GreetedRead,
-    GreetedWrite: protocol::server_agent::GreetedWrite,
+    GreetedRead:
+        protocol::MessageReader<Message = protocol::msg::conn::ConnMsg<protocol::msg::ClientMsg>>,
+    GreetedWrite:
+        protocol::MessageWriter<Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>>,
 {
     let mut conn_senders = HashMap::<
         Box<protocol::ClientId>,

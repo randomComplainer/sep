@@ -13,6 +13,53 @@ pub mod conn {
     use crate::prelude::*;
 
     #[derive(Debug, From, PartialEq, Eq)]
+    pub enum ConnMsg<TMessage> {
+        Protocol(TMessage),
+        Ping,
+        EndOfStream,
+    }
+
+    pub enum ConnMsgReader<TMessage> {
+        Protocol(TMessage),
+        Ping,
+        EndOfStream,
+    }
+
+    impl<TMessageReader> Reader for ConnMsgReader<TMessageReader>
+    where
+        TMessageReader: Reader,
+    {
+        type Value = ConnMsg<TMessageReader::Value>;
+
+        fn read(&self, buf: &mut BytesMut) -> Self::Value {
+            buf.split_to(1)[0];
+            match self {
+                Self::Protocol(protocol) => ConnMsg::Protocol(protocol.read(buf)),
+                Self::Ping => ConnMsg::Ping,
+                Self::EndOfStream => ConnMsg::EndOfStream,
+            }
+        }
+    }
+
+    pub fn conn_msg_peeker<TMessage, TMessageReader>(
+        protocol_msg_peeker: impl Peeker<TMessage, Reader = TMessageReader>,
+    ) -> impl Peeker<ConnMsg<TMessage>, Reader = ConnMsgReader<TMessageReader>>
+    where
+        TMessageReader: Reader<Value = TMessage>,
+    {
+        peek::peek_enum(move |cursor, enum_code| {
+            Ok(Some(match enum_code {
+                0 => ConnMsgReader::Protocol(crate::peek!(protocol_msg_peeker.peek(cursor))),
+                1 => ConnMsgReader::Ping,
+                2 => ConnMsgReader::EndOfStream,
+                x => {
+                    return Err(decode::unknown_enum_code("connection level message", x).into());
+                }
+            }))
+        })
+    }
+
+    #[derive(Debug, From, PartialEq, Eq)]
     pub enum ServerMsg {
         Protocol(super::ServerMsg),
         EndOfStream,

@@ -4,7 +4,7 @@ use tracing::*;
 
 use crate::prelude::*;
 
-use super::{server_connection_lifetime, server_connection_manager, session_manager};
+use super::{ServerConnector, server_connection_manager, session_manager};
 
 #[derive(Error, Debug)]
 pub enum ClientError {
@@ -40,13 +40,13 @@ impl Into<server_connection_manager::Config> for Config {
 
 // Exits only on server connection io error
 // protocol error panics
-pub async fn run<ServerConnector>(
+pub async fn run<TServerConnector>(
     new_proxee_rx: impl Stream<Item = (u16, impl socks5::server_agent::Init)> + Unpin + Send + 'static,
-    connect_to_server: ServerConnector,
+    connect_to_server: TServerConnector,
     config: Config,
 ) -> std::io::Error
 where
-    ServerConnector: server_connection_lifetime::ServerConnector + Send,
+    TServerConnector: ServerConnector + Send,
 {
     let (session_evt_tx, mut session_evt_rx) = futures::channel::mpsc::unbounded();
 

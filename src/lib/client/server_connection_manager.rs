@@ -1,9 +1,6 @@
-use std::borrow::Borrow;
-
 use futures::prelude::*;
 use tracing::*;
 
-use crate::handover;
 use crate::message_dispatch;
 use crate::prelude::*;
 
@@ -35,7 +32,7 @@ pub async fn run<ServerConnector>(
     config: Config,
 ) -> std::io::Error
 where
-    ServerConnector: super::server_connection_lifetime::ServerConnector + Send,
+    ServerConnector: super::ServerConnector + Send,
 {
     let (connection_scope_handle, connection_scope_task) =
         task_scope::new_scope::<std::io::Error>();
@@ -52,7 +49,7 @@ where
     // so it will not block you too long on await
     let create_connection = {
         let connect_to_server = connect_to_server.clone();
-        let mut client_msg_dispatch_cmd_tx = client_msg_dispatch_cmd_tx.clone();
+        let client_msg_dispatch_cmd_tx = client_msg_dispatch_cmd_tx.clone();
         let mut connecting_scope_handle = connection_scope_handle.clone();
         let evt_tx = evt_tx.clone();
         let state_tx = state_tx.clone();
@@ -60,43 +57,48 @@ where
             state_tx.send_modify(|old| {
                 old.server_conn_count += 1;
             });
+
             connecting_scope_handle
                 .run_async(async move {
-                    let (conn_client_msg_tx, conn_client_msg_rx) = handover::channel();
+                    let (conn_id, server_read, server_write) = connect_to_server
+                        .connect()
+                        .instrument(tracing::trace_span!("connecte to server"))
+                        .await?;
 
-                    debug!("connecting to server");
-                    let (conn_id, server_read, server_write) = connect_to_server.connect().await?;
-                    let lifetime_span = info_span!("server connection lifetime", ?conn_id);
-                    debug!("connected to server");
+                    let lifetime_span = tracing::trace_span!("conn lifetime", ?conn_id);
 
-                    client_msg_dispatch_cmd_tx
-                        .send(message_dispatch::Command::Sender(
-                            conn_id,
-                            conn_client_msg_tx,
-                        ))
-                        .await
-                        .expect("conn_client_msg_tx is broken");
+                    async move {
+                        let (conn_task, _) = crate::protocol_conn_lifetime::run(
+                            Default::default(),
+                            server_read,
+                            server_write,
+                            evt_tx.clone().with_sync(|server_msg| match server_msg {
+                                protocol::msg::ServerMsg::SessionMsg(session_id, msg) => {
+                                    Event::ServerMsg((session_id, msg))
+                                }
+                            }),
+                            client_msg_dispatch_cmd_tx
+                                .clone()
+                                .with_sync(move |send_one| {
+                                    message_dispatch::Command::Sender(conn_id, send_one)
+                                }),
+                        );
 
-                    let conn_result = super::server_connection_lifetime::run(
-                        server_read,
-                        server_write,
-                        conn_client_msg_rx,
-                        evt_tx
-                            .clone()
-                            .with_sync(move |client_msg| Event::ServerMsg(client_msg)),
-                    )
-                    .instrument(lifetime_span)
-                    .await;
+                        let conn_result = conn_task.await;
 
-                    state_tx.send_modify(|old| {
-                        old.server_conn_count -= 1;
-                    });
+                        state_tx.send_modify(|old| {
+                            old.server_conn_count -= 1;
+                        });
 
-                    if let Err(err) = conn_result {
-                        warn!(?err, "server connection lifetime task failed");
+                        if let Err(err) = conn_result {
+                            error!(?err, "server connection error");
+                            return Err(err);
+                        }
+
+                        Ok::<_, std::io::Error>(())
                     }
-
-                    Ok::<_, std::io::Error>(())
+                    .instrument(lifetime_span)
+                    .await
                 })
                 .await;
         }

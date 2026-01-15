@@ -64,6 +64,29 @@ fn cal_rand_byte_len(key: &[u8; 32], nonce: &[u8; 12], timestamp: u64) -> usize 
     len
 }
 
+pub trait MessageWriter
+where
+    Self: Unpin + Send + 'static,
+{
+    type Message: Send;
+
+    fn send_msg(
+        &mut self,
+        msg: Self::Message,
+    ) -> impl Future<Output = Result<(), std::io::Error>> + Send;
+}
+
+pub trait MessageReader
+where
+    Self: Unpin + Send + 'static,
+{
+    type Message: Send;
+
+    fn recv_msg(
+        &mut self,
+    ) -> impl Future<Output = Result<Option<Self::Message>, DecodeError>> + Send;
+}
+
 #[derive(Clone, Copy)]
 pub struct ConnId {
     pub timestamp: u64,

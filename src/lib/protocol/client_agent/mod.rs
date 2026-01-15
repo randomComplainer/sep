@@ -9,25 +9,13 @@ pub trait Init {
         self,
         timestamp: u64,
     ) -> impl Future<
-        Output = Result<(ConnId, impl GreetedRead, impl GreetedWrite), std::io::Error>,
+        Output = Result<
+            (
+                ConnId,
+                impl MessageReader<Message = protocol::msg::conn::ConnMsg<msg::ServerMsg>>,
+                impl MessageWriter<Message = protocol::msg::conn::ConnMsg<msg::ClientMsg>>,
+            ),
+            std::io::Error,
+        >,
     > + Send;
-}
-
-pub trait GreetedRead
-where
-    Self: Unpin + Send + 'static,
-{
-    fn recv_msg(
-        &mut self,
-    ) -> impl Future<Output = Result<Option<msg::conn::ServerMsg>, decode::DecodeError>> + Send;
-}
-
-pub trait GreetedWrite
-where
-    Self: Unpin + Send + 'static,
-{
-    fn send_msg(
-        &mut self,
-        msg: protocol::msg::conn::ClientMsg,
-    ) -> impl Future<Output = Result<(), std::io::Error>> + Send;
 }

@@ -15,7 +15,7 @@ pub struct Init<Stream>
 where
     Stream: StaticStream,
 {
-    key: Arc<[u8; 32]>,
+    key: Arc<Key>,
     stream: Stream,
     client_port: u16,
 }
@@ -196,13 +196,21 @@ where
     pub fn new(stream_write: WriteEncrypted<Stream, Cipher>) -> Self {
         Self { stream_write }
     }
+}
 
-    pub async fn send_msg(&mut self, msg: msg::conn::ServerMsg) -> Result<(), std::io::Error> {
+impl<Stream, Cipher> protocol::MessageWriter for GreetedWrite<Stream, Cipher>
+where
+    Stream: StaticStream,
+    Cipher: StaticCipher,
+{
+    type Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>;
+
+    async fn send_msg(&mut self, msg: Self::Message) -> Result<(), std::io::Error> {
         // TODO: Do I need calculated size?
         let mut buf = BytesMut::with_capacity(64);
 
         match msg {
-            msg::conn::ServerMsg::Protocol(msg) => {
+            msg::conn::ConnMsg::Protocol(msg) => {
                 buf.put_u8(0u8);
                 match msg {
                     msg::ServerMsg::SessionMsg(proxyee_id, server_msg) => {
@@ -265,31 +273,17 @@ where
                     }
                 }
             }
-            msg::conn::ServerMsg::EndOfStream => {
+            msg::conn::ConnMsg::Ping => {
                 buf.put_u8(1u8);
                 self.stream_write.write_all(&mut buf).await?;
             }
-            msg::conn::ServerMsg::Ping => {
+            msg::conn::ConnMsg::EndOfStream => {
                 buf.put_u8(2u8);
                 self.stream_write.write_all(&mut buf).await?;
             }
         }
 
         Ok(())
-    }
-
-    // pub async fn close(self) -> Result<(), std::io::Error> {
-    //     self.stream_write.close().await
-    // }
-}
-
-impl<Stream, Cipher> super::GreetedWrite for GreetedWrite<Stream, Cipher>
-where
-    Stream: StaticStream,
-    Cipher: StaticCipher,
-{
-    async fn send_msg(&mut self, msg: msg::conn::ServerMsg) -> Result<(), std::io::Error> {
-        self.send_msg(msg).await
     }
 }
 
@@ -309,23 +303,23 @@ where
     pub fn new(stream_read: FramedRead<Stream, Cipher>) -> Self {
         Self { stream_read }
     }
-
-    pub async fn recv_msg(&mut self) -> Result<Option<msg::conn::ClientMsg>, DecodeError> {
-        let msg = self
-            .stream_read
-            .read_next(msg::conn::client_msg_peeker())
-            .await?;
-
-        Ok(msg)
-    }
 }
 
-impl<Stream, Cipher> super::GreetedRead for GreetedRead<Stream, Cipher>
+impl<Stream, Cipher> protocol::MessageReader for GreetedRead<Stream, Cipher>
 where
     Stream: StaticStream,
     Cipher: StaticCipher,
 {
-    async fn recv_msg(&mut self) -> Result<Option<msg::conn::ClientMsg>, DecodeError> {
-        self.recv_msg().await
+    type Message = protocol::msg::conn::ConnMsg<protocol::msg::ClientMsg>;
+
+    async fn recv_msg(
+        &mut self,
+    ) -> Result<Option<msg::conn::ConnMsg<msg::ClientMsg>>, DecodeError> {
+        let msg = self
+            .stream_read
+            .read_next(msg::conn::conn_msg_peeker(msg::client_msg_peeker()))
+            .await?;
+
+        Ok(msg)
     }
 }
