@@ -51,7 +51,7 @@ where
         // dont cancel me,
         // or you will risk missing message if it's in the middle of being sent
         let send_loop = async move {
-            let mut ping_timer = Box::pin(tokio::time::sleep(std::time::Duration::ZERO));
+            let mut next_ping = tokio::time::Instant::now();
             let mut ping_counter = 0;
             let (send_one_tx, send_one_rx) = oneshot::channel();
             let mut send_one_rx = Box::pin(send_one_rx);
@@ -77,9 +77,21 @@ where
             }};
         }
 
-            // TODO: Check ping timer first
-            // to avoid connection too busy sending messages that ping can't be sent
             loop {
+                // Check ping timer first
+                // This is to avoid connection too busy
+                // sending messages that ping can't be sent
+                let now = tokio::time::Instant::now();
+                if now >= next_ping {
+                    tracing::trace!(count = ping_counter, "ping");
+                    send_msg!(ConnMsg::Ping).await?;
+                    ping_counter += 1;
+                    next_ping = now + config.ping_interval;
+                    continue;
+                }
+
+                let ping_timer = tokio::time::sleep_until(next_ping);
+
                 tokio::select! {
                     send_one = send_one_rx.as_mut() => {
                         let (msg, ack_tx) = match send_one  {
@@ -103,11 +115,11 @@ where
 
                         send_one_rx = Box::pin(new_send_one_rx);
                     },
-                    _ = ping_timer.as_mut() => {
+                    _ = ping_timer => {
                         tracing::trace!(count = ping_counter, "ping");
                         send_msg!(ConnMsg::Ping).await?;
                         ping_counter += 1;
-                        ping_timer = Box::pin(tokio::time::sleep(config.ping_interval));
+                        next_ping = now + config.ping_interval;
                     },
                     Some(_) = send_end_of_stream_rx.recv() => {
                         tracing::debug!("send end of stream");
