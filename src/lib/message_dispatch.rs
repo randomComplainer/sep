@@ -33,6 +33,8 @@ where
     // error on borken channel
     let (mut sending_scope_handle, sending_scope_task) = task_scope::new_scope::<()>();
 
+    // TODO: don't just try to send every message immediately
+    // group them by session id, and send them in sequence within a session
     let send = move |msg: Msg| {
         let sender_queue_rx = sender_queue_rx.clone();
         let outer_span = tracing::trace_span!("dispatch message", msg = ?msg);

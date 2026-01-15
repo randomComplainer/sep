@@ -20,7 +20,7 @@ impl Default for Config {
         Self {
             io_write_timeout: std::time::Duration::from_secs(4),
             ping_interval: std::time::Duration::from_secs(5),
-            ping_receive_timeout: std::time::Duration::from_secs(10),
+            ping_receive_timeout: std::time::Duration::from_secs(15),
         }
     }
 }
@@ -77,6 +77,8 @@ where
             }};
         }
 
+            // TODO: Check ping timer first
+            // to avoid connection too busy sending messages that ping can't be sent
             loop {
                 tokio::select! {
                     send_one = send_one_rx.as_mut() => {
@@ -153,7 +155,7 @@ where
                             ConnMsg::Ping => {
                                 tracing::trace!(count=ping_counter, "ping");
                                 ping_counter += 1;
-                                ping_timer = Box::pin(tokio::time::sleep(config.ping_interval));
+                                ping_timer = Box::pin(tokio::time::sleep(config.ping_receive_timeout));
                             },
                             ConnMsg::EndOfStream => {
                                 tracing::debug!("recv end of stream");
