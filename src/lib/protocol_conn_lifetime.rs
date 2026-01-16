@@ -19,7 +19,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             io_write_timeout: std::time::Duration::from_secs(4),
-            ping_interval: std::time::Duration::from_secs(5),
+            ping_interval: std::time::Duration::from_secs(2),
             aliveness_timeout: std::time::Duration::from_secs(15),
         }
     }
@@ -93,12 +93,13 @@ where
                         send_msg!(msg.into());
 
                         if let Err(_) = ack_tx.send(()) {
-                            return Ok::<_, std::io::Error>(());
+                            tracing::trace!("ack tx is broken");
                         }
 
                         let (new_send_one_tx, new_send_one_rx) = oneshot::channel();
 
                         if let Err(_) = sender_tx.send(new_send_one_tx).await {
+                            tracing::warn!("sender_tx is broken, exiting");
                             return Ok::<_, std::io::Error>(());
                         }
 
