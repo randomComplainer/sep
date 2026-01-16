@@ -12,7 +12,7 @@ use crate::protocol::msg::conn::ConnMsg;
 pub struct Config {
     io_write_timeout: std::time::Duration,
     ping_interval: std::time::Duration,
-    ping_receive_timeout: std::time::Duration,
+    aliveness_timeout: std::time::Duration,
 }
 
 impl Default for Config {
@@ -20,7 +20,7 @@ impl Default for Config {
         Self {
             io_write_timeout: std::time::Duration::from_secs(4),
             ping_interval: std::time::Duration::from_secs(5),
-            ping_receive_timeout: std::time::Duration::from_secs(15),
+            aliveness_timeout: std::time::Duration::from_secs(15),
         }
     }
 }
@@ -51,7 +51,7 @@ where
         // dont cancel me,
         // or you will risk missing message if it's in the middle of being sent
         let send_loop = async move {
-            let mut next_ping = tokio::time::Instant::now();
+            let mut ping_timer = tokio::time::sleep(config.ping_interval);
             let mut ping_counter = 0;
             let (send_one_tx, send_one_rx) = oneshot::channel();
             let mut send_one_rx = Box::pin(send_one_rx);
@@ -61,37 +61,26 @@ where
             }
 
             macro_rules! send_msg {
-            ($msg:expr) => {{
-                let msg:ConnMsg<MessageToSend> = $msg;
-                let span = tracing::trace_span!("send msg", msg=?msg);
-                tokio::time::timeout(config.io_write_timeout, stream_write.send_msg(msg)).map(
-                    |timeout_result| match timeout_result {
-                        Ok(x) => x,
-                        Err(_) => Err(std::io::Error::new(
-                            std::io::ErrorKind::TimedOut,
-                            "timeout sending msg",
-                        )),
-                    },
-                )
-                   .instrument(span)
-            }};
+                ($msg:expr) => {
+                    let msg:ConnMsg<MessageToSend> = $msg;
+                    let span = tracing::trace_span!("send msg", msg=?msg);
+                    tokio::time::timeout(config.io_write_timeout, stream_write.send_msg(msg)).map(
+                        |timeout_result| match timeout_result {
+                            Ok(x) => x,
+                            Err(_) => Err(std::io::Error::new(
+                                    std::io::ErrorKind::TimedOut,
+                                    "timeout sending msg",
+                            )),
+                        },
+                    )
+                        .instrument(span)
+                        .await?;
+                    ping_timer  = tokio::time::sleep(config.ping_interval);
+
+                };
         }
 
             loop {
-                // Check ping timer first
-                // This is to avoid connection too busy
-                // sending messages that ping can't be sent
-                let now = tokio::time::Instant::now();
-                if now >= next_ping {
-                    tracing::trace!(count = ping_counter, "ping");
-                    send_msg!(ConnMsg::Ping).await?;
-                    ping_counter += 1;
-                    next_ping = now + config.ping_interval;
-                    continue;
-                }
-
-                let ping_timer = tokio::time::sleep_until(next_ping);
-
                 tokio::select! {
                     send_one = send_one_rx.as_mut() => {
                         let (msg, ack_tx) = match send_one  {
@@ -101,7 +90,7 @@ where
                             }
                         };
 
-                        send_msg!(msg.into()).await?;
+                        send_msg!(msg.into());
 
                         if let Err(_) = ack_tx.send(()) {
                             return Ok::<_, std::io::Error>(());
@@ -117,13 +106,13 @@ where
                     },
                     _ = ping_timer => {
                         tracing::trace!(count = ping_counter, "ping");
-                        send_msg!(ConnMsg::Ping).await?;
+                        send_msg!(ConnMsg::Ping);
                         ping_counter += 1;
-                        next_ping = now + config.ping_interval;
                     },
                     Some(_) = send_end_of_stream_rx.recv() => {
                         tracing::debug!("send end of stream");
-                        send_msg!(ConnMsg::EndOfStream).await?;
+                        send_msg!(ConnMsg::EndOfStream);
+                        drop(ping_timer);
                         return Ok(());
                     }
                 }
@@ -132,14 +121,14 @@ where
         .instrument(tracing::trace_span!("send loop"));
 
         let recv_loop = async move {
-            let mut ping_timer = Box::pin(tokio::time::sleep(config.ping_receive_timeout));
+            let mut alive_timer = tokio::time::sleep(config.aliveness_timeout);
             let mut ping_counter = 0;
 
             loop {
                 tokio::select! {
-                    _ = ping_timer.as_mut() => {
-                        tracing::warn!(count = ping_counter, "ping timeout, exiting");
-                        return Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "ping timeout"));
+                    _ = alive_timer => {
+                        tracing::warn!(count = ping_counter, "aliveness timeout, exiting");
+                        return Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "aliveness timeout"));
                     },
                     msg = stream_read.recv_msg().instrument(tracing::trace_span!("receive msg from stream")) => {
                         let msg = match msg {
@@ -167,14 +156,15 @@ where
                             ConnMsg::Ping => {
                                 tracing::trace!(count=ping_counter, "ping");
                                 ping_counter += 1;
-                                ping_timer = Box::pin(tokio::time::sleep(config.ping_receive_timeout));
                             },
                             ConnMsg::EndOfStream => {
                                 tracing::debug!("recv end of stream");
                                 let _ = local_send_end_of_stream_tx.send(());
                                 return Ok(());
                             }
-                        }
+                        };
+
+                        alive_timer = tokio::time::sleep(config.aliveness_timeout);
                     }
                 }
             }
