@@ -1,3 +1,4 @@
+use futures::channel::mpsc;
 use futures::prelude::*;
 use tracing::*;
 
@@ -42,7 +43,8 @@ where
         server_conn_count: 0,
     });
 
-    let (mut client_msg_dispatch_cmd_tx, client_msg_dispatch_task) = message_dispatch::run();
+    let (mut client_msg_dispatch_cmd_tx, client_msg_dispatch_cmd_rx) = mpsc::unbounded();
+    let client_msg_dispatch_task = message_dispatch::run(client_msg_dispatch_cmd_rx);
 
     // increase conn count sycnhronously
     // actual connecting is done asynchronously
@@ -130,6 +132,7 @@ where
                 Command::SendClientMsg(client_msg) => {
                     if let Err(_) = client_msg_dispatch_cmd_tx
                         .send(message_dispatch::Command::Msg(
+                            client_msg.0,
                             protocol::msg::ClientMsg::SessionMsg(client_msg.0, client_msg.1),
                         ))
                         .instrument(debug_span!("forward client msg for dispatch"))
@@ -139,15 +142,29 @@ where
                         return;
                     }
                 }
-                Command::SessionStarted(_) => {
+                Command::SessionStarted(session_id) => {
                     state_tx.send_modify(|state| {
                         state.session_count += 1;
                     });
+                    if let Err(_) = client_msg_dispatch_cmd_tx
+                        .send(message_dispatch::Command::NewSession(session_id))
+                        .await
+                    {
+                        warn!("client_msg_dispatch_cmd_tx is broken, exiting");
+                        return;
+                    }
                 }
-                Command::SessionEnded(_) => {
+                Command::SessionEnded(session_id) => {
                     state_tx.send_modify(|state| {
                         state.session_count -= 1;
                     });
+                    if let Err(_) = client_msg_dispatch_cmd_tx
+                        .send(message_dispatch::Command::EndSession(session_id))
+                        .await
+                    {
+                        warn!("client_msg_dispatch_cmd_tx is broken, exiting");
+                        return;
+                    }
                 }
             }
         }

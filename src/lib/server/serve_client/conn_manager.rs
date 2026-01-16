@@ -1,5 +1,6 @@
 use std::ops::Add as _;
 
+use futures::channel::mpsc;
 use futures::prelude::*;
 use rand::Rng as _;
 use tracing::*;
@@ -11,6 +12,8 @@ use crate::prelude::*;
 #[derive(Debug)]
 pub enum Command {
     ServerMsg(protocol::msg::ServerMsg),
+    NewSession(u16),
+    EndSession(u16),
 }
 
 #[derive(Debug)]
@@ -33,8 +36,11 @@ where
 {
     let (mut conn_scope_handle, conn_scope_task) = task_scope::new_scope::<std::io::Error>();
 
-    let (mut server_msg_dispatch_cmd_tx, server_msg_dispatch_task) =
-        message_dispatch::run::<protocol::ConnId, protocol::msg::ServerMsg>();
+    let (mut server_msg_dispatch_cmd_tx, server_msg_dispatch_cmd_rx) = mpsc::unbounded();
+    let server_msg_dispatch_task = message_dispatch::run::<
+        protocol::ConnId,
+        protocol::msg::ServerMsg,
+    >(server_msg_dispatch_cmd_rx);
 
     let accepting_new_conn = {
         let evt_tx = evt_tx.clone();
@@ -117,7 +123,32 @@ where
                 match cmd {
                     Command::ServerMsg(server_msg) => {
                         if let Err(_) = server_msg_dispatch_cmd_tx
-                            .send(message_dispatch::Command::Msg(server_msg))
+                            .send(message_dispatch::Command::Msg(
+                                match &server_msg {
+                                    protocol::msg::ServerMsg::SessionMsg(session_id, _) => {
+                                        *session_id
+                                    }
+                                },
+                                server_msg,
+                            ))
+                            .await
+                        {
+                            warn!("server_msg_dispatch_cmd_tx is broken, exiting");
+                            return;
+                        }
+                    }
+                    Command::NewSession(session_id) => {
+                        if let Err(_) = server_msg_dispatch_cmd_tx
+                            .send(message_dispatch::Command::NewSession(session_id))
+                            .await
+                        {
+                            warn!("server_msg_dispatch_cmd_tx is broken, exiting");
+                            return;
+                        }
+                    }
+                    Command::EndSession(session_id) => {
+                        if let Err(_) = server_msg_dispatch_cmd_tx
+                            .send(message_dispatch::Command::EndSession(session_id))
                             .await
                         {
                             warn!("server_msg_dispatch_cmd_tx is broken, exiting");

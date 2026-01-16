@@ -101,32 +101,32 @@ pub async fn run(
                         .await.expect("evt_tx is broken");
                     },
 
-                    cmd = cmd_rx.next() => {
-                        let cmd = match cmd {
-                            Some(cmd) => cmd,
-                            None => {
-                                debug!("end of cmd stream, exiting");
-                                break;
-                            },
-                        };
+                cmd = cmd_rx.next() => {
+                    let cmd = match cmd {
+                        Some(cmd) => cmd,
+                        None => {
+                            debug!("end of cmd stream, exiting");
+                            break;
+                        },
+                    };
 
-                        debug!("cmd: {:?}", cmd);
+                    debug!("cmd: {:?}", cmd);
 
-                        match cmd {
-                            Command::ServerMsg(session_id, server_msg) => {
-                                if let Some(mut session_server_msg_sender) = session_server_msg_senders.get_mut(&session_id) {
-                                    let span = info_span!("send server msg to session", session_id = session_id, ?server_msg);
-                                    if let Err(_) = session_server_msg_sender.send(server_msg)
-                                        .instrument(span)
-                                            .await {
-                                                debug!("session server msg reciver is dropped, drop server msg");
-                                    }
-                                } else {
-                                    debug!("session does not exist, drop server msg");
+                    match cmd {
+                        Command::ServerMsg(session_id, server_msg) => {
+                            if let Some(mut session_server_msg_sender) = session_server_msg_senders.get_mut(&session_id) {
+                                let span = info_span!("send server msg to session", session_id = session_id, ?server_msg);
+                                if let Err(_) = session_server_msg_sender.send(server_msg)
+                                    .instrument(span)
+                                        .await {
+                                            debug!("session server msg reciver is dropped, drop server msg");
                                 }
-                            },
-                        }
-                    },
+                            } else {
+                                debug!("session does not exist, drop server msg");
+                            }
+                        },
+                    }
+                },
             }
         }
     };

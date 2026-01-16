@@ -113,7 +113,7 @@ pub async fn run<TConnectTarget>(
                         let session_client_msg_sender =
                             match session_client_msg_senders.get_mut(&session_id) {
                                 None => {
-                                    warn!("session does not exist, drop client msg");
+                                    warn!(?session_id, "session does not exist, drop client msg");
                                     continue;
                                 }
                                 Some(x) => x,

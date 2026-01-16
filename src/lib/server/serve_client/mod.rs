@@ -1,3 +1,4 @@
+use futures::SinkExt as _;
 use futures::channel::mpsc;
 use futures::prelude::*;
 use tracing::*;
@@ -106,12 +107,19 @@ where
                                     return;
                                 }
                             },
-                            session_manager::Event::Started(_) => {
+                            session_manager::Event::Started(session_id) => {
                                 session_num += 1;
-                                check_state!();
+                                if let Err(_) = conn_manager_cmd_tx.send(conn_manager::Command::NewSession(session_id)).await {
+                                    warn!("conn manager cmd rx is broken, exiting");
+                                    return;
+                                }
                             },
-                            session_manager::Event::Ended(_) => {
+                            session_manager::Event::Ended(session_id) => {
                                 session_num -= 1;
+                                if let Err(_) = conn_manager_cmd_tx.send(conn_manager::Command::EndSession(session_id)).await {
+                                    warn!("conn manager cmd rx is broken, exiting");
+                                    return;
+                                }
                                 check_state!();
                             },
                         };
