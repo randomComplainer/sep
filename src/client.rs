@@ -63,9 +63,9 @@ async fn async_main(args: Args) {
         let (mut new_proxee_tx, new_proxee_rx) = futures::channel::mpsc::channel(4);
         let channeling_new_proxee: impl Future<Output = Result<(), std::io::Error>> = async move {
             loop {
-                let (agent, socket_addr) = listener.accept().await.unwrap();
+                let (agent, remote_addr) = listener.accept().await.unwrap();
                 new_proxee_tx
-                    .send((socket_addr.port(), agent))
+                    .send((remote_addr.port(), agent))
                     .await
                     .unwrap();
             }

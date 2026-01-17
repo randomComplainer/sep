@@ -3,7 +3,8 @@ Description=Sep Server
 After=network.target
 
 [Service]
-ExecStart=/bin/bash -c "/usr/local/bin/sep-server --key {key} --bound-addr {bound_addr} | tee /tmp/sep-server.json"
+# ExecStart=/bin/bash -c "/usr/local/bin/sep-server --key {key} --bound-addr {bound_addr} | tee /tmp/sep-server.json"
+ExecStart=/bin/bash -c "/usr/local/bin/sep-server --key {key} --bound-addr {bound_addr}"
 Restart=on-failure
 User=nobody
 

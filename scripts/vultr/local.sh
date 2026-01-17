@@ -21,5 +21,6 @@ cargo run --release --bin sep-client -- \
 	--key ${SEP_KEY} \
 	--server ${server_ip}:1081 \
 	--log-format json \
-	| tee ./log/vultr.client.json
+	| tee ./log/vultr.client.json \
+	| rg "(DEBUG)|(WARN)|(ERROR)";
 

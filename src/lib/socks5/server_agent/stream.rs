@@ -169,7 +169,7 @@ impl Socks5Listener {
     }
 
     pub async fn accept(&self) -> Result<(Init<TcpStream>, SocketAddr), Socks5Error> {
-        let (stream, addr) = self.inner.accept().await?;
-        Ok((Init::new(stream), addr))
+        let (stream, remote_addr) = self.inner.accept().await?;
+        Ok((Init::new(stream), remote_addr))
     }
 }

@@ -18,7 +18,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            io_write_timeout: std::time::Duration::from_secs(4),
+            io_write_timeout: std::time::Duration::from_secs(5),
             ping_interval: std::time::Duration::from_secs(2),
             aliveness_timeout: std::time::Duration::from_secs(15),
         }

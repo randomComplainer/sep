@@ -62,10 +62,17 @@ where
 
             connecting_scope_handle
                 .run_async(async move {
-                    let (conn_id, server_read, server_write) = connect_to_server
+                    let (conn_id, server_read, server_write) = match connect_to_server
                         .connect()
                         .instrument(tracing::trace_span!("connecte to server"))
-                        .await?;
+                        .await
+                    {
+                        Ok(x) => x,
+                        Err(err) => {
+                            error!(?err, "failed to connecte to server");
+                            return Err(err);
+                        }
+                    };
 
                     let lifetime_span = tracing::trace_span!("conn lifetime", ?conn_id);
 
