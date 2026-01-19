@@ -173,9 +173,10 @@ where
             protocol::msg::conn::ConnMsg::Protocol(msg) => {
                 buf.put_u8(0u8);
                 match msg {
-                    protocol::msg::ClientMsg::SessionMsg(proxyee_id, session_msg) => {
+                    protocol::msg::ClientMsg::SessionMsg(session_id, session_msg) => {
                         buf.put_u8(0u8);
-                        buf.put_u16(proxyee_id);
+                        buf.put_u64(session_id.timestamp);
+                        buf.put_u16(session_id.proxyee_port);
                         match session_msg {
                             session::msg::ClientMsg::Request(req) => {
                                 buf.put_u8(0u8);

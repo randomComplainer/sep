@@ -1,20 +1,21 @@
-use std::{collections::HashMap, sync::Arc, time::SystemTime};
+use std::{collections::HashMap, time::SystemTime};
 
 use futures::{channel::mpsc, prelude::*};
 use tracing::*;
 
 use crate::prelude::*;
+use protocol::SessionId;
 
 #[derive(Debug)]
 pub enum Command {
-    ClientMsg(u16, session::msg::ClientMsg),
+    ClientMsg(SessionId, session::msg::ClientMsg),
 }
 
 #[derive(Debug)]
 pub enum Event {
-    ServerMsg(u16, session::msg::ServerMsg),
-    Started(u16),
-    Ended(u16),
+    ServerMsg(SessionId, session::msg::ServerMsg),
+    Started(SessionId),
+    Ended(SessionId),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -49,7 +50,7 @@ pub async fn run<TConnectTarget>(
 
         async move {
             let mut session_client_msg_senders =
-                HashMap::<u16, mpsc::UnboundedSender<session::msg::ClientMsg>>::new();
+                HashMap::<SessionId, mpsc::UnboundedSender<session::msg::ClientMsg>>::new();
 
             while let Some(cmd) = cmd_rx.next().await {
                 debug!(?cmd, "new cmd incoming");
@@ -58,7 +59,7 @@ pub async fn run<TConnectTarget>(
                         if let session::msg::ClientMsg::Request(_) = &client_msg {
                             if session_client_msg_senders.contains_key(&session_id) {
                                 warn!(
-                                    session_id,
+                                    ?session_id,
                                     "duplicated session id, dropping previous session"
                                 );
                                 session_client_msg_senders.remove(&session_id);
@@ -75,7 +76,7 @@ pub async fn run<TConnectTarget>(
 
                                     let session_span = info_span!(
                                         "session",
-                                        session_id = session_id,
+                                        ?session_id,
                                         start_time = SystemTime::now()
                                             .duration_since(SystemTime::UNIX_EPOCH)
                                             .unwrap()
@@ -121,7 +122,7 @@ pub async fn run<TConnectTarget>(
 
                         let span = info_span!(
                             "send client msg to session",
-                            session_id = session_id,
+                            ?session_id,
                             ?client_msg
                         );
 

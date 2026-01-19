@@ -3,6 +3,7 @@ use derive_more::From;
 
 use crate::decode::*;
 use crate::prelude::*;
+use crate::protocol::SessionId;
 
 // connection level messages
 pub mod conn {
@@ -142,19 +143,36 @@ pub mod conn {
     }
 }
 
+pub struct SessionIdReader(U64Reader, U16Reader);
+impl Reader for SessionIdReader {
+    type Value = SessionId;
+    fn read(&self, buf: &mut BytesMut) -> SessionId {
+        SessionId::new(self.0.read(buf), self.1.read(buf))
+    }
+}
+
+pub fn session_id_peeker() -> impl Peeker<SessionId, Reader = SessionIdReader> {
+    peek::wrap(|cursor| {
+        Ok(Some(SessionIdReader(
+            crate::peek!(u64_peeker().peek(cursor)),
+            crate::peek!(u16_peeker().peek(cursor)),
+        )))
+    })
+}
+
 #[derive(Debug, From, PartialEq, Eq)]
 pub enum ServerMsg {
-    SessionMsg(u16, session::msg::ServerMsg),
+    SessionMsg(SessionId, session::msg::ServerMsg),
 }
 
 impl session::msg::ServerMsg {
-    pub fn with_session_id(self, session_id: u16) -> ServerMsg {
+    pub fn with_session_id(self, session_id: SessionId) -> ServerMsg {
         ServerMsg::SessionMsg(session_id, self)
     }
 }
 
 pub enum ServerMsgReader {
-    SessionMsg(U16Reader, session::msg::ServerMsgReader),
+    SessionMsg(SessionIdReader, session::msg::ServerMsgReader),
 }
 
 impl Reader for ServerMsgReader {
@@ -163,8 +181,8 @@ impl Reader for ServerMsgReader {
     fn read(&self, buf: &mut BytesMut) -> Self::Value {
         buf.split_to(1)[0];
         match self {
-            Self::SessionMsg(u16, session_msg) => {
-                ServerMsg::SessionMsg(u16.read(buf), session_msg.read(buf))
+            Self::SessionMsg(session_id, session_msg) => {
+                ServerMsg::SessionMsg(session_id.read(buf), session_msg.read(buf))
             }
         }
     }
@@ -174,7 +192,7 @@ pub fn server_msg_peeker() -> impl Peeker<ServerMsg, Reader = ServerMsgReader> {
     peek::peek_enum(|cursor, enum_code| {
         Ok(Some(match enum_code {
             0 => ServerMsgReader::SessionMsg(
-                crate::peek!(u16_peeker().peek(cursor)),
+                crate::peek!(session_id_peeker().peek(cursor)),
                 crate::peek!(session::msg::server_msg_peeker().peek(cursor)),
             ),
             x => {
@@ -186,17 +204,17 @@ pub fn server_msg_peeker() -> impl Peeker<ServerMsg, Reader = ServerMsgReader> {
 
 #[derive(Debug, From, PartialEq, Eq)]
 pub enum ClientMsg {
-    SessionMsg(u16, session::msg::ClientMsg),
+    SessionMsg(SessionId, session::msg::ClientMsg),
 }
 
 impl session::msg::ClientMsg {
-    pub fn with_session_id(self, session_id: u16) -> ClientMsg {
+    pub fn with_session_id(self, session_id: SessionId) -> ClientMsg {
         ClientMsg::SessionMsg(session_id, self)
     }
 }
 
 pub enum ClientMsgReader {
-    SessionMsg(U16Reader, session::msg::ClientMsgReader),
+    SessionMsg(SessionIdReader, session::msg::ClientMsgReader),
 }
 
 impl Reader for ClientMsgReader {
@@ -205,8 +223,8 @@ impl Reader for ClientMsgReader {
     fn read(&self, buf: &mut BytesMut) -> Self::Value {
         buf.split_to(1)[0];
         match self {
-            Self::SessionMsg(u16, session_msg) => {
-                ClientMsg::SessionMsg(u16.read(buf), session_msg.read(buf))
+            Self::SessionMsg(session_id, session_msg) => {
+                ClientMsg::SessionMsg(session_id.read(buf), session_msg.read(buf))
             }
         }
     }
@@ -216,7 +234,7 @@ pub fn client_msg_peeker() -> impl Peeker<ClientMsg, Reader = ClientMsgReader> {
     peek::peek_enum(|cursor, enum_code| {
         Ok(Some(match enum_code {
             0 => ClientMsgReader::SessionMsg(
-                crate::peek!(u16_peeker().peek(cursor)),
+                crate::peek!(session_id_peeker().peek(cursor)),
                 crate::peek!(session::msg::client_msg_peeker().peek(cursor)),
             ),
             x => {

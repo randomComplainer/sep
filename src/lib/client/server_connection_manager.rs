@@ -4,16 +4,17 @@ use tracing::*;
 
 use crate::message_dispatch;
 use crate::prelude::*;
+use protocol::SessionId;
 
 #[derive(Debug)]
 pub enum Command {
-    SendClientMsg((u16, session::msg::ClientMsg)),
-    SessionStarted(u16),
-    SessionEnded(u16),
+    SendClientMsg((SessionId, session::msg::ClientMsg)),
+    SessionStarted(SessionId),
+    SessionEnded(SessionId),
 }
 
 pub enum Event {
-    ServerMsg((u16, session::msg::ServerMsg)),
+    ServerMsg((SessionId, session::msg::ServerMsg)),
 }
 
 pub struct Config {
@@ -38,7 +39,7 @@ where
     let (connection_scope_handle, connection_scope_task) =
         task_scope::new_scope::<std::io::Error>();
 
-    let (state_tx, state_rx) = tokio::sync::watch::channel(State {
+    let (state_tx, mut state_rx) = tokio::sync::watch::channel(State {
         session_count: 0,
         server_conn_count: 0,
     });
@@ -95,10 +96,6 @@ where
 
                         let conn_result = conn_task.await;
 
-                        state_tx.send_modify(|old| {
-                            old.server_conn_count -= 1;
-                        });
-
                         if let Err(err) = conn_result {
                             error!(?err, "server connection error");
                             return Err(err);
@@ -106,6 +103,11 @@ where
 
                         Ok::<_, std::io::Error>(())
                     }
+                    .inspect(|_| {
+                        state_tx.send_modify(|old| {
+                            old.server_conn_count -= 1;
+                        });
+                    })
                     .instrument(lifetime_span)
                     .await
                 })
@@ -179,6 +181,16 @@ where
         debug!("end of cmd stream, exiting");
     };
 
+    let state_tracking = async move {
+        loop {
+            state_rx.changed().await.unwrap();
+            let state = state_rx.borrow();
+            trace!(state=?&*state, "state changed");
+            drop(state)
+        }
+    }
+    .map(|_| Ok::<_, std::io::Error>(()));
+
     tokio::try_join! {
         connection_scope_task
             .map(|e| Err::<(), _>(e))
@@ -192,6 +204,7 @@ where
         cmd_loop
             .map(|x| Ok::<_, std::io::Error>(x))
             .instrument(info_span!("cmd_loop")),
+        state_tracking,
     }
     .unwrap_err()
 }

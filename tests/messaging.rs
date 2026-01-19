@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 
 use sep_lib::{
     prelude::*,
-    protocol::{MessageReader as _, MessageWriter as _},
+    protocol::{MessageReader as _, MessageWriter as _, SessionId},
 };
 
 use protocol::test_utils::create_greeted_pair as create_pair;
@@ -26,7 +26,7 @@ async fn client_req_v4() {
                     }
                     .into(),
                 )
-                .with_session_id(0)
+                .with_session_id(SessionId::new(0, 0))
                 .into(),
             )
             .await?;
@@ -44,7 +44,7 @@ async fn client_req_v4() {
                     port,
                 }),
             )) => {
-                assert_eq!(proxyee_id, 0);
+                assert_eq!(proxyee_id, SessionId::new(0, 0));
                 assert_eq!(addr, req_ip);
                 assert_eq!(port, req_port);
             }
@@ -75,7 +75,7 @@ async fn client_req_v6() {
                     }
                     .into(),
                 )
-                .with_session_id(0)
+                .with_session_id(SessionId::new(0, 0))
                 .into(),
             )
             .await?;
@@ -93,7 +93,7 @@ async fn client_req_v6() {
                     port,
                 }),
             )) => {
-                assert_eq!(proxyee_id, 0);
+                assert_eq!(proxyee_id, SessionId::new(0, 0));
                 assert_eq!(addr, req_ip);
                 assert_eq!(port, req_port);
             }
@@ -121,7 +121,7 @@ async fn client_req_domain() {
                     addr: decode::ReadRequestAddr::Domain(req_domain.into()),
                     port: req_port,
                 })
-                .with_session_id(0)
+                .with_session_id(SessionId::new(0, 0))
                 .into(),
             )
             .await?;
@@ -139,7 +139,7 @@ async fn client_req_domain() {
                     port,
                 }),
             )) => {
-                assert_eq!(proxyee_id, 0);
+                assert_eq!(proxyee_id, SessionId::new(0, 0));
                 assert_eq!(addr, req_domain);
                 assert_eq!(port, req_port);
             }
@@ -170,7 +170,7 @@ async fn server_reply_v4() {
                     bound_addr: recv_addr,
                 }),
             )) => {
-                assert_eq!(proxyee_id, 0);
+                assert_eq!(proxyee_id, SessionId::new(0, 0));
                 assert_eq!(recv_addr, SocketAddr::new(reply_ip.into(), reply_port));
             }
             _ => panic!("unexpected msg"),
@@ -185,7 +185,7 @@ async fn server_reply_v4() {
                 session::msg::ServerMsg::Reply(session::msg::Reply {
                     bound_addr: SocketAddr::new(reply_ip.into(), reply_port),
                 })
-                .with_session_id(0)
+                .with_session_id(SessionId::new(0, 0))
                 .into(),
             )
             .await?;
@@ -212,7 +212,7 @@ async fn client_data() {
                         seq: 1,
                         data: bytes::BytesMut::from(data.as_ref()),
                     })
-                    .with_session_id(0)
+                    .with_session_id(SessionId::new(0, 0))
                     .into(),
                 )
                 .await?;
@@ -231,7 +231,7 @@ async fn client_data() {
                     data: recv_data,
                 }),
             )) => {
-                assert_eq!(proxyee_id, 0);
+                assert_eq!(proxyee_id, SessionId::new(0, 0));
                 assert_eq!(seq, 1);
                 assert_eq!(recv_data.as_ref(), data.as_ref());
             }
@@ -263,7 +263,7 @@ async fn server_data() {
                         data: recv_data,
                     }),
                 )) => {
-                    assert_eq!(proxyee_id, 0);
+                    assert_eq!(proxyee_id, SessionId::new(0, 0));
                     assert_eq!(seq, 1);
                     assert_eq!(recv_data.as_ref(), data.as_ref());
                 }
@@ -281,7 +281,7 @@ async fn server_data() {
                     seq: 1,
                     data: bytes::BytesMut::from(data.as_ref()),
                 })
-                .with_session_id(0)
+                .with_session_id(SessionId::new(0, 0))
                 .into(),
             )
             .await?;
@@ -302,7 +302,7 @@ async fn client_ack() {
             client_write
                 .send_msg(
                     session::msg::ClientMsg::Ack(session::msg::Ack { bytes: 4 })
-                        .with_session_id(1)
+                        .with_session_id(SessionId::new(0, 1))
                         .into(),
                 )
                 .await?;
@@ -318,7 +318,7 @@ async fn client_ack() {
                 proxyee_id,
                 session::msg::ClientMsg::Ack(session::msg::Ack { bytes }),
             )) => {
-                assert_eq!(proxyee_id, 1);
+                assert_eq!(proxyee_id, SessionId::new(0, 1));
                 assert_eq!(bytes, 4);
             }
             _ => panic!("unexpected msg"),
@@ -343,7 +343,7 @@ async fn server_ack() {
                     proxyee_id,
                     session::msg::ServerMsg::Ack(session::msg::Ack { bytes }),
                 )) => {
-                    assert_eq!(proxyee_id, 0);
+                    assert_eq!(proxyee_id, SessionId::new(0, 1));
                     assert_eq!(bytes, 4);
                 }
                 _ => panic!("unexpected msg"),
@@ -357,7 +357,7 @@ async fn server_ack() {
         server_write
             .send_msg(
                 session::msg::ServerMsg::Ack(session::msg::Ack { bytes: 4 })
-                    .with_session_id(0)
+                    .with_session_id(SessionId::new(0, 1))
                     .into(),
             )
             .await?;
@@ -378,7 +378,7 @@ async fn client_eof() {
             client_write
                 .send_msg(
                     session::msg::ClientMsg::Eof(session::msg::Eof { seq: 5 })
-                        .with_session_id(0)
+                        .with_session_id(SessionId::new(0, 1))
                         .into(),
                 )
                 .await?;
@@ -394,7 +394,7 @@ async fn client_eof() {
                 proxyee_id,
                 session::msg::ClientMsg::Eof(session::msg::Eof { seq }),
             )) => {
-                assert_eq!(proxyee_id, 0);
+                assert_eq!(proxyee_id, SessionId::new(0, 1));
                 assert_eq!(seq, 5);
             }
             _ => panic!("unexpected msg"),
@@ -419,7 +419,7 @@ async fn server_eof() {
                     proxyee_id,
                     session::msg::ServerMsg::Eof(session::msg::Eof { seq }),
                 )) => {
-                    assert_eq!(proxyee_id, 0);
+                    assert_eq!(proxyee_id, SessionId::new(0, 1));
                     assert_eq!(seq, 5);
                 }
                 _ => panic!("unexpected msg"),
@@ -433,7 +433,7 @@ async fn server_eof() {
         server_write
             .send_msg(
                 session::msg::ServerMsg::Eof(session::msg::Eof { seq: 5 })
-                    .with_session_id(0)
+                    .with_session_id(SessionId::new(0, 1))
                     .into(),
             )
             .await?;

@@ -2,14 +2,14 @@ use futures::prelude::*;
 use thiserror::Error;
 use tracing::*;
 
-use crate::prelude::*;
+use crate::{prelude::*, protocol::SessionId};
 
 use super::{ServerConnector, server_connection_manager, session_manager};
 
 #[derive(Error, Debug)]
 pub enum ClientError {
     #[error("session protocol error: session id {0}: {1}")]
-    SessionProtocol(u16, String),
+    SessionProtocol(SessionId, String),
     #[error("lost connection to server")]
     LostServerConnection,
 }
@@ -41,7 +41,10 @@ impl Into<server_connection_manager::Config> for Config {
 // Exits only on server connection io error
 // protocol error panics
 pub async fn run<TServerConnector>(
-    new_proxee_rx: impl Stream<Item = (u16, impl socks5::server_agent::Init)> + Unpin + Send + 'static,
+    new_proxee_rx: impl Stream<Item = (SessionId, impl socks5::server_agent::Init)>
+    + Unpin
+    + Send
+    + 'static,
     connect_to_server: TServerConnector,
     config: Config,
 ) -> std::io::Error

@@ -8,8 +8,8 @@ use tracing::*;
 
 use crate::prelude::*;
 use crate::protocol_conn_lifetime::SendEntry;
+use protocol::SessionId;
 
-type SessionId = u16;
 
 pub enum Command<ConnId, Msg>
 where

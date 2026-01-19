@@ -2,18 +2,18 @@ use dashmap::DashMap;
 use futures::prelude::*;
 use tracing::*;
 
-use crate::prelude::*;
+use crate::{prelude::*, protocol::SessionId};
 
 #[derive(Debug)]
 pub enum Command {
-    ServerMsg(u16, session::msg::ServerMsg),
+    ServerMsg(SessionId, session::msg::ServerMsg),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Event {
-    New(u16),
-    Ended(u16),
-    ClientMsg(u16, session::msg::ClientMsg),
+    New(SessionId),
+    Ended(SessionId),
+    ClientMsg(SessionId, session::msg::ClientMsg),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -32,7 +32,7 @@ impl Into<session::client::Config> for Config {
 }
 
 pub async fn run(
-    mut new_proxyee_rx: impl Stream<Item = (u16, impl socks5::server_agent::Init)>
+    mut new_proxyee_rx: impl Stream<Item = (SessionId, impl socks5::server_agent::Init)>
     + Unpin
     + Send
     + 'static,
@@ -46,10 +46,12 @@ pub async fn run(
     // relay session ending events so that
     // we don't have to access the hashmap in multiple tasks
     let (local_session_ending_tx, mut local_session_ending_rx) =
-        futures::channel::mpsc::unbounded::<u16>();
+        futures::channel::mpsc::unbounded::<SessionId>();
 
-    let session_server_msg_senders =
-        DashMap::<u16, futures::channel::mpsc::UnboundedSender<session::msg::ServerMsg>>::new();
+    let session_server_msg_senders = DashMap::<
+        SessionId,
+        futures::channel::mpsc::UnboundedSender<session::msg::ServerMsg>,
+    >::new();
 
     let main_loop = async move {
         loop {
@@ -60,7 +62,7 @@ pub async fn run(
 
                     // if proxyee reuse session id (port), previous session is no longer valid
                     if session_server_msg_senders.contains_key(&session_id) {
-                        warn!(session_id=session_id, "abort session with duplicated id");
+                        warn!(?session_id, "abort session with duplicated id");
                         session_server_msg_senders.remove(&session_id);
                     }
 
@@ -71,7 +73,7 @@ pub async fn run(
                         .insert(session_id, session_server_msg_tx);
 
                     evt_tx.send(Event::New(session_id))
-                        .instrument(info_span!("nofity session creation", session_id = session_id))
+                        .instrument(info_span!("nofity session creation", ?session_id))
                         .await.expect("evt_tx is broken");
 
                     sessions_scope_handle.run_async({
@@ -85,7 +87,7 @@ pub async fn run(
                                 evt_tx.clone().with_sync(move |client_msg| Event::ClientMsg(session_id, client_msg)),
                                 config.into(),
                             )
-                                .instrument(info_span!("session", session_id = session_id))
+                                .instrument(info_span!("session", ?session_id))
                                 .await;
                             local_session_ending_tx.send(session_id).await.expect("local_session_ending_tx is broken");
                             Ok(())
@@ -94,10 +96,10 @@ pub async fn run(
                 },
 
                 proxyee_ending = local_session_ending_rx.next() => {
-                    let proxyee_id = proxyee_ending.unwrap();
-                    session_server_msg_senders.remove(&proxyee_id);
-                    evt_tx.send(Event::Ended(proxyee_id))
-                        .instrument(info_span!("nofity session ending", session_id = proxyee_id))
+                    let session_id = proxyee_ending.unwrap();
+                    session_server_msg_senders.remove(&session_id);
+                    evt_tx.send(Event::Ended(session_id))
+                        .instrument(info_span!("nofity session ending", ?session_id))
                         .await.expect("evt_tx is broken");
                     },
 
@@ -115,7 +117,7 @@ pub async fn run(
                     match cmd {
                         Command::ServerMsg(session_id, server_msg) => {
                             if let Some(mut session_server_msg_sender) = session_server_msg_senders.get_mut(&session_id) {
-                                let span = info_span!("send server msg to session", session_id = session_id, ?server_msg);
+                                let span = info_span!("send server msg to session", ?session_id, ?server_msg);
                                 if let Err(_) = session_server_msg_sender.send(server_msg)
                                     .instrument(span)
                                         .await {

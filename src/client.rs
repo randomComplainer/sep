@@ -8,6 +8,7 @@ use std::sync::Arc;
 use clap::Parser;
 use futures::prelude::*;
 use rand::RngCore as _;
+use sep_lib::protocol::SessionId;
 use tracing::*;
 
 use sep_lib::prelude::*;
@@ -65,7 +66,7 @@ async fn async_main(args: Args) {
             loop {
                 let (agent, remote_addr) = listener.accept().await.unwrap();
                 new_proxee_tx
-                    .send((remote_addr.port(), agent))
+                    .send((SessionId::from_port(remote_addr.port()), agent))
                     .await
                     .unwrap();
             }

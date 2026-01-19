@@ -8,12 +8,13 @@ use tracing::*;
 use crate::handover;
 use crate::message_dispatch;
 use crate::prelude::*;
+use protocol::SessionId;
 
 #[derive(Debug)]
 pub enum Command {
     ServerMsg(protocol::msg::ServerMsg),
-    NewSession(u16),
-    EndSession(u16),
+    NewSession(SessionId),
+    EndSession(SessionId),
 }
 
 #[derive(Debug)]

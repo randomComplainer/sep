@@ -87,6 +87,45 @@ where
     ) -> impl Future<Output = Result<Option<Self::Message>, DecodeError>> + Send;
 }
 
+#[derive(PartialEq, Eq, Copy, Clone, Hash)]
+pub struct SessionId {
+    timestamp: u64,
+    proxyee_port: u16,
+}
+
+impl std::fmt::Debug for SessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("")
+            .field(&self.timestamp)
+            .field(&self.proxyee_port)
+            .finish()
+    }
+}
+
+impl std::fmt::Display for SessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("")
+            .field(&self.timestamp)
+            .field(&self.proxyee_port)
+            .finish()
+    }
+}
+
+impl SessionId {
+    pub fn new(timestamp: u64, proxyee_port: u16) -> Self {
+        Self {
+            timestamp,
+            proxyee_port,
+        }
+    }
+
+    pub fn from_port(proxyee_port: u16) -> Self {
+        Self {
+            timestamp: protocol::get_timestamp(),
+            proxyee_port,
+        }
+    }
+}
 #[derive(Clone, Copy)]
 pub struct ConnId {
     pub timestamp: u64,
@@ -95,7 +134,7 @@ pub struct ConnId {
 
 impl std::fmt::Debug for ConnId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("ConnId")
+        f.debug_tuple("")
             .field(&self.timestamp)
             .field(&self.client_port)
             .finish()

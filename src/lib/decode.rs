@@ -173,7 +173,7 @@ impl Reader for U64Reader {
     }
 }
 
-pub const fn u64_peeker() -> impl Peeker<u64> {
+pub const fn u64_peeker() -> impl Peeker<u64, Reader = U64Reader> {
     peek::wrap(|cursor| {
         Ok(if cursor.remaining() < 8 {
             None
