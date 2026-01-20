@@ -125,6 +125,8 @@ where
 
                     let evt = msg::EofAck.into();
                     try_emit_evt!(self.evt_tx, evt);
+
+                    return Ok(None);
                 }
             };
             self.next_seq += 1;

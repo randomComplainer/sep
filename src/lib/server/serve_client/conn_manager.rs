@@ -47,7 +47,7 @@ impl State {
                 evt_tx,
                 server_msg_sender_tx,
             },
-            conns_scope_task.map(Err),
+            conns_scope_task,
         )
     }
 
@@ -79,21 +79,26 @@ impl State {
         let lifetime_task =
             lifetime_task.instrument(tracing::trace_span!("conn lifetime", ?conn_id));
 
-        let duration = std::time::Duration::from_secs(10).add(std::time::Duration::from_mins(
-            rand::rng().random_range(..=10u64),
-        ));
+        // let duration = std::time::Duration::from_secs(10).add(std::time::Duration::from_mins(
+        //     rand::rng().random_range(..=10u64),
+        // ));
 
-        // let duration = std::time::Duration::from_secs(10);
+        let duration = std::time::Duration::from_secs(5);
 
         let mut evt_tx = self.evt_tx.clone();
         let managed_task = async move {
-            let result = tokio::select! {
-                r = lifetime_task => r,
-                _ = tokio::time::sleep(duration) => {
+            let result = match futures::future::select(
+                Box::pin(lifetime_task),
+                Box::pin(tokio::time::sleep(duration)),
+            )
+            .await
+            {
+                future::Either::Left((lifetime_result, _)) => lifetime_result,
+                future::Either::Right((_, life_time_task)) => {
                     tracing::debug!(?conn_id, "end of conn lifetime reached");
-                    let _ = conn_close_tx.send(());
-                    Ok::<_, std::io::Error>(())
-                },
+                    let _ = conn_close_tx.send(()).await;
+                    life_time_task.await
+                }
             };
 
             if let Err(_) = evt_tx.send(Event::Closed(conn_id)).await {
@@ -111,7 +116,7 @@ impl State {
         assert!(self.conns.remove(&conn_id).is_some());
     }
 
-    pub async fn conn_count(&self) -> usize {
+    pub fn conn_count(&self) -> usize {
         self.conns.len()
     }
 }

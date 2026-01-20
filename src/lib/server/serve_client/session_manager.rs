@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use futures::{FutureExt as _, SinkExt, TryFutureExt, channel::mpsc};
+use futures::{SinkExt, TryFutureExt, channel::mpsc};
 use tracing::Instrument as _;
 
 use crate::{
@@ -70,7 +70,7 @@ where
                 evt_tx,
                 server_msg_sender_rx,
             },
-            sessions_scope_task.map(Err),
+            sessions_scope_task,
         )
     }
 
@@ -103,18 +103,41 @@ where
             let mut evt_tx = self.evt_tx.clone();
             let session_span = tracing::trace_span!("session", ?session_id);
             let session_task = async move {
-                let result = tokio::try_join! {
-                    client_handling_task.instrument(session_span.clone()),
-                    server_msg_sending_task.instrument(session_span),
-                }
-                .map(|_| ());
+                // TODO: since we know which session has it's message lost,
+                // we can just kill the session instead of the whole client
+                let result = match futures::future::select(
+                    Box::pin(client_handling_task),
+                    Box::pin(server_msg_sending_task),
+                )
+                .await
+                {
+                    futures::future::Either::Left((client_hendle_result, msg_sending_task)) => {
+                        if let Err(err) = client_hendle_result {
+                            tracing::error!(?err, "client handling error");
+                        }
+
+                        msg_sending_task.await
+                    }
+                    futures::future::Either::Right((msg_sending_result, client_handling_task)) => {
+                        match msg_sending_result {
+                            Ok(()) => {
+                                if let Err(_) = client_handling_task.await {
+                                    tracing::error!("client handling error");
+                                }
+                                Ok(())
+                            }
+                            Err(err) => Err(err),
+                        }
+                    }
+                };
 
                 if let Err(_) = evt_tx.send(Event::SessionEnded(session_id)).await {
                     tracing::warn!("end of session tx is broken");
                 }
 
                 result
-            };
+            }
+            .instrument(session_span);
 
             self.sessions_scope_handle.run_async(session_task).await;
             self.sessions.insert(

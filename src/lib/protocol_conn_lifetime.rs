@@ -128,8 +128,8 @@ where
                         let msg = match msg {
                             Ok(Some(msg)) => msg,
                             Ok(None) => {
-                                tracing::debug!("end of stream, exiting");
-                                return Ok(());
+                                tracing::error!("unexpected end of stream");
+                                return Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "unexpected end of stream"));
                             },
                             Err(err) => match err {
                                 DecodeError::Io(err) => return Err(err),
@@ -153,7 +153,7 @@ where
                             },
                             ConnMsg::EndOfStream => {
                                 tracing::debug!("recv end of stream");
-                                let _ = local_send_end_of_stream_tx.send(());
+                                let _ = local_send_end_of_stream_tx.send(()).await;
                                 return Ok(());
                             }
                         };

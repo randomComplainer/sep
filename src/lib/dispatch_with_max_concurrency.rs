@@ -80,6 +80,10 @@ where
     match futures::future::select(Box::pin(main_loop), Box::pin(scope_task)).await {
         // main_loop waits for all send task done
         futures::future::Either::Left((_, _)) => Ok(()),
-        futures::future::Either::Right((scope_task_err, _)) => Err(scope_task_err),
+        futures::future::Either::Right((scope_task_result, main_loop)) => {
+            scope_task_result?;
+            main_loop.await;
+            Ok(())
+        }
     }
 }

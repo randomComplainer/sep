@@ -114,7 +114,6 @@ where
 
     let mut state = State::new(sessions_state, conns_state);
 
-    // TODO: exit condition
     let main_loop = async move {
         loop {
             tokio::select! {
@@ -157,6 +156,11 @@ where
                     match conns_evt {
                         conn_manager::Event::Closed(conn_id) => {
                             state.on_conn_closed(conn_id).await;
+                            if state.conns_state.conn_count() == 0  &&
+                                state.sessions_state.active_session_count() == 0
+                            {
+                                return;
+                            }
                         },
                         conn_manager::Event::ClientMsg(client_msg) => {
                             match client_msg {

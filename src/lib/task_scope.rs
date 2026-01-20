@@ -49,34 +49,49 @@ impl<E> ScopeHandle<E> {
     }
 }
 
-async fn main_loop<E: Send + 'static>(mut task_rx: mpsc::UnboundedReceiver<Fut<E>>) -> E {
+async fn main_loop<E: Send + 'static>(
+    mut task_rx: mpsc::UnboundedReceiver<Fut<E>>,
+) -> Result<(), E> {
     let mut list: FuturesUnordered<Fut<E>> = FuturesUnordered::new();
-    list.push(std::future::pending().boxed());
+
+    let (end_of_task_tx, end_of_task_rx) = tokio::sync::oneshot::channel::<()>();
+
+    list.push(Box::pin(async move {
+        end_of_task_rx.await.unwrap();
+        Ok::<(), E>(())
+    }));
+
     loop {
-        tokio::select! {
-            task = task_rx.next() => {
-                list.push(task.unwrap());
-            },
-            result_opt = list.next() => {
-                match result_opt {
-                    Some(result) => match result {
-                        Ok(()) => continue,
-                        Err(err) => {
-                            return err;
-                        }
-                    },
-                    // FuturesUnordered::next() returns None when the
-                    // internal queue is empty
-                    None => {
-                        unreachable!();
+        match futures::future::select(task_rx.next(), list.next()).await {
+            future::Either::Left((task, _)) => {
+                match task {
+                    Some(task) => {
+                        list.push(task);
                     }
-                }
-            },
-        }
+                    None => {
+                        end_of_task_tx.send(()).unwrap();
+                        break;
+                    }
+                };
+            }
+            future::Either::Right((result, _)) => {
+                match result {
+                    Some(result) => result?,
+                    None => unreachable!(),
+                };
+            }
+        };
     }
+
+    while let Some(r) = list.next().await {
+        r?
+    }
+
+    Ok(())
 }
 
-pub fn new_scope<E: Sync + Send + 'static>() -> (ScopeHandle<E>, impl Future<Output = E> + Send) {
+pub fn new_scope<E: Sync + Send + 'static>()
+-> (ScopeHandle<E>, impl Future<Output = Result<(), E>> + Send) {
     let (task_tx, task_rx) = mpsc::unbounded();
     (ScopeHandle::new(task_tx), main_loop(task_rx))
 }
@@ -159,7 +174,7 @@ mod tests {
     async fn send_err() {
         let (mut handle, task) = new_scope::<usize>();
         handle.run_async(async move { Err(3) }).await;
-        assert_eq!(3, task.await);
+        assert_eq!(Err(3), task.await);
     }
 
     #[test]
@@ -205,7 +220,7 @@ mod tests {
         };
 
         handle.spawn(std::future::ready(Err(1))).await;
-        assert_eq!(1, task.await);
+        assert_eq!(Err(1), task.await);
     }
 
     #[tokio::test]
@@ -224,7 +239,7 @@ mod tests {
         handle.spawn(task).await;
 
         assert_eq!((), lock.notified().await);
-        assert_eq!(3, scpoe_task.await);
+        assert_eq!(Err(3), scpoe_task.await);
     }
 
     #[tokio::test]

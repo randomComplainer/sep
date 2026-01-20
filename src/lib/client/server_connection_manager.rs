@@ -62,7 +62,7 @@ where
                 client_msg_sender_tx,
                 expected_conn_count: 0,
             },
-            conns_scope_task.map(Err),
+            conns_scope_task,
         )
     }
 

@@ -1,4 +1,4 @@
-use futures::{channel::mpsc, prelude::*};
+use futures::prelude::*;
 use thiserror::Error;
 use tracing::*;
 
@@ -56,7 +56,8 @@ where
             conns_state,
         }
     }
-    pub async fn set_expected_conn_count(&mut self) {
+
+    async fn check_expected_conn_count(&mut self) {
         let expected_conn_count = std::cmp::min(
             self.config.max_server_conn as usize,
             self.sessions_state.active_session_count() * 2,
@@ -73,7 +74,7 @@ where
         agent: impl socks5::server_agent::Init,
     ) {
         self.sessions_state.new_session(session_id, agent).await;
-        self.set_expected_conn_count().await
+        self.check_expected_conn_count().await
     }
 
     pub async fn server_msg_to_session(
@@ -88,7 +89,7 @@ where
 
     pub async fn end_session(&mut self, session_id: SessionId) {
         self.sessions_state.end_session(session_id).await;
-        self.set_expected_conn_count().await;
+        self.check_expected_conn_count().await;
     }
 
     pub async fn connected(
@@ -105,6 +106,7 @@ where
 
     pub async fn conn_closed(&mut self, conn_id: ConnId) {
         self.conns_state.on_connection_closed(conn_id).await;
+        self.check_expected_conn_count().await;
     }
 }
 
@@ -179,8 +181,16 @@ where
                                     state.server_msg_to_session(session_id, server_msg).await,
                             };
                         },
-                        conn_manager::Event::Closed(conn_id) =>
-                            state.conn_closed(conn_id).await,
+                        conn_manager::Event::Closed(conn_id) => {
+                            state.conn_closed(conn_id).await;
+
+                            if state.conns_state.active_conn_count() == 0  &&
+                                state.sessions_state.active_session_count() == 0
+                            {
+                                tracing::info!("all conns & sessions ended, exiting");
+                                return;
+                            }
+                        },
                     };
                 }
             }
@@ -189,8 +199,7 @@ where
 
     tokio::try_join! {
         sessions_task
-            .instrument(tracing::trace_span!("session manager"))
-            .map(|x| Ok::<_, std::io::Error>(x)),
+            .instrument(tracing::trace_span!("session manager")),
         conns_task
             .instrument(tracing::trace_span!("conn manager")),
         main_loop
