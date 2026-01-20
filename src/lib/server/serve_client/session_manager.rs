@@ -36,7 +36,7 @@ pub struct SessionEntry {
 pub struct State<TConnectTarget> {
     config: Config<TConnectTarget>,
     sessions: HashMap<SessionId, SessionEntry>,
-    sessions_scope_handle: task_scope::ScopeHandle<std::io::Error>,
+    sessions_scope_handle: task_scope::ScopeHandle<Never>,
     evt_tx: mpsc::UnboundedSender<Event>,
     server_msg_sender_rx: async_channel::Receiver<(
         ConnId,
@@ -57,10 +57,9 @@ where
         )>,
     ) -> (
         Self,
-        impl Future<Output = std::io::Result<()>> + Send + 'static,
+        impl Future<Output = Result<(), Never>> + Send + 'static,
     ) {
-        let (sessions_scope_handle, sessions_scope_task) =
-            task_scope::new_scope::<std::io::Error>();
+        let (sessions_scope_handle, sessions_scope_task) = task_scope::new_scope::<Never>();
 
         (
             Self {
@@ -103,31 +102,12 @@ where
             let mut evt_tx = self.evt_tx.clone();
             let session_span = tracing::trace_span!("session", ?session_id);
             let session_task = async move {
-                // TODO: since we know which session has it's message lost,
-                // we can just kill the session instead of the whole client
-                let result = match futures::future::select(
-                    Box::pin(client_handling_task),
-                    Box::pin(server_msg_sending_task),
-                )
-                .await
-                {
-                    futures::future::Either::Left((client_hendle_result, msg_sending_task)) => {
-                        if let Err(err) = client_hendle_result {
-                            tracing::error!(?err, "client handling error");
-                        }
-
-                        msg_sending_task.await
-                    }
-                    futures::future::Either::Right((msg_sending_result, client_handling_task)) => {
-                        match msg_sending_result {
-                            Ok(()) => {
-                                if let Err(_) = client_handling_task.await {
-                                    tracing::error!("client handling error");
-                                }
-                                Ok(())
-                            }
-                            Err(err) => Err(err),
-                        }
+                tokio::select! {
+                    r = client_handling_task => if let Err(err) = r {
+                        tracing::error!(?err, "client handling error");
+                    },
+                    r = server_msg_sending_task => if let Err(err) = r {
+                        tracing::error!(?err, "server msg sending error");
                     }
                 };
 
@@ -135,7 +115,7 @@ where
                     tracing::warn!("end of session tx is broken");
                 }
 
-                result
+                Ok(())
             }
             .instrument(session_span);
 

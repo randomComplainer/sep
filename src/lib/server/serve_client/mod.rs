@@ -175,8 +175,12 @@ where
     };
 
     tokio::try_join!(
-        sessions_task.instrument(tracing::trace_span!("session manager")),
-        conns_task.instrument(tracing::trace_span!("conn manager")),
+        sessions_task
+            .map(|x| Ok(x.unwrap_never()))
+            .instrument(tracing::trace_span!("session manager")),
+        conns_task
+            .map(|x| Ok(x.unwrap_never()))
+            .instrument(tracing::trace_span!("conn manager")),
         main_loop.map(|_| Ok::<_, std::io::Error>(()))
     )
     .map(|_| ())

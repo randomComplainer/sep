@@ -20,7 +20,7 @@ where
     Msg: Send + Unpin + Debug + 'static,
     ConnId: Debug + Send + 'static,
 {
-    const MAX_CONCURRENCY: u32 = 2;
+    const MAX_CONCURRENCY: u32 = 4;
 
     let (mut scope_handle, scope_task) = task_scope::new_scope::<Error>();
 

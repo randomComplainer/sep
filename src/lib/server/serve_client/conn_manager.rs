@@ -19,7 +19,7 @@ struct ConnEntry {}
 
 pub struct State {
     conns: HashMap<ConnId, ConnEntry>,
-    conns_scope_handle: task_scope::ScopeHandle<std::io::Error>,
+    conns_scope_handle: task_scope::ScopeHandle<Never>,
     evt_tx: mpsc::UnboundedSender<Event>,
     server_msg_sender_tx: async_channel::Sender<(
         ConnId,
@@ -36,9 +36,9 @@ impl State {
         )>,
     ) -> (
         Self,
-        impl Future<Output = std::io::Result<()>> + Send + 'static,
+        impl Future<Output = Result<(), Never>> + Send + 'static,
     ) {
-        let (conns_scope_handle, conns_scope_task) = task_scope::new_scope::<std::io::Error>();
+        let (conns_scope_handle, conns_scope_task) = task_scope::new_scope();
 
         (
             Self {
@@ -79,11 +79,11 @@ impl State {
         let lifetime_task =
             lifetime_task.instrument(tracing::trace_span!("conn lifetime", ?conn_id));
 
-        // let duration = std::time::Duration::from_secs(10).add(std::time::Duration::from_mins(
-        //     rand::rng().random_range(..=10u64),
-        // ));
+        let duration = std::time::Duration::from_secs(10).add(std::time::Duration::from_mins(
+            rand::rng().random_range(..=10u64),
+        ));
 
-        let duration = std::time::Duration::from_secs(5);
+        // let duration = std::time::Duration::from_secs(5);
 
         let mut evt_tx = self.evt_tx.clone();
         let managed_task = async move {
@@ -101,11 +101,15 @@ impl State {
                 }
             };
 
+            if let Err(err) = result {
+                tracing::error!(?err, "connection error");
+            }
+
             if let Err(_) = evt_tx.send(Event::Closed(conn_id)).await {
                 tracing::warn!("evt_tx is broken, exiting");
             }
 
-            result
+            Ok(())
         };
 
         self.conns_scope_handle.run_async(managed_task).await;

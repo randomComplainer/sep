@@ -12,6 +12,7 @@ struct ConnEntry {}
 
 pub enum Event<GreetedRead, GreetedWrite> {
     Connected(ConnId, GreetedRead, GreetedWrite),
+    ConnectAttemptFailed,
     ServerMsg(protocol::msg::ServerMsg),
     Closed(ConnId),
 }
@@ -21,7 +22,7 @@ where
     ServerConnector: super::ServerConnector,
 {
     conns: HashMap<ConnId, ConnEntry>,
-    conns_scope_handle: task_scope::ScopeHandle<std::io::Error>,
+    conns_scope_handle: task_scope::ScopeHandle<Never>,
     connecting_count: usize,
     server_connector: ServerConnector,
     event_tx:
@@ -48,9 +49,9 @@ where
         )>,
     ) -> (
         Self,
-        impl Future<Output = std::io::Result<()>> + Send + 'static,
+        impl Future<Output = Result<(), Never>> + Send + 'static,
     ) {
-        let (conns_scope_handle, conns_scope_task) = task_scope::new_scope::<std::io::Error>();
+        let (conns_scope_handle, conns_scope_task) = task_scope::new_scope();
 
         (
             Self {
@@ -75,25 +76,44 @@ where
         self.conns_scope_handle
             .run_async(
                 async move {
-                    let result = connector
+                    match connector
                         .connect()
                         .instrument(tracing::trace_span!("connecte to server"))
-                        .await?;
-
-                    if let Err(_) = event_tx
-                        .send(Event::Connected(result.0, result.1, result.2))
-                        .instrument(tracing::trace_span!("connected_tx"))
                         .await
                     {
-                        // TODO: actually exit? seperated task scope?
-                        tracing::warn!("connected_tx is broken");
-                    }
+                        Ok(result) => {
+                            if let Err(_) = event_tx
+                                .send(Event::Connected(result.0, result.1, result.2))
+                                .instrument(tracing::trace_span!("connected_tx"))
+                                .await
+                            {
+                                // TODO: actually exit? seperated task scope?
+                                tracing::warn!("connected_tx is broken");
+                            }
+                        }
+                        Err(err) => {
+                            tracing::error!(?err, "failed to connect to server");
+
+                            if let Err(_) = event_tx
+                                .send(Event::ConnectAttemptFailed)
+                                .instrument(tracing::trace_span!("connected_tx"))
+                                .await
+                            {
+                                tracing::warn!("connected_tx is broken");
+                            }
+                        }
+                    };
 
                     Ok(())
                 }
                 .instrument(tracing::trace_span!("create connection in background")),
             )
             .await;
+    }
+
+    pub async fn on_connect_attempt_failed(&mut self) {
+        self.connecting_count -= 1;
+        self.match_expected_conn_count().await;
     }
 
     pub async fn on_connected(
@@ -131,15 +151,15 @@ where
                 ),
             );
 
-            let conn_result = conn_task
-                .await
-                .inspect_err(|err| tracing::error!(?err, "connection error"));
+            if let Err(err) = conn_task.await {
+                tracing::error!(?err, "connection error");
+            }
 
             if let Err(_) = event_tx.send(Event::Closed(conn_id)).await {
                 tracing::warn!("event_tx is broken");
             }
 
-            conn_result
+            Ok(())
         }
         .instrument(tracing::trace_span!(parent: None, "conn lifetime", ?conn_id));
 

@@ -34,7 +34,7 @@ struct SessionEntry {
 pub struct State<EvtTx> {
     config: Config,
     sessions: HashMap<SessionId, SessionEntry>,
-    sessions_scope_handle: task_scope::ScopeHandle<std::io::Error>,
+    sessions_scope_handle: task_scope::ScopeHandle<Never>,
     evt_tx: EvtTx,
     client_msg_sender_rx: async_channel::Receiver<(
         ConnId,
@@ -55,10 +55,9 @@ where
         )>,
     ) -> (
         Self,
-        impl Future<Output = std::io::Result<()>> + Send + 'static,
+        impl Future<Output = Result<(), Never>> + Send + 'static,
     ) {
-        let (sessions_scope_handle, sessions_scope_task) =
-            task_scope::new_scope::<std::io::Error>();
+        let (sessions_scope_handle, sessions_scope_task) = task_scope::new_scope::<Never>();
 
         (
             Self {
@@ -108,41 +107,20 @@ where
         let mut evt_tx = self.evt_tx.clone();
         let session_span = tracing::trace_span!("session", ?session_id);
         let session_task = async move {
-            // don't care about proxyee handling result
-            // only need to propagate message sending error (message lost)
-            // TODO: since we know which session has it's message lost,
-            // we can just kill the session instead of the whole client
-            let result = match futures::future::select(
-                Box::pin(session_task),
-                Box::pin(client_msg_sending_task),
-            )
-            .await
-            {
-                futures::future::Either::Left((proxyee_handle_result, msg_sending_task)) => {
-                    if let Err(err) = proxyee_handle_result {
-                        tracing::error!(?err, "proxyee handling error");
-                    }
-
-                    msg_sending_task.await
-                }
-                futures::future::Either::Right((msg_sending_result, proxyee_handle_task)) => {
-                    match msg_sending_result {
-                        Ok(()) => {
-                            if let Err(err) = proxyee_handle_task.await {
-                                tracing::error!(?err, "proxyee handling error");
-                            }
-                            Ok(())
-                        }
-                        Err(err) => Err(err),
-                    }
-                }
+            tokio::select! {
+                r = session_task => if let Err(err) = r {
+                    tracing::error!(?err, "session task error");
+                },
+                r = client_msg_sending_task => if let Err(err) = r {
+                    tracing::error!(?err, "client msg sending task error");
+                },
             };
 
             if let Err(_) = evt_tx.send(Event::SessionEnded(session_id)).await {
                 tracing::warn!("end of session tx is broken");
             }
 
-            result
+            Ok(())
         }
         .instrument(session_span);
 

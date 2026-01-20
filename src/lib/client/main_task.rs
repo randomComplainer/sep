@@ -60,7 +60,7 @@ where
     async fn check_expected_conn_count(&mut self) {
         let expected_conn_count = std::cmp::min(
             self.config.max_server_conn as usize,
-            self.sessions_state.active_session_count() * 2,
+            self.sessions_state.active_session_count() * 4,
         );
 
         self.conns_state
@@ -102,6 +102,10 @@ where
             .on_connected(Ok((conn_id, greeted_read, greeted_write)))
             .await
             .unwrap();
+    }
+
+    pub async fn connect_attempt_failed(&mut self) {
+        self.conns_state.on_connect_attempt_failed().await;
     }
 
     pub async fn conn_closed(&mut self, conn_id: ConnId) {
@@ -175,6 +179,9 @@ where
                     match conn_evt {
                         conn_manager::Event::Connected(conn_id, greeted_read, greeted_write) =>
                             state.connected(conn_id, greeted_read, greeted_write).await,
+                        conn_manager::Event::ConnectAttemptFailed => {
+                            state.connect_attempt_failed().await;
+                        }
                         conn_manager::Event::ServerMsg(server_msg) => {
                             match server_msg {
                                 protocol::msg::ServerMsg::SessionMsg(session_id, server_msg) =>
@@ -199,8 +206,10 @@ where
 
     tokio::try_join! {
         sessions_task
+            .map(|x| Ok(x.unwrap_never()))
             .instrument(tracing::trace_span!("session manager")),
         conns_task
+            .map(|x| Ok(x.unwrap_never()))
             .instrument(tracing::trace_span!("conn manager")),
         main_loop
             .map(|_| Ok::<_, std::io::Error>(())) ,

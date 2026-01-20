@@ -6,6 +6,7 @@ pub mod connect_target;
 mod dispatch_with_max_concurrency;
 pub mod future_ext;
 pub mod handover;
+pub mod never;
 pub mod oneshot_with_ack;
 mod protocol_conn_lifetime;
 pub mod sink_ext;
@@ -28,6 +29,7 @@ pub mod prelude {
     pub use crate::encrypt::{EncryptedRead, EncryptedWrite};
     pub use crate::future_ext::FutureExt as _;
     pub use crate::handover::ChannelExt as _;
+    pub use crate::never::{Never, UnwrapNever as _};
     pub use crate::oneshot_with_ack;
     pub use crate::sink_ext::SinkExt as _;
     pub use crate::socks5::server_agent::{Greeted as _, Init as _, Requested as _};
