@@ -5,7 +5,7 @@ use tracing::*;
 use super::{server_connection_manager as conn_manager, session_manager};
 use crate::client::ServerConnector;
 use crate::prelude::*;
-use crate::protocol::SessionId;
+use crate::protocol::{ConnId, SessionId};
 
 #[derive(Error, Debug)]
 pub enum ClientError {
@@ -31,36 +31,40 @@ impl Into<session_manager::Config> for Config {
     }
 }
 
-struct State<SessionEvtTx> {
+struct State<SessionEvtTx, ServerConnector>
+where
+    ServerConnector: super::ServerConnector,
+{
     config: Config,
     sessions_state: session_manager::State<SessionEvtTx>,
-    conns_handle: conn_manager::Handle,
+    conns_state: conn_manager::State<ServerConnector>,
 }
 
-impl<SessionEvtTx> State<SessionEvtTx>
+impl<SessionEvtTx, ServerConnector> State<SessionEvtTx, ServerConnector>
 where
     SessionEvtTx: Sink<session_manager::Event> + Unpin + Send + Clone + 'static,
+    ServerConnector: super::ServerConnector,
 {
     pub fn new(
         config: Config,
         sessions_state: session_manager::State<SessionEvtTx>,
-        conns_handle: conn_manager::Handle,
+        conns_state: conn_manager::State<ServerConnector>,
     ) -> Self {
         Self {
             config,
             sessions_state,
-            conns_handle,
+            conns_state,
         }
     }
-
     pub async fn set_expected_conn_count(&mut self) {
         let expected_conn_count = std::cmp::min(
             self.config.max_server_conn as usize,
             self.sessions_state.active_session_count() * 2,
         );
 
-        self.conns_handle
-            .set_expected_conn_count(expected_conn_count);
+        self.conns_state
+            .set_expected_conn_count(expected_conn_count)
+            .await
     }
 
     pub async fn new_session(
@@ -69,7 +73,7 @@ where
         agent: impl socks5::server_agent::Init,
     ) {
         self.sessions_state.new_session(session_id, agent).await;
-        self.set_expected_conn_count().await;
+        self.set_expected_conn_count().await
     }
 
     pub async fn server_msg_to_session(
@@ -86,6 +90,22 @@ where
         self.sessions_state.end_session(session_id).await;
         self.set_expected_conn_count().await;
     }
+
+    pub async fn connected(
+        &mut self,
+        conn_id: ConnId,
+        greeted_read: ServerConnector::GreetedRead,
+        greeted_write: ServerConnector::GreetedWrite,
+    ) {
+        self.conns_state
+            .on_connected(Ok((conn_id, greeted_read, greeted_write)))
+            .await
+            .unwrap();
+    }
+
+    pub async fn conn_closed(&mut self, conn_id: ConnId) {
+        self.conns_state.on_connection_closed(conn_id).await;
+    }
 }
 
 pub async fn run<TServerConnector>(
@@ -99,17 +119,17 @@ pub async fn run<TServerConnector>(
 where
     TServerConnector: ServerConnector + Send,
 {
-    let (sessions_evt_tx, mut sessions_evt_rx) = futures::channel::mpsc::unbounded();
     let (client_msg_sender_tx, client_msg_sender_rx) = async_channel::unbounded();
-    let (server_msg_tx, mut server_msg_rx) = mpsc::unbounded();
 
+    let (sessions_evt_tx, mut sessions_evt_rx) = futures::channel::mpsc::unbounded();
     let (sessions_state, sessions_task) =
         session_manager::State::new(config.into(), sessions_evt_tx, client_msg_sender_rx);
 
-    let (conns_handle, conns_task) =
-        conn_manager::run(connect_to_server, client_msg_sender_tx, server_msg_tx);
+    let (conns_evt_tx, mut conns_evt_rx) = futures::channel::mpsc::unbounded();
+    let (conns_state, conns_task) =
+        conn_manager::State::new(connect_to_server, conns_evt_tx, client_msg_sender_tx);
 
-    let mut state = State::new(config, sessions_state, conns_handle);
+    let mut state = State::new(config, sessions_state, conns_state);
 
     // TODO: exit condition
     let main_loop = async move {
@@ -140,19 +160,27 @@ where
                     };
                     state.new_session(new_session.0, new_session.1).await;
                 },
-                server_msg = server_msg_rx.next() => {
-                    let server_msg = match server_msg {
-                        Some(server_msg) => server_msg,
+
+                conn_evt = conns_evt_rx.next() => {
+                    let conn_evt = match conn_evt {
+                        Some(conn_evt) => conn_evt,
                         None => {
-                            tracing::warn!("server_msg_rx is broken, exiting");
+                            tracing::warn!("conns_evt_rx is broken, exiting");
                             return;
                         }
                     };
 
-                    match server_msg {
-                        protocol::msg::ServerMsg::SessionMsg(session_id, server_msg) => {
-                            state.server_msg_to_session(session_id, server_msg).await;
-                        }
+                    match conn_evt {
+                        conn_manager::Event::Connected(conn_id, greeted_read, greeted_write) =>
+                            state.connected(conn_id, greeted_read, greeted_write).await,
+                        conn_manager::Event::ServerMsg(server_msg) => {
+                            match server_msg {
+                                protocol::msg::ServerMsg::SessionMsg(session_id, server_msg) =>
+                                    state.server_msg_to_session(session_id, server_msg).await,
+                            };
+                        },
+                        conn_manager::Event::Closed(conn_id) =>
+                            state.conn_closed(conn_id).await,
                     };
                 }
             }
