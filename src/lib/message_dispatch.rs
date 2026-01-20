@@ -10,7 +10,6 @@ use crate::prelude::*;
 use crate::protocol_conn_lifetime::SendEntry;
 use protocol::SessionId;
 
-
 pub enum Command<ConnId, Msg>
 where
     Msg: Send + 'static,

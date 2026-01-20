@@ -1,15 +1,16 @@
-use futures::prelude::*;
+use futures::{channel::mpsc, prelude::*};
 use thiserror::Error;
 use tracing::*;
 
-use crate::{prelude::*, protocol::SessionId};
-
-use super::{ServerConnector, server_connection_manager, session_manager};
+use super::{server_connection_manager as conn_manager, session_manager};
+use crate::client::ServerConnector;
+use crate::prelude::*;
+use crate::protocol::SessionId;
 
 #[derive(Error, Debug)]
 pub enum ClientError {
     #[error("session protocol error: session id {0}: {1}")]
-    SessionProtocol(SessionId, String),
+    SessionProtocol(u16, String),
     #[error("lost connection to server")]
     LostServerConnection,
 }
@@ -30,100 +31,141 @@ impl Into<session_manager::Config> for Config {
     }
 }
 
-impl Into<server_connection_manager::Config> for Config {
-    fn into(self) -> server_connection_manager::Config {
-        server_connection_manager::Config {
-            max_server_conn: self.max_server_conn,
+struct State<SessionEvtTx> {
+    config: Config,
+    sessions_state: session_manager::State<SessionEvtTx>,
+    conns_handle: conn_manager::Handle,
+}
+
+impl<SessionEvtTx> State<SessionEvtTx>
+where
+    SessionEvtTx: Sink<session_manager::Event> + Unpin + Send + Clone + 'static,
+{
+    pub fn new(
+        config: Config,
+        sessions_state: session_manager::State<SessionEvtTx>,
+        conns_handle: conn_manager::Handle,
+    ) -> Self {
+        Self {
+            config,
+            sessions_state,
+            conns_handle,
         }
+    }
+
+    pub async fn set_expected_conn_count(&mut self) {
+        let expected_conn_count = std::cmp::min(
+            self.config.max_server_conn as usize,
+            self.sessions_state.active_session_count() * 2,
+        );
+
+        self.conns_handle
+            .set_expected_conn_count(expected_conn_count);
+    }
+
+    pub async fn new_session(
+        &mut self,
+        session_id: SessionId,
+        agent: impl socks5::server_agent::Init,
+    ) {
+        self.sessions_state.new_session(session_id, agent).await;
+        self.set_expected_conn_count().await;
+    }
+
+    pub async fn server_msg_to_session(
+        &mut self,
+        session_id: SessionId,
+        server_msg: session::msg::ServerMsg,
+    ) {
+        self.sessions_state
+            .server_msg_to_session(session_id, server_msg)
+            .await;
+    }
+
+    pub async fn end_session(&mut self, session_id: SessionId) {
+        self.sessions_state.end_session(session_id).await;
+        self.set_expected_conn_count().await;
     }
 }
 
-// Exits only on server connection io error
-// protocol error panics
 pub async fn run<TServerConnector>(
-    new_proxee_rx: impl Stream<Item = (SessionId, impl socks5::server_agent::Init)>
+    mut new_proxyee_rx: impl Stream<Item = (SessionId, impl socks5::server_agent::Init)>
     + Unpin
     + Send
     + 'static,
     connect_to_server: TServerConnector,
     config: Config,
-) -> std::io::Error
+) -> std::io::Result<()>
 where
     TServerConnector: ServerConnector + Send,
 {
-    let (session_evt_tx, mut session_evt_rx) = futures::channel::mpsc::unbounded();
+    let (sessions_evt_tx, mut sessions_evt_rx) = futures::channel::mpsc::unbounded();
+    let (client_msg_sender_tx, client_msg_sender_rx) = async_channel::unbounded();
+    let (server_msg_tx, mut server_msg_rx) = mpsc::unbounded();
 
-    let (mut session_cmd_tx, session_cmd_rx) =
-        futures::channel::mpsc::unbounded::<session_manager::Command>();
+    let (sessions_state, sessions_task) =
+        session_manager::State::new(config.into(), sessions_evt_tx, client_msg_sender_rx);
 
-    let (server_conn_evt_tx, mut server_conn_evt_rx) = futures::channel::mpsc::unbounded();
+    let (conns_handle, conns_task) =
+        conn_manager::run(connect_to_server, client_msg_sender_tx, server_msg_tx);
 
-    let (mut server_conn_cmd_tx, server_conn_cmd_rx) = futures::channel::mpsc::unbounded();
+    let mut state = State::new(config, sessions_state, conns_handle);
 
-    let session_manager_task =
-        session_manager::run(new_proxee_rx, session_cmd_rx, session_evt_tx, config.into());
+    let main_loop = async move {
+        loop {
+            tokio::select! {
+                session_evt = sessions_evt_rx.next() => {
+                    let session_evt = match session_evt {
+                        Some(session_evt) => session_evt,
+                        None => {
+                            tracing::warn!("session_evt_rx is broken, exiting");
+                            return;
+                        }
+                    };
 
-    let handle_session_evt = async move {
-        while let Some(evt) = session_evt_rx.next().await {
-            match evt {
-                session_manager::Event::New(session_id) => {
-                    server_conn_cmd_tx
-                        .send(server_connection_manager::Command::SessionStarted(
-                            session_id,
-                        ))
-                        .await
-                        .unwrap();
-                }
-                session_manager::Event::Ended(session_id) => {
-                    server_conn_cmd_tx
-                        .send(server_connection_manager::Command::SessionEnded(session_id))
-                        .await
-                        .unwrap();
-                }
-                session_manager::Event::ClientMsg(session_id, client_msg) => {
-                    server_conn_cmd_tx
-                        .send(server_connection_manager::Command::SendClientMsg((
-                            session_id, client_msg,
-                        )))
-                        .await
-                        .unwrap();
-                }
-            }
-        }
-    };
+                    match session_evt {
+                        session_manager::Event::SessionEnded(session_id) => {
+                            state.end_session(session_id).await;
+                        }
+                    };
+                },
+                new_session = new_proxyee_rx.next() => {
+                    let new_session = match new_session {
+                        Some(new_session) => new_session,
+                        None => {
+                            tracing::warn!("new_proxyee_rx is broken, exiting");
+                            return;
+                        }
+                    };
+                    state.new_session(new_session.0, new_session.1).await;
+                },
+                server_msg = server_msg_rx.next() => {
+                    let server_msg = match server_msg {
+                        Some(server_msg) => server_msg,
+                        None => {
+                            tracing::warn!("server_msg_rx is broken, exiting");
+                            return;
+                        }
+                    };
 
-    let server_conn_task = server_connection_manager::run(
-        connect_to_server,
-        server_conn_cmd_rx,
-        server_conn_evt_tx,
-        config.into(),
-    );
-
-    let handle_server_conn_evt = async move {
-        while let Some(evt) = server_conn_evt_rx.next().await {
-            match evt {
-                server_connection_manager::Event::ServerMsg((session_id, server_msg)) => {
-                    let msg = session_manager::Command::ServerMsg(session_id, server_msg);
-                    let span = info_span!("forward server msg to session manager", msg = ?msg);
-                    session_cmd_tx.send(msg).instrument(span).await.unwrap();
+                    match server_msg {
+                        protocol::msg::ServerMsg::SessionMsg(session_id, server_msg) => {
+                            state.server_msg_to_session(session_id, server_msg).await;
+                        }
+                    };
                 }
             }
         }
     };
 
     tokio::try_join! {
-        session_manager_task
-            .map(|x| Ok::<_, std::io::Error>(x))
-            .instrument(info_span!("session_manager")),
-        handle_session_evt
-            .map(|x| Ok::<_, std::io::Error>(x))
-            .instrument(info_span!("handle_session_evt")),
-        server_conn_task
-            .map(|e| Err::<(), _>(e))
-            .instrument(info_span!("server_conn_task")),
-        handle_server_conn_evt
-            .map(|x| Ok::<_, std::io::Error>(x))
-            .instrument(info_span!("handle_server_conn_evt")),
+        sessions_task
+            .instrument(tracing::trace_span!("session manager"))
+            .map(|x| Ok::<_, std::io::Error>(x)),
+        conns_task
+            .instrument(tracing::trace_span!("conn manager")),
+        main_loop
+            .map(|_| Ok::<_, std::io::Error>(())) ,
     }
-    .unwrap_err()
+    .map(|_| ())
 }

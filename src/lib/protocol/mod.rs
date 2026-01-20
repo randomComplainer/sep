@@ -126,7 +126,7 @@ impl SessionId {
         }
     }
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConnId {
     pub timestamp: u64,
     pub client_port: u16,

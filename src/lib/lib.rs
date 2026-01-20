@@ -1,11 +1,15 @@
 #![feature(trait_alias)]
 #![feature(assert_matches)]
 
+mod async_channel_ext;
 pub mod connect_target;
 pub mod future_ext;
 pub mod handover;
 mod message_dispatch;
+mod dispatch_with_max_concurrency;
+pub mod oneshot_with_ack;
 mod protocol_conn_lifetime;
+mod protocol_conn_lifetime_new;
 pub mod sink_ext;
 pub mod task_scope;
 
@@ -19,6 +23,21 @@ pub mod socks5;
 
 pub mod client;
 pub mod server;
+
+pub mod prelude {
+    pub use crate::connect_target::ConnectTarget;
+    pub use crate::decode::*;
+    pub use crate::encrypt::{EncryptedRead, EncryptedWrite};
+    pub use crate::future_ext::FutureExt as _;
+    pub use crate::handover::ChannelExt as _;
+    pub use crate::oneshot_with_ack;
+    pub use crate::sink_ext::SinkExt as _;
+    pub use crate::socks5::server_agent::{Greeted as _, Init as _, Requested as _};
+    pub use crate::task_scope;
+    pub use crate::{decode, protocol, session, socks5};
+    pub use oneshot_with_ack::Sender as _;
+    pub use protocol::{ClientId, Key, Nonce};
+}
 
 pub mod cli_parameters {
     use clap::Parser;
@@ -100,17 +119,4 @@ pub mod cli_parameters {
             }
         }
     }
-}
-
-pub mod prelude {
-    pub use crate::connect_target::ConnectTarget;
-    pub use crate::decode::*;
-    pub use crate::encrypt::{EncryptedRead, EncryptedWrite};
-    pub use crate::future_ext::FutureExt as _;
-    pub use crate::handover::ChannelExt as _;
-    pub use crate::sink_ext::SinkExt as _;
-    pub use crate::socks5::server_agent::{Greeted as _, Init as _, Requested as _};
-    pub use crate::task_scope;
-    pub use crate::{decode, protocol, session, socks5};
-    pub use protocol::{ClientId, Key, Nonce};
 }

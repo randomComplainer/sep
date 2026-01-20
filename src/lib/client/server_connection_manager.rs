@@ -1,210 +1,283 @@
-use futures::channel::mpsc;
+use std::collections::HashMap;
+
+use futures::Sink;
 use futures::prelude::*;
-use tracing::*;
+use tracing::Instrument as _;
 
-use crate::message_dispatch;
+use crate::async_channel_ext::SenderExt as _;
 use crate::prelude::*;
-use protocol::SessionId;
+use crate::protocol::ConnId;
 
-#[derive(Debug)]
-pub enum Command {
-    SendClientMsg((SessionId, session::msg::ClientMsg)),
-    SessionStarted(SessionId),
-    SessionEnded(SessionId),
+struct ConnEntry {}
+
+pub struct Handle {
+    expectet_conn_count_tx: tokio::sync::watch::Sender<usize>,
 }
 
-pub enum Event {
-    ServerMsg((SessionId, session::msg::ServerMsg)),
+struct State<ServerConnector, EventTx, ServerMsgTx> {
+    conns: HashMap<ConnId, ConnEntry>,
+    conns_scope_handle: task_scope::ScopeHandle<std::io::Error>,
+    connecting_count: usize,
+    server_connector: ServerConnector,
+    event_tx: EventTx,
+    server_msg_tx: ServerMsgTx,
+    client_msg_sender_tx: async_channel::Sender<(
+        ConnId,
+        crate::oneshot_with_ack::RawSender<protocol::msg::ClientMsg>,
+    )>,
+    expected_conn_count: usize,
 }
 
-pub struct Config {
-    pub max_server_conn: u16,
+enum Event<GreetedRead, GreetedWrite> {
+    Connected(Result<(ConnId, GreetedRead, GreetedWrite), std::io::Error>),
+    Closed(ConnId),
 }
 
-#[derive(Debug)]
-struct State {
-    pub session_count: usize,
-    pub server_conn_count: usize,
-}
-
-pub async fn run<ServerConnector>(
-    connect_to_server: ServerConnector,
-    mut cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
-    evt_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Clone + Unpin + Send + 'static,
-    config: Config,
-) -> std::io::Error
+impl<ServerConnector, EventTx, EventTxErr, ServerWrite, ServerRead, ServerMsgTx, ServerMsgTxErr>
+    State<ServerConnector, EventTx, ServerMsgTx>
 where
-    ServerConnector: super::ServerConnector + Send,
+    ServerConnector:
+        super::ServerConnector<GreetedRead = ServerRead, GreetedWrite = ServerWrite> + Send,
+    EventTx:
+        Sink<Event<ServerRead, ServerWrite>, Error = EventTxErr> + Unpin + Send + Clone + 'static,
+    EventTxErr: std::fmt::Debug,
+    ServerWrite:
+        protocol::MessageWriter<Message = protocol::msg::conn::ConnMsg<protocol::msg::ClientMsg>>,
+    ServerRead:
+        protocol::MessageReader<Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>>,
+    ServerMsgTx:
+        Sink<protocol::msg::ServerMsg, Error = ServerMsgTxErr> + Unpin + Send + Clone + 'static,
+    ServerMsgTxErr: std::fmt::Debug,
 {
-    let (connection_scope_handle, connection_scope_task) =
-        task_scope::new_scope::<std::io::Error>();
+    pub fn new(
+        server_connector: ServerConnector,
+        conns_scope_handle: task_scope::ScopeHandle<std::io::Error>,
+        event_tx: EventTx,
+        server_msg_tx: ServerMsgTx,
+        client_msg_sender_tx: async_channel::Sender<(
+            ConnId,
+            crate::oneshot_with_ack::RawSender<protocol::msg::ClientMsg>,
+        )>,
+    ) -> Self {
+        Self {
+            conns: HashMap::new(),
+            connecting_count: 0,
+            conns_scope_handle,
+            server_connector,
+            event_tx,
+            server_msg_tx,
+            client_msg_sender_tx,
+            expected_conn_count: 0,
+        }
+    }
 
-    let (state_tx, mut state_rx) = tokio::sync::watch::channel(State {
-        session_count: 0,
-        server_conn_count: 0,
-    });
+    async fn create_connection_in_background(&mut self) {
+        tracing::debug!("create new connection");
 
-    let (mut client_msg_dispatch_cmd_tx, client_msg_dispatch_cmd_rx) = mpsc::unbounded();
-    let client_msg_dispatch_task = message_dispatch::run(client_msg_dispatch_cmd_rx);
-
-    // increase conn count sycnhronously
-    // actual connecting is done asynchronously
-    // so it will not block you too long on await
-    let create_connection = {
-        let connect_to_server = connect_to_server.clone();
-        let client_msg_dispatch_cmd_tx = client_msg_dispatch_cmd_tx.clone();
-        let mut connecting_scope_handle = connection_scope_handle.clone();
-        let evt_tx = evt_tx.clone();
-        let state_tx = state_tx.clone();
-        async move || {
-            state_tx.send_modify(|old| {
-                old.server_conn_count += 1;
-            });
-
-            connecting_scope_handle
-                .run_async(async move {
-                    let (conn_id, server_read, server_write) = match connect_to_server
+        self.connecting_count += 1;
+        let connector = self.server_connector.clone();
+        let mut event_tx = self.event_tx.clone();
+        self.conns_scope_handle
+            .run_async(
+                async move {
+                    let result = connector
                         .connect()
                         .instrument(tracing::trace_span!("connecte to server"))
+                        .await;
+
+                    if let Err(_) = event_tx
+                        .send(Event::Connected(result))
+                        .instrument(tracing::trace_span!("connected_tx"))
                         .await
                     {
-                        Ok(x) => x,
-                        Err(err) => {
-                            error!(?err, "failed to connecte to server");
-                            return Err(err);
+                        // TODO: actually exit? seperated task scope?
+                        tracing::warn!("connected_tx is broken");
+                    }
+
+                    Ok(())
+                }
+                .instrument(tracing::trace_span!("create connection in background")),
+            )
+            .await;
+    }
+
+    pub async fn on_connected(
+        &mut self,
+        connected: std::io::Result<(ConnId, ServerRead, ServerWrite)>,
+    ) -> std::io::Result<()> {
+        self.connecting_count -= 1;
+        let (conn_id, server_read, server_write) = match connected {
+            Ok(x) => x,
+            Err(err) => {
+                tracing::warn!(?err, "failed to connect to server");
+                return Err(err);
+            }
+        };
+
+        assert!(self.conns.get(&conn_id).is_none());
+
+        let server_msg_tx = self.server_msg_tx.clone();
+        let client_msg_sender_tx = self.client_msg_sender_tx.clone();
+        let mut event_tx = self.event_tx.clone();
+
+        let task = async move {
+            let (conn_task, _) = crate::protocol_conn_lifetime_new::run(
+                Default::default(),
+                server_read,
+                server_write,
+                server_msg_tx,
+                client_msg_sender_tx.clone().with(
+                    move |sender: crate::oneshot_with_ack::RawSender<protocol::msg::ClientMsg>| {
+                        (conn_id, sender)
+                    },
+                ),
+            );
+
+            let conn_result = conn_task
+                .await
+                .inspect_err(|err| tracing::error!(?err, "connection error"));
+
+            if let Err(_) = event_tx.send(Event::Closed(conn_id)).await {
+                tracing::warn!("event_tx is broken");
+            }
+
+            conn_result
+        }
+        .instrument(tracing::trace_span!(parent: None, "conn lifetime", ?conn_id));
+
+        self.conns_scope_handle.run_async(task).await;
+        self.conns.insert(conn_id, ConnEntry {});
+
+        tracing::info!(
+            active = self.active_conn_count(),
+            expected = self.expected_conn_count,
+            "server connection created"
+        );
+
+        Ok(())
+    }
+
+    pub async fn on_connection_closed(&mut self, conn_id: ConnId) {
+        assert!(self.conns.remove(&conn_id).is_some());
+
+        tracing::info!(
+            active = self.active_conn_count(),
+            expected = self.expected_conn_count,
+            "server connection closed"
+        );
+    }
+
+    pub fn active_conn_count(&self) -> usize {
+        self.conns.len() + self.connecting_count
+    }
+
+    pub async fn set_expected_conn_count(&mut self, expected_conn_count: usize) {
+        tracing::info!(
+            expected = expected_conn_count,
+            active = self.active_conn_count(),
+            "set expected conn count"
+        );
+
+        self.expected_conn_count = expected_conn_count;
+        self.match_expected_conn_count().await;
+    }
+
+    async fn match_expected_conn_count(&mut self) {
+        tracing::info!(
+            expected = self.expected_conn_count,
+            active = self.active_conn_count(),
+            "match expected conn count"
+        );
+        while self.active_conn_count() < self.expected_conn_count {
+            self.create_connection_in_background().await;
+        }
+    }
+}
+
+pub fn run<ServerConnector>(
+    server_connector: ServerConnector,
+    client_msg_sender_tx: async_channel::Sender<(
+        ConnId,
+        crate::oneshot_with_ack::RawSender<protocol::msg::ClientMsg>,
+    )>,
+    server_msg_tx: impl Sink<protocol::msg::ServerMsg, Error = impl std::fmt::Debug>
+    + Unpin
+    + Send
+    + Clone
+    + 'static,
+) -> (
+    Handle,
+    impl Future<Output = std::io::Result<()>> + Send + 'static,
+)
+where
+    ServerConnector: super::ServerConnector + Send + 'static,
+{
+    let (conns_scope_handle, conns_scope_task) = task_scope::new_scope::<std::io::Error>();
+    let (expected_conn_count_tx, mut expected_conn_count_rx) = tokio::sync::watch::channel(0);
+    let (evt_tx, mut evt_rx) = futures::channel::mpsc::unbounded();
+    let mut state = State::new(
+        server_connector,
+        conns_scope_handle,
+        evt_tx,
+        server_msg_tx,
+        client_msg_sender_tx,
+    );
+
+    let main_loop = async move {
+        loop {
+            tokio::select! {
+                r = expected_conn_count_rx.changed() => {
+                    if let Err(_) = r {
+                        tracing::warn!("expected conn count channel is broken, exiting");
+                        return Ok::<_, std::io::Error>(());
+                    }
+
+                    let expected_conn_count = *expected_conn_count_rx.borrow_and_update();
+                    state.set_expected_conn_count(expected_conn_count).await;
+                },
+                evt = evt_rx.next() => {
+                    let evt = match evt {
+                        Some(evt) => evt,
+                        None => {
+                            tracing::warn!("evt_rx is broken, exiting");
+                            return Ok(());
                         }
                     };
 
-                    let lifetime_span = tracing::trace_span!("conn lifetime", ?conn_id);
+                    match evt {
+                        Event::Connected(connect_result) => {
+                            state.on_connected(connect_result).await?;
+                        },
+                        Event::Closed(conn_id) => {
+                            state.on_connection_closed(conn_id).await;
+                        },
+                    };
 
-                    async move {
-                        let (conn_task, _) = crate::protocol_conn_lifetime::run(
-                            Default::default(),
-                            server_read,
-                            server_write,
-                            evt_tx.clone().with_sync(|server_msg| match server_msg {
-                                protocol::msg::ServerMsg::SessionMsg(session_id, msg) => {
-                                    Event::ServerMsg((session_id, msg))
-                                }
-                            }),
-                            client_msg_dispatch_cmd_tx
-                                .clone()
-                                .with_sync(move |send_one| {
-                                    message_dispatch::Command::Sender(conn_id, send_one)
-                                }),
-                        );
-
-                        let conn_result = conn_task.await;
-
-                        if let Err(err) = conn_result {
-                            error!(?err, "server connection error");
-                            return Err(err);
-                        }
-
-                        Ok::<_, std::io::Error>(())
-                    }
-                    .inspect(|_| {
-                        state_tx.send_modify(|old| {
-                            old.server_conn_count -= 1;
-                        });
-                    })
-                    .instrument(lifetime_span)
-                    .await
-                })
-                .await;
-        }
-    };
-
-    let keep_alive_loop = {
-        let create_connection = create_connection.clone();
-        let mut state_rx = state_rx.clone();
-        let max_server_conn = config.max_server_conn;
-        async move {
-            while let Ok(x) = state_rx
-                .wait_for(|state| {
-                    let expected = std::cmp::min(max_server_conn as usize, state.session_count * 2);
-                    state.server_conn_count < expected
-                })
-                .await
-            {
-                debug!(state = ?&*x, "creating more server connections");
-                drop(x);
-                create_connection.clone()().await;
-            }
-        }
-    };
-
-    let cmd_loop = async move {
-        while let Some(cmd) = cmd_rx.next().instrument(debug_span!("receive cmd")).await {
-            debug!(?cmd, "new cmd");
-            match cmd {
-                Command::SendClientMsg(client_msg) => {
-                    if let Err(_) = client_msg_dispatch_cmd_tx
-                        .send(message_dispatch::Command::Msg(
-                            client_msg.0,
-                            protocol::msg::ClientMsg::SessionMsg(client_msg.0, client_msg.1),
-                        ))
-                        .instrument(debug_span!("forward client msg for dispatch"))
-                        .await
-                    {
-                        warn!("client_msg_dispatch_cmd_tx is broken, exiting");
-                        return;
-                    }
-                }
-                Command::SessionStarted(session_id) => {
-                    state_tx.send_modify(|state| {
-                        state.session_count += 1;
-                    });
-                    if let Err(_) = client_msg_dispatch_cmd_tx
-                        .send(message_dispatch::Command::NewSession(session_id))
-                        .await
-                    {
-                        warn!("client_msg_dispatch_cmd_tx is broken, exiting");
-                        return;
-                    }
-                }
-                Command::SessionEnded(session_id) => {
-                    state_tx.send_modify(|state| {
-                        state.session_count -= 1;
-                    });
-                    if let Err(_) = client_msg_dispatch_cmd_tx
-                        .send(message_dispatch::Command::EndSession(session_id))
-                        .await
-                    {
-                        warn!("client_msg_dispatch_cmd_tx is broken, exiting");
-                        return;
-                    }
+                    state.match_expected_conn_count().await;
                 }
             }
         }
+    }
+    .instrument(tracing::trace_span!("conn manager main loop"));
 
-        debug!("end of cmd stream, exiting");
-    };
+    return (Handle::new(expected_conn_count_tx), async move {
+        tokio::select! {
+            r = main_loop => r,
+            e = conns_scope_task => Err(e),
+        }
+    });
+}
 
-    let state_tracking = async move {
-        loop {
-            state_rx.changed().await.unwrap();
-            let state = state_rx.borrow();
-            trace!(state=?&*state, "state changed");
-            drop(state)
+impl Handle {
+    pub fn new(expectet_conn_count_tx: tokio::sync::watch::Sender<usize>) -> Self {
+        Self {
+            expectet_conn_count_tx,
         }
     }
-    .map(|_| Ok::<_, std::io::Error>(()));
 
-    tokio::try_join! {
-        connection_scope_task
-            .map(|e| Err::<(), _>(e))
-            .instrument(info_span!("connection scope task")),
-        client_msg_dispatch_task
-            .map(|x| Ok::<_, std::io::Error>(x))
-            .instrument(info_span!("client msg dispatch task")),
-        keep_alive_loop
-            .map(|x| Ok::<_, std::io::Error>(x))
-            .instrument(info_span!("keep_alive_loop")),
-        cmd_loop
-            .map(|x| Ok::<_, std::io::Error>(x))
-            .instrument(info_span!("cmd_loop")),
-        state_tracking,
+    pub fn set_expected_conn_count(&mut self, count: usize) {
+        if let Err(_) = self.expectet_conn_count_tx.send(count) {
+            tracing::warn!("expectet_conn_count_tx is broken");
+        }
     }
-    .unwrap_err()
 }

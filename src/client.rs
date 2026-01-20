@@ -102,8 +102,7 @@ async fn async_main(args: Args) {
                 max_bytes_ahead: session::MAX_BYTES_AHEAD,
                 max_server_conn: 8,
             },
-        )
-        .map(Err::<(), std::io::Error>);
+        );
 
         match tokio::try_join! {
             main_task,
