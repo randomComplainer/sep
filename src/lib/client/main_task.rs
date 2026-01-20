@@ -111,6 +111,7 @@ where
 
     let mut state = State::new(config, sessions_state, conns_handle);
 
+    // TODO: exit condition
     let main_loop = async move {
         loop {
             tokio::select! {

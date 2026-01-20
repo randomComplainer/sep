@@ -38,7 +38,7 @@ pub struct State<EvtTx> {
     evt_tx: EvtTx,
     client_msg_sender_rx: async_channel::Receiver<(
         ConnId,
-        crate::oneshot_with_ack::RawSender<protocol::msg::ClientMsg>,
+        oneshot_with_ack::RawSender<protocol::msg::ClientMsg>,
     )>,
 }
 
@@ -76,9 +76,9 @@ where
     ) {
         assert!(!self.sessions.contains_key(&session_id));
 
-        let (session_server_msg_tx, session_server_msg_rx) = futures::channel::mpsc::unbounded();
+        let (session_server_msg_tx, session_server_msg_rx) = mpsc::unbounded();
         let (session_client_msg_sending_queue_tx, session_client_msg_sending_queue_rx) =
-            futures::channel::mpsc::unbounded();
+            mpsc::unbounded();
 
         let session_task = session::client::run(
             agent,
@@ -119,7 +119,6 @@ where
         };
 
         self.sessions_scope_handle.run_async(session_task).await;
-
         self.sessions.insert(
             session_id,
             SessionEntry {
@@ -147,7 +146,7 @@ where
     }
 
     pub async fn end_session(&mut self, session_id: SessionId) {
-        self.sessions.remove(&session_id);
+        assert!(self.sessions.remove(&session_id).is_some());
     }
 
     pub fn active_session_count(&self) -> usize {

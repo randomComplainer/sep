@@ -1,4 +1,3 @@
-use futures::SinkExt as _;
 use futures::channel::mpsc;
 use futures::prelude::*;
 use tracing::*;
@@ -6,6 +5,7 @@ use tracing::*;
 use crate::handover;
 use crate::prelude::*;
 use crate::protocol::ConnId;
+use crate::protocol::SessionId;
 
 mod conn_manager;
 mod session_manager;
@@ -37,8 +37,62 @@ impl<TConnectTarget> Into<session_manager::Config<TConnectTarget>> for Config<TC
     }
 }
 
+pub struct State<TConnectTarget> {
+    sessions_state: session_manager::State<TConnectTarget>,
+    conns_state: conn_manager::State,
+}
+
+impl<TConnectTarget> State<TConnectTarget>
+where
+    TConnectTarget: ConnectTarget,
+{
+    pub fn new(
+        sessions_state: session_manager::State<TConnectTarget>,
+        conns_state: conn_manager::State,
+    ) -> Self {
+        Self {
+            sessions_state,
+            conns_state,
+        }
+    }
+
+    pub async fn on_client_conn<ClientRead, ClientWrite>(
+        &mut self,
+        conn_id: ConnId,
+        client_read: ClientRead,
+        client_write: ClientWrite,
+    ) where
+        ClientRead: protocol::MessageReader<
+                Message = protocol::msg::conn::ConnMsg<protocol::msg::ClientMsg>,
+            >,
+        ClientWrite: protocol::MessageWriter<
+                Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>,
+            >,
+    {
+        self.conns_state
+            .on_new_connection(conn_id, client_read, client_write)
+            .await
+    }
+
+    pub async fn client_msg_to_session(
+        &mut self,
+        session_id: SessionId,
+        msg: session::msg::ClientMsg,
+    ) {
+        self.sessions_state.on_client_msg(session_id, msg).await
+    }
+
+    pub async fn on_session_end(&mut self, session_id: SessionId) {
+        self.sessions_state.on_session_end(session_id).await
+    }
+
+    pub async fn on_conn_closed(&mut self, conn_id: ConnId) {
+        self.conns_state.on_connection_closed(conn_id).await
+    }
+}
+
 pub async fn run<GreetedRead, GreetedWrite, TConnectTarget>(
-    new_conn_rx: handover::Receiver<(ConnId, GreetedRead, GreetedWrite)>,
+    mut new_conn_rx: handover::Receiver<(ConnId, GreetedRead, GreetedWrite)>,
     config: Config<TConnectTarget>,
 ) -> Result<(), std::io::Error>
 where
@@ -48,230 +102,78 @@ where
         protocol::MessageWriter<Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>>,
     TConnectTarget: ConnectTarget,
 {
-    let (session_manager_evt_tx, mut session_manager_evt_rx) =
-        mpsc::unbounded::<session_manager::Event>();
+    let (server_msg_sender_tx, server_msg_sender_rx) = async_channel::unbounded();
 
-    let (mut session_manager_cmd_tx, session_manager_cmd_rx) =
-        mpsc::unbounded::<session_manager::Command>();
+    let (sessions_evt_tx, mut sessions_evt_rx) = mpsc::unbounded();
+    let (conns_evt_tx, mut conns_evt_rx) = mpsc::unbounded();
 
-    let session_manager_task = session_manager::run(
-        session_manager_cmd_rx,
-        session_manager_evt_tx.clone(),
-        config.clone().into(),
-    )
-    .instrument(info_span!("session manager"));
+    let (sessions_state, sessions_task) =
+        session_manager::State::new(config.clone().into(), sessions_evt_tx, server_msg_sender_rx);
 
-    let (conn_manager_evt_tx, mut conn_manager_evt_rx) = mpsc::unbounded::<conn_manager::Event>();
+    let (conns_state, conns_task) = conn_manager::State::new(conns_evt_tx, server_msg_sender_tx);
 
-    let (mut conn_manager_cmd_tx, conn_manager_cmd_rx) = mpsc::unbounded::<conn_manager::Command>();
+    let mut state = State::new(sessions_state, conns_state);
 
-    let conn_manager_task = conn_manager::run(
-        conn_manager_cmd_rx,
-        conn_manager_evt_tx.clone(),
-        new_conn_rx,
-    )
-    .instrument(info_span!("conn manager"));
+    // TODO: exit condition
+    let main_loop = async move {
+        loop {
+            tokio::select! {
+                new_conn = new_conn_rx.recv() => {
+                    let new_conn = match new_conn {
+                        Some(new_conn) => new_conn,
+                        None => {
+                            tracing::warn!("conns_evt_rx is broken, exiting");
+                            return;
+                        }
+                    };
 
-    let main_loop = {
-        async move {
-            let mut conn_num = 0;
-            let mut session_num = 0;
+                    state.on_client_conn(new_conn.0, new_conn.1, new_conn.2).await;
+                },
 
-            macro_rules! check_state {
-                () => {
-                    debug!(conn_num, session_num, "checking state");
-                    if conn_num == 0 && session_num == 0 {
-                        debug!("ending state reached");
-                        return;
-                    }
-                };
-            }
+                sessions_evt = sessions_evt_rx.next() => {
+                    let sessions_evt = match sessions_evt {
+                        Some(sessions_evt) => sessions_evt,
+                        None => {
+                            tracing::warn!("sessions_evt_rx is broken, exiting");
+                            return;
+                        }
+                    };
 
-            loop {
-                tokio::select! {
-                    e = session_manager_evt_rx.next() => {
-                        let e = match e {
-                            Some(e) => e,
-                            None => {
-                                warn!("session manager evt rx is broken, exiting");
-                                return;
-                            },
-                        };
+                    match sessions_evt {
+                        session_manager::Event::SessionEnded(session_id) =>
+                            state.on_session_end(session_id).await ,
+                    };
+                },
 
-                        match e {
-                            session_manager::Event::ServerMsg(session_id, server_msg) => {
-                                if let Err(_) = conn_manager_cmd_tx.send(conn_manager::Command::ServerMsg(
-                                        (session_id, server_msg).into()
-                                )).await {
-                                    warn!("conn manager cmd tx is broken, exiting");
-                                    return;
-                                }
-                            },
-                            session_manager::Event::Started(session_id) => {
-                                session_num += 1;
-                                if let Err(_) = conn_manager_cmd_tx.send(conn_manager::Command::NewSession(session_id)).await {
-                                    warn!("conn manager cmd rx is broken, exiting");
-                                    return;
-                                }
-                            },
-                            session_manager::Event::Ended(session_id) => {
-                                session_num -= 1;
-                                if let Err(_) = conn_manager_cmd_tx.send(conn_manager::Command::EndSession(session_id)).await {
-                                    warn!("conn manager cmd rx is broken, exiting");
-                                    return;
-                                }
-                                check_state!();
-                            },
-                        };
-                    },
+                conns_evt = conns_evt_rx.next() => {
+                    let conns_evt = match conns_evt {
+                        Some(conns_evt) => conns_evt,
+                        None => {
+                            tracing::warn!("conns_evt_rx is broken, exiting");
+                            return;
+                        }
+                    };
 
-                    e = conn_manager_evt_rx.next() => {
-                        let e = match e {
-                            Some(e) => e,
-                            None => {
-                                warn!("conn manager evt rx is broken, exiting");
-                                return;
-                            }
-                        };
-
-                        match e {
-                            conn_manager::Event::ClientMsg(client_msg) => {
-                                let (session_id, client_msg) = match client_msg {
-                                    protocol::msg::ClientMsg::SessionMsg(session_id, client_msg) => (session_id, client_msg),
-                                };
-
-                                if let Err(_) = session_manager_cmd_tx.send(session_manager::Command::ClientMsg(session_id, client_msg))
-                                    .await {
-                                        warn!("session manager cmd tx is broken, exiting");
-                                        return;
-                                }
-                            },
-                            conn_manager::Event::Started => {
-                                conn_num += 1;
-                                check_state!();
-                            },
-                            conn_manager::Event::Ended => {
-                                conn_num -= 1;
-                                check_state!();
-                            },
-                        };
-                    }
+                    match conns_evt {
+                        conn_manager::Event::Closed(conn_id) => {
+                            state.on_conn_closed(conn_id).await;
+                        },
+                        conn_manager::Event::ClientMsg(client_msg) => {
+                            match client_msg {
+                                protocol::msg::ClientMsg::SessionMsg(session_id, client_msg) =>
+                                    state.client_msg_to_session(session_id, client_msg).await,
+                            };
+                        },
+                    };
                 }
             }
         }
-    }
-    .instrument(info_span!("main loop"));
+    };
 
-    // all theses tasks only end when ending state is reached
-    // or message channel is broken
-    tokio::select! {
-        _ = main_loop => Ok(()),
-        _ = session_manager_task => Ok(()),
-        r = conn_manager_task => r,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    // use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    //
-    // use super::*;
-    //
-    // // TODO: fix this test
-    // // Temporarily disabled because of unpredictable Ping/Pong messages
-    // // #[test_log::test(tokio::test)]
-    // async fn happy_path() {
-    //     let (mut new_conn_tx, new_conn_rx) = handover::channel();
-    //     let config = Config {
-    //         max_packet_ahead: 4,
-    //         max_packet_size: 1024,
-    //         connect_target: crate::connect_target::make_mock([(
-    //             (ReadRequestAddr::Domain("example.com".into()), 80),
-    //             Ok((
-    //                 tokio_test::io::Builder::new().build(),
-    //                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 180),
-    //             )),
-    //         )]),
-    //     };
-    //
-    //     let main_task = tokio::spawn(run(new_conn_rx, config));
-    //
-    //     let (client_agent, server_agent) = protocol::test_utils::create_greeted_pair().await;
-    //     let server_agent = ("".into(), server_agent.1, server_agent.2);
-    //
-    //     new_conn_tx
-    //         .send(server_agent)
-    //         .await
-    //         .map_err(|_| ())
-    //         .unwrap();
-    //
-    //     let (mut client_agent_read, mut client_agent_write) = client_agent;
-    //
-    //     client_agent_write
-    //         .send_msg(
-    //             protocol::msg::ClientMsg::SessionMsg(
-    //                 2,
-    //                 session::msg::Request {
-    //                     addr: decode::ReadRequestAddr::Domain("example.com".into()),
-    //                     port: 80,
-    //                 }
-    //                 .into(),
-    //             )
-    //             .into(),
-    //         )
-    //         .await
-    //         .unwrap();
-    //
-    //     assert_eq!(
-    //         client_agent_read.recv_msg().await.unwrap().unwrap(),
-    //         protocol::msg::ServerMsg::SessionMsg(
-    //             2,
-    //             session::msg::Reply {
-    //                 bound_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 180),
-    //             }
-    //             .into()
-    //         )
-    //         .into()
-    //     );
-    //
-    //     assert_eq!(
-    //         client_agent_read.recv_msg().await.unwrap().unwrap(),
-    //         protocol::msg::ServerMsg::SessionMsg(2, session::msg::Eof { seq: 0 }.into()).into()
-    //     );
-    //
-    //     client_agent_write
-    //         .send_msg(
-    //             protocol::msg::ClientMsg::SessionMsg(2, session::msg::Ack { seq: 0 }.into()).into(),
-    //         )
-    //         .await
-    //         .unwrap();
-    //
-    //     client_agent_write
-    //         .send_msg(
-    //             protocol::msg::ClientMsg::SessionMsg(2, session::msg::Eof { seq: 0 }.into()).into(),
-    //         )
-    //         .await
-    //         .unwrap();
-    //
-    //     assert_eq!(
-    //         client_agent_read.recv_msg().await.unwrap().unwrap(),
-    //         protocol::msg::ServerMsg::SessionMsg(2, session::msg::Ack { seq: 0 }.into()).into()
-    //     );
-    //
-    //     // let connection timeout run out
-    //     tokio::time::pause();
-    //
-    //     assert_eq!(
-    //         client_agent_read.recv_msg().await.unwrap().unwrap(),
-    //         protocol::msg::conn::ServerMsg::EndOfStream
-    //     );
-    //
-    //     drop(client_agent_read);
-    //     drop(client_agent_write);
-    //
-    //     let result = main_task.await;
-    //     assert!(result.unwrap().is_ok());
-    // }
-    //
-    // // TODO: test more
+    tokio::try_join!(
+        sessions_task.instrument(tracing::trace_span!("session manager")),
+        conns_task.instrument(tracing::trace_span!("conn manager")),
+        main_loop.map(|_| Ok::<_, std::io::Error>(()))
+    )
+    .map(|_| ())
 }

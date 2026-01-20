@@ -1,7 +1,6 @@
 use std::fmt::Debug;
 
 use futures::prelude::*;
-use tokio::sync::oneshot;
 use tracing::Instrument as _;
 
 use crate::prelude::*;
@@ -25,24 +24,19 @@ impl Default for Config {
     }
 }
 
-pub type SendEntry<MessageToSend> = (MessageToSend, oneshot::Sender<()>);
-
 pub fn run<MessageToSend, MessageToRecv>(
     config: Config,
     mut stream_read: impl MessageReader<Message = ConnMsg<MessageToRecv>> + Send,
     mut stream_write: impl MessageWriter<Message = ConnMsg<MessageToSend>> + Send,
     mut msg_to_recv_tx: impl Sink<MessageToRecv, Error = impl std::fmt::Debug> + Unpin + Send + 'static,
-    mut sender_tx: impl Sink<oneshot::Sender<SendEntry<MessageToSend>>, Error = impl std::fmt::Debug>
-    + Unpin
-    + Send
-    + 'static,
+    sender_tx: impl crate::async_channel_ext::Sender<crate::oneshot_with_ack::RawSender<MessageToSend>>,
 ) -> (
     impl Future<Output = Result<(), std::io::Error>> + Send,
     tokio::sync::mpsc::Sender<()>,
 )
 where
-    MessageToSend: Send + Debug,
-    MessageToRecv: Send + Debug,
+    MessageToSend: Send + Debug + Unpin + 'static,
+    MessageToRecv: Send + Debug + Unpin + 'static,
 {
     let (send_end_of_stream_tx, mut send_end_of_stream_rx) = tokio::sync::mpsc::channel::<()>(2);
     let local_send_end_of_stream_tx = send_end_of_stream_tx.clone();
@@ -53,7 +47,7 @@ where
         let send_loop = async move {
             let mut ping_timer = tokio::time::sleep(config.ping_interval);
             let mut ping_counter = 0;
-            let (send_one_tx, send_one_rx) = oneshot::channel();
+            let (send_one_tx, send_one_rx) = crate::oneshot_with_ack::channel();
             let mut send_one_rx = Box::pin(send_one_rx);
 
             if let Err(_) = sender_tx.send(send_one_tx).await {
@@ -78,12 +72,12 @@ where
                     ping_timer  = tokio::time::sleep(config.ping_interval);
 
                 };
-        }
+            }
 
             loop {
                 tokio::select! {
                     send_one = send_one_rx.as_mut() => {
-                        let (msg, ack_tx) = match send_one  {
+                        let (msg, acker) = match send_one  {
                             Ok(send_one) => send_one,
                             Err(_) => {
                                 return Ok::<_, std::io::Error>(());
@@ -92,11 +86,9 @@ where
 
                         send_msg!(msg.into());
 
-                        if let Err(_) = ack_tx.send(()) {
-                            tracing::trace!("ack tx is broken");
-                        }
+                        acker.ack();
 
-                        let (new_send_one_tx, new_send_one_rx) = oneshot::channel();
+                        let (new_send_one_tx, new_send_one_rx) = crate::oneshot_with_ack::channel();
 
                         if let Err(_) = sender_tx.send(new_send_one_tx).await {
                             tracing::warn!("sender_tx is broken, exiting");
@@ -104,6 +96,7 @@ where
                         }
 
                         send_one_rx = Box::pin(new_send_one_rx);
+
                     },
                     _ = ping_timer => {
                         tracing::trace!(count = ping_counter, "ping");

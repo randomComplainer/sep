@@ -1,22 +1,12 @@
-use std::{collections::HashMap, time::SystemTime};
+use std::collections::HashMap;
 
-use futures::{channel::mpsc, prelude::*};
-use tracing::*;
+use futures::{FutureExt as _, SinkExt, TryFutureExt, channel::mpsc};
+use tracing::Instrument as _;
 
-use crate::prelude::*;
-use protocol::SessionId;
-
-#[derive(Debug)]
-pub enum Command {
-    ClientMsg(SessionId, session::msg::ClientMsg),
-}
-
-#[derive(Debug)]
-pub enum Event {
-    ServerMsg(SessionId, session::msg::ServerMsg),
-    Started(SessionId),
-    Ended(SessionId),
-}
+use crate::{
+    prelude::*,
+    protocol::{ConnId, SessionId},
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config<TConnectTarget> {
@@ -35,115 +25,124 @@ impl<TConnectTarget> Into<session::server::Config<TConnectTarget>> for Config<TC
     }
 }
 
-pub async fn run<TConnectTarget>(
-    mut cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
-    evt_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Clone + Unpin + Send + 'static,
+pub enum Event {
+    SessionEnded(SessionId),
+}
+
+pub struct SessionEntry {
+    pub client_msg_tx: mpsc::UnboundedSender<session::msg::ClientMsg>,
+}
+
+pub struct State<TConnectTarget> {
     config: Config<TConnectTarget>,
-) where
+    sessions: HashMap<SessionId, SessionEntry>,
+    sessions_scope_handle: task_scope::ScopeHandle<std::io::Error>,
+    evt_tx: mpsc::UnboundedSender<Event>,
+    server_msg_sender_rx: async_channel::Receiver<(
+        ConnId,
+        oneshot_with_ack::RawSender<protocol::msg::ServerMsg>,
+    )>,
+}
+
+impl<TConnectTarget> State<TConnectTarget>
+where
     TConnectTarget: ConnectTarget,
 {
-    let (mut session_scope_handle, session_scope_task) = task_scope::new_scope::<()>();
+    pub fn new(
+        config: Config<TConnectTarget>,
+        evt_tx: mpsc::UnboundedSender<Event>,
+        server_msg_sender_rx: async_channel::Receiver<(
+            ConnId,
+            oneshot_with_ack::RawSender<protocol::msg::ServerMsg>,
+        )>,
+    ) -> (
+        Self,
+        impl Future<Output = std::io::Result<()>> + Send + 'static,
+    ) {
+        let (sessions_scope_handle, sessions_scope_task) =
+            task_scope::new_scope::<std::io::Error>();
 
-    let receiving_client_msg = {
-        let config = config.clone();
-        let mut evt_tx = evt_tx.clone();
+        (
+            Self {
+                config,
+                sessions: HashMap::new(),
+                sessions_scope_handle,
+                evt_tx,
+                server_msg_sender_rx,
+            },
+            sessions_scope_task.map(Err),
+        )
+    }
 
-        async move {
-            let mut session_client_msg_senders =
-                HashMap::<SessionId, mpsc::UnboundedSender<session::msg::ClientMsg>>::new();
+    pub async fn on_client_msg(&mut self, session_id: SessionId, msg: session::msg::ClientMsg) {
+        if let session::msg::ClientMsg::Request(_) = &msg {
+            assert!(!self.sessions.contains_key(&session_id));
 
-            while let Some(cmd) = cmd_rx.next().await {
-                debug!(?cmd, "new cmd incoming");
-                match cmd {
-                    Command::ClientMsg(session_id, client_msg) => {
-                        if let session::msg::ClientMsg::Request(_) = &client_msg {
-                            if session_client_msg_senders.contains_key(&session_id) {
-                                warn!(
-                                    ?session_id,
-                                    "duplicated session id, dropping previous session"
-                                );
-                                session_client_msg_senders.remove(&session_id);
-                            }
+            let (session_client_msg_tx, session_client_msg_rx) = mpsc::unbounded();
+            let (session_server_msg_sending_queue_tx, session_server_msg_sending_queue_rx) =
+                mpsc::unbounded();
 
-                            // TODO: cache size
-                            let (client_msg_tx, client_msg_rx) = mpsc::unbounded();
-                            session_client_msg_senders.insert(session_id, client_msg_tx);
+            let server_msg_sending_task = crate::dispatch_with_max_concurrency::run(
+                session_server_msg_sending_queue_rx,
+                self.server_msg_sender_rx.clone(),
+            )
+            .map_err(|e| match e {
+                crate::dispatch_with_max_concurrency::Error::MessageLost => {
+                    std::io::Error::new(std::io::ErrorKind::Other, "message lost")
+                }
+            });
 
-                            session_scope_handle
-                                .run_async({
-                                    let mut evt_tx = evt_tx.clone();
-                                    let config = config.clone();
+            let client_handling_task = session::server::run(
+                session_client_msg_rx,
+                session_server_msg_sending_queue_tx.with_sync(move |server_msg| {
+                    protocol::msg::ServerMsg::SessionMsg(session_id, server_msg)
+                }),
+                self.config.clone().into(),
+            );
 
-                                    let session_span = info_span!(
-                                        "session",
-                                        ?session_id,
-                                        start_time = SystemTime::now()
-                                            .duration_since(SystemTime::UNIX_EPOCH)
-                                            .unwrap()
-                                            .as_secs()
-                                    );
+            let mut evt_tx = self.evt_tx.clone();
+            let session_span = tracing::trace_span!("session", ?session_id);
+            let session_task = async move {
+                let result = tokio::try_join! {
+                    client_handling_task.instrument(session_span.clone()),
+                    server_msg_sending_task.instrument(session_span),
+                }
+                .map(|_| ());
 
-                                    async move {
-                                        // ignore error
-                                        // it's target io error, it's fine
-                                        let _ = session::server::run(
-                                            client_msg_rx,
-                                            evt_tx.clone().with_sync(move |evt| {
-                                                Event::ServerMsg(session_id, evt)
-                                            }),
-                                            config.into(),
-                                        )
-                                        .await;
+                if let Err(_) = evt_tx.send(Event::SessionEnded(session_id)).await {
+                    tracing::warn!("end of session tx is broken");
+                }
 
-                                        evt_tx
-                                            .send(Event::Ended(session_id))
-                                            .await
-                                            .map_err(|_| ())
-                                            .inspect_err(|_| warn!("evt_tx is broken, exiting"))
-                                    }
-                                    .instrument(session_span)
-                                })
-                                .await;
+                result
+            };
 
-                            if let Err(_) = evt_tx.send(Event::Started(session_id)).await {
-                                warn!("evt_tx is broken, exiting");
-                                return;
-                            }
-                        }
+            self.sessions_scope_handle.run_async(session_task).await;
+            self.sessions.insert(
+                session_id,
+                SessionEntry {
+                    client_msg_tx: session_client_msg_tx,
+                },
+            );
+        };
 
-                        let session_client_msg_sender =
-                            match session_client_msg_senders.get_mut(&session_id) {
-                                None => {
-                                    warn!(?session_id, "session does not exist, drop client msg");
-                                    continue;
-                                }
-                                Some(x) => x,
-                            };
-
-                        let span = info_span!(
-                            "send client msg to session",
-                            ?session_id,
-                            ?client_msg
-                        );
-
-                        if let Err(_) = session_client_msg_sender
-                            .send(client_msg)
-                            .instrument(span)
-                            .await
-                        {
-                            warn!("session client msg sender is broken, dropping session");
-                            session_client_msg_senders.remove(&session_id);
-                        }
-                    }
-                };
+        let entry = match self.sessions.get_mut(&session_id) {
+            Some(entry) => entry,
+            None => {
+                tracing::warn!("session does not exist, drop client msg");
+                return;
             }
+        };
+
+        if let Err(_) = entry.client_msg_tx.send(msg).await {
+            tracing::warn!("client_msg_tx is broken, drop client msg");
         }
     }
-    .instrument_with_result(info_span!("receiving client msg"));
 
-    // both future end on borken pipeline (~= broken server connection)
-    tokio::select! {
-        _ = receiving_client_msg => (),
-        _ = session_scope_task.instrument(info_span!("session scope task")) => ()
+    pub async fn on_session_end(&mut self, session_id: SessionId) {
+        assert!(self.sessions.remove(&session_id).is_some());
+    }
+
+    pub fn active_session_count(&self) -> usize {
+        self.sessions.len()
     }
 }

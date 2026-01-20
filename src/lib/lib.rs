@@ -3,13 +3,11 @@
 
 mod async_channel_ext;
 pub mod connect_target;
+mod dispatch_with_max_concurrency;
 pub mod future_ext;
 pub mod handover;
-mod message_dispatch;
-mod dispatch_with_max_concurrency;
 pub mod oneshot_with_ack;
 mod protocol_conn_lifetime;
-mod protocol_conn_lifetime_new;
 pub mod sink_ext;
 pub mod task_scope;
 

@@ -121,7 +121,7 @@ where
         let mut event_tx = self.event_tx.clone();
 
         let task = async move {
-            let (conn_task, _) = crate::protocol_conn_lifetime_new::run(
+            let (conn_task, _) = crate::protocol_conn_lifetime::run(
                 Default::default(),
                 server_read,
                 server_write,
