@@ -161,7 +161,7 @@ where
         let entry = match self.sessions.get_mut(&session_id) {
             Some(entry) => entry,
             None => {
-                tracing::warn!("session does not exist, drop server msg");
+                tracing::warn!(?session_id, "session does not exist, drop server msg");
                 return;
             }
         };
