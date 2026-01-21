@@ -16,6 +16,8 @@ readonly server_ip=$(curl "https://api.vultr.com/v2/instances?label=sep-server" 
 	| jq -r '.instances[].main_ip');
 	# | jq -r '.instances[].v6_main_ip');
 
+echo "server ip: ${server_ip}";
+
 cargo run --release --bin sep-client -- \
 	--bound-addr 0.0.0.0:1082 \
 	--key ${SEP_KEY} \

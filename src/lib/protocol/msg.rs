@@ -59,88 +59,6 @@ pub mod conn {
             }))
         })
     }
-
-    #[derive(Debug, From, PartialEq, Eq)]
-    pub enum ServerMsg {
-        Protocol(super::ServerMsg),
-        EndOfStream,
-        Ping,
-    }
-
-    pub enum ServerMsgReader {
-        Protocol(super::ServerMsgReader),
-        EndOfStream,
-        Ping,
-    }
-
-    impl Reader for ServerMsgReader {
-        type Value = ServerMsg;
-
-        fn read(&self, buf: &mut BytesMut) -> Self::Value {
-            buf.split_to(1)[0];
-            match self {
-                Self::Protocol(protocol) => ServerMsg::Protocol(protocol.read(buf)),
-                Self::EndOfStream => ServerMsg::EndOfStream,
-                Self::Ping => ServerMsg::Ping,
-            }
-        }
-    }
-
-    pub fn server_msg_peeker() -> impl Peeker<ServerMsg, Reader = ServerMsgReader> {
-        peek::peek_enum(|cursor, enum_code| {
-            Ok(Some(match enum_code {
-                0 => {
-                    ServerMsgReader::Protocol(crate::peek!(super::server_msg_peeker().peek(cursor)))
-                }
-                1 => ServerMsgReader::EndOfStream,
-                2 => ServerMsgReader::Ping,
-                x => {
-                    return Err(
-                        decode::unknown_enum_code("connection level server message", x).into(),
-                    );
-                }
-            }))
-        })
-    }
-
-    #[derive(Debug, From, PartialEq, Eq)]
-    pub enum ClientMsg {
-        Protocol(super::ClientMsg),
-        Ping,
-    }
-
-    pub enum ClientMsgReader {
-        Protocol(super::ClientMsgReader),
-        Ping,
-    }
-
-    impl Reader for ClientMsgReader {
-        type Value = ClientMsg;
-
-        fn read(&self, buf: &mut BytesMut) -> Self::Value {
-            buf.split_to(1)[0];
-            match self {
-                Self::Protocol(protocol) => ClientMsg::Protocol(protocol.read(buf)),
-                Self::Ping => ClientMsg::Ping,
-            }
-        }
-    }
-
-    pub fn client_msg_peeker() -> impl Peeker<ClientMsg, Reader = ClientMsgReader> {
-        peek::peek_enum(|cursor, enum_code| {
-            Ok(Some(match enum_code {
-                0 => {
-                    ClientMsgReader::Protocol(crate::peek!(super::client_msg_peeker().peek(cursor)))
-                }
-                1 => ClientMsgReader::Ping,
-                x => {
-                    return Err(
-                        decode::unknown_enum_code("connection level client message", x).into(),
-                    );
-                }
-            }))
-        })
-    }
 }
 
 pub struct SessionIdReader(U64Reader, U16Reader);
@@ -163,6 +81,8 @@ pub fn session_id_peeker() -> impl Peeker<SessionId, Reader = SessionIdReader> {
 #[derive(Debug, From, PartialEq, Eq)]
 pub enum ServerMsg {
     SessionMsg(SessionId, session::msg::ServerMsg),
+    // When message loss or other errors
+    KillSession(SessionId),
 }
 
 impl session::msg::ServerMsg {
@@ -173,6 +93,7 @@ impl session::msg::ServerMsg {
 
 pub enum ServerMsgReader {
     SessionMsg(SessionIdReader, session::msg::ServerMsgReader),
+    KillSession(SessionIdReader),
 }
 
 impl Reader for ServerMsgReader {
@@ -184,6 +105,7 @@ impl Reader for ServerMsgReader {
             Self::SessionMsg(session_id, session_msg) => {
                 ServerMsg::SessionMsg(session_id.read(buf), session_msg.read(buf))
             }
+            Self::KillSession(session_id) => ServerMsg::KillSession(session_id.read(buf)),
         }
     }
 }
@@ -195,6 +117,7 @@ pub fn server_msg_peeker() -> impl Peeker<ServerMsg, Reader = ServerMsgReader> {
                 crate::peek!(session_id_peeker().peek(cursor)),
                 crate::peek!(session::msg::server_msg_peeker().peek(cursor)),
             ),
+            1 => ServerMsgReader::KillSession(crate::peek!(session_id_peeker().peek(cursor))),
             x => {
                 return Err(decode::unknown_enum_code("server message", x).into());
             }
@@ -205,6 +128,7 @@ pub fn server_msg_peeker() -> impl Peeker<ServerMsg, Reader = ServerMsgReader> {
 #[derive(Debug, From, PartialEq, Eq)]
 pub enum ClientMsg {
     SessionMsg(SessionId, session::msg::ClientMsg),
+    KillSession(SessionId),
 }
 
 impl session::msg::ClientMsg {
@@ -215,6 +139,7 @@ impl session::msg::ClientMsg {
 
 pub enum ClientMsgReader {
     SessionMsg(SessionIdReader, session::msg::ClientMsgReader),
+    KillSession(SessionIdReader),
 }
 
 impl Reader for ClientMsgReader {
@@ -226,6 +151,7 @@ impl Reader for ClientMsgReader {
             Self::SessionMsg(session_id, session_msg) => {
                 ClientMsg::SessionMsg(session_id.read(buf), session_msg.read(buf))
             }
+            Self::KillSession(session_id) => ClientMsg::KillSession(session_id.read(buf)),
         }
     }
 }
@@ -237,6 +163,7 @@ pub fn client_msg_peeker() -> impl Peeker<ClientMsg, Reader = ClientMsgReader> {
                 crate::peek!(session_id_peeker().peek(cursor)),
                 crate::peek!(session::msg::client_msg_peeker().peek(cursor)),
             ),
+            1 => ClientMsgReader::KillSession(crate::peek!(session_id_peeker().peek(cursor))),
             x => {
                 return Err(decode::unknown_enum_code("client message", x).into());
             }

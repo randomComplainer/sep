@@ -166,6 +166,9 @@ where
                             match client_msg {
                                 protocol::msg::ClientMsg::SessionMsg(session_id, client_msg) =>
                                     state.client_msg_to_session(session_id, client_msg).await,
+                                protocol::msg::ClientMsg::KillSession(session_id) => {
+                                    state.on_session_end(session_id).await;
+                                }
                             };
                         },
                     };

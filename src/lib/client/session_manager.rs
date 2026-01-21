@@ -91,7 +91,6 @@ where
             self.config.into(),
         )
         .map(|()| Ok::<_, std::io::Error>(()));
-        // .instrument(tracing::trace_span!("proxyee handling"));
 
         let client_msg_sending_task = crate::dispatch_with_max_concurrency::run(
             session_client_msg_sending_queue_rx,
@@ -102,10 +101,10 @@ where
                 std::io::Error::new(std::io::ErrorKind::Other, "message lost")
             }
         });
-        // .instrument(tracing::trace_span!("client msg dispatching"));
 
         let mut evt_tx = self.evt_tx.clone();
         let session_span = tracing::trace_span!("session", ?session_id);
+        let backup_client_msg_sender_rx = self.client_msg_sender_rx.clone();
         let session_task = async move {
             tokio::select! {
                 r = session_task => if let Err(err) = r {
@@ -113,6 +112,27 @@ where
                 },
                 r = client_msg_sending_task => if let Err(err) = r {
                     tracing::error!(?err, "client msg sending task error");
+
+                    // message loss!
+                    loop {
+                        let (conn_id, client_msg_tx) = match backup_client_msg_sender_rx.recv().await {
+                            Ok(x) => x,
+                            Err(_) => {
+                                tracing::error!("client_msg_sender_rx is broken, exiting");
+                                break;
+                            },
+                        };
+
+                        match client_msg_tx.send(protocol::msg::ClientMsg::KillSession(session_id))
+                            .instrument(tracing::debug_span!("send kill session message", ?session_id, ?conn_id))
+                            .await {
+                            Ok(_) => break,
+                            Err(_) => {
+                                tracing::warn!(?session_id, ?conn_id, "failed to send kill session message, retry it");
+                                continue;
+                            }
+                        };
+                    }
                 },
             };
 
@@ -152,7 +172,7 @@ where
     }
 
     pub async fn end_session(&mut self, session_id: SessionId) {
-        assert!(self.sessions.remove(&session_id).is_some());
+        let _ = self.sessions.remove(&session_id);
     }
 
     pub fn active_session_count(&self) -> usize {

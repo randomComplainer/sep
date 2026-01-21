@@ -186,6 +186,9 @@ where
                             match server_msg {
                                 protocol::msg::ServerMsg::SessionMsg(session_id, server_msg) =>
                                     state.server_msg_to_session(session_id, server_msg).await,
+                                protocol::msg::ServerMsg::KillSession(session_id) => {
+                                    state.end_session(session_id).await;
+                                }
                             };
                         },
                         conn_manager::Event::Closed(conn_id) => {

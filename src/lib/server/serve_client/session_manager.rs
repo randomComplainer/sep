@@ -100,6 +100,7 @@ where
             );
 
             let mut evt_tx = self.evt_tx.clone();
+            let backup_server_msg_sender_rx = self.server_msg_sender_rx.clone();
             let session_span = tracing::trace_span!("session", ?session_id);
             let session_task = async move {
                 tokio::select! {
@@ -108,6 +109,27 @@ where
                     },
                     r = server_msg_sending_task => if let Err(err) = r {
                         tracing::error!(?err, "server msg sending error");
+
+                        // message loss!
+                        loop {
+                            let (conn_id, server_msg_tx) = match backup_server_msg_sender_rx.recv().await {
+                                Ok(x) => x,
+                                Err(_) => {
+                                    tracing::error!("server_msg_sender_rx is broken, exiting");
+                                    break;
+                                },
+                            };
+
+                            match server_msg_tx.send(protocol::msg::ServerMsg::KillSession(session_id))
+                                .instrument(tracing::debug_span!("send kill session message", ?session_id, ?conn_id))
+                                .await {
+                                    Ok(_) => break,
+                                    Err(_) => {
+                                        tracing::warn!(?session_id, ?conn_id, "failed to send kill session message, retry it");
+                                        continue;
+                                    },
+                                };
+                        }
                     }
                 };
 
@@ -142,7 +164,7 @@ where
     }
 
     pub async fn on_session_end(&mut self, session_id: SessionId) {
-        assert!(self.sessions.remove(&session_id).is_some());
+        let _ = self.sessions.remove(&session_id);
     }
 
     pub fn active_session_count(&self) -> usize {
