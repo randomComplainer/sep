@@ -28,7 +28,10 @@ pub fn run<MessageToSend, MessageToRecv>(
     config: Config,
     mut stream_read: impl MessageReader<Message = ConnMsg<MessageToRecv>> + Send,
     mut stream_write: impl MessageWriter<Message = ConnMsg<MessageToSend>> + Send,
-    mut msg_to_recv_tx: impl Sink<MessageToRecv, Error = impl std::fmt::Debug> + Unpin + Send + 'static,
+    mut msg_to_recv_tx: impl Sink<MessageToRecv, Error = impl std::fmt::Debug + Send>
+    + Unpin
+    + Send
+    + 'static,
     sender_tx: impl crate::async_channel_ext::Sender<crate::oneshot_with_ack::RawSender<MessageToSend>>,
 ) -> (
     impl Future<Output = Result<(), std::io::Error>> + Send,
@@ -141,9 +144,9 @@ where
 
                         match msg {
                             ConnMsg::Protocol(msg) => {
-                                let span = tracing::trace_span!("forward msg to msg_to_recv_tx", ?msg);
-                                if let Err(_) = msg_to_recv_tx.send(msg).instrument(span).await {
+                                if let Err(_) = msg_to_recv_tx.send(msg).await {
                                     tracing::debug!("msg_to_recv_tx is broken, exiting");
+                                    let _ = local_send_end_of_stream_tx.send(()).await;
                                     return Ok(());
                                 }
                             },
@@ -152,7 +155,7 @@ where
                                 ping_counter += 1;
                             },
                             ConnMsg::EndOfStream => {
-                                tracing::debug!("recv end of stream");
+                                tracing::debug!("end of stream received");
                                 let _ = local_send_end_of_stream_tx.send(()).await;
                                 return Ok(());
                             }

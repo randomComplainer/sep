@@ -17,7 +17,7 @@
 
 	mkdir -p /root/speed_test;
 	if [[ ! -f /root/speed_test/test_file ]]; then
-		dd if=/dev/urandom bs=1M count=8 of=/root/speed_test/test_file;
+		dd if=/dev/urandom bs=1M count=16 of=/root/speed_test/test_file;
 	fi
 
 	kill \$(pidof busybox) || true;
@@ -39,7 +39,7 @@ EOF
 		case "${cmd}" in
 			raw)
 				ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null  \
-					root@${server_ip} 'dd if=/dev/zero bs=8M' | pv > /dev/null
+					root@${server_ip} 'dd if=/dev/zero bs=16M' | pv > /dev/null
 				;;
 			http)
 				setup_http "${server_ip}";
