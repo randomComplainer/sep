@@ -66,12 +66,14 @@ where
 
         let buf_size = 8 // timestamp
         + rand_byte_len
-        + 16; // client_id
+        + 16 // client_id
+        + 2; // client_port as part of conn_id
 
         let mut buf = BytesMut::with_capacity(buf_size);
         buf.put_u64(timestamp);
         buf.put_slice(&rand_bytes);
         buf.put_slice(self.client_id.as_ref());
+        buf.put_u16(self.local_port);
 
         stream_write.write_all(buf.as_mut()).await?;
 

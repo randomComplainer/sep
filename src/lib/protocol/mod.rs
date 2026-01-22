@@ -187,7 +187,7 @@ pub mod test_utils {
             client_steam,
         );
         let server_agent =
-            protocol::server_agent::implementation::Init::new(key, server_stream, 10);
+            protocol::server_agent::implementation::Init::new(key, server_stream);
 
         (client_agent, server_agent)
     }

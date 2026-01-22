@@ -17,19 +17,14 @@ where
 {
     key: Arc<Key>,
     stream: Stream,
-    client_port: u16,
 }
 
 impl<Stream> Init<Stream>
 where
     Stream: StaticStream,
 {
-    pub fn new(key: Arc<Key>, stream: Stream, client_port: u16) -> Self {
-        Self {
-            key,
-            stream,
-            client_port,
-        }
+    pub fn new(key: Arc<Key>, stream: Stream) -> Self {
+        Self { key, stream }
     }
 
     pub async fn recv_greeting(
@@ -82,8 +77,6 @@ where
                 opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
             })?;
 
-        let conn_id = protocol::ConnId::new(client_timestamp, self.client_port);
-
         async move {
             if u64::abs_diff(client_timestamp, server_timestamp) > 30 {
                 return Err(InitError::InvalidGreeting(
@@ -130,6 +123,16 @@ where
                 .try_into()
                 .unwrap();
 
+            let client_port = stream_read
+                .read_next(decode::u16_peeker())
+                .await
+                .map_err(InitError::from_decode_error)
+                .and_then(|opt| {
+                    opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
+                })?;
+
+            let conn_id = protocol::ConnId::new(client_timestamp, client_port);
+
             Ok((
                 client_id,
                 conn_id,
@@ -140,7 +143,7 @@ where
                 )),
             ))
         }
-        .instrument(debug_span!("accept greeting", ?conn_id))
+        .instrument(debug_span!("accept greeting"))
         .await
     }
 }
@@ -175,8 +178,8 @@ impl TcpListener {
     }
 
     pub async fn accept(&self) -> Result<Init<tokio::net::TcpStream>, std::io::Error> {
-        let (stream, client_addr) = self.inner.accept().await?;
-        Ok(Init::new(self.key.clone(), stream, client_addr.port()))
+        let (stream, _client_addr) = self.inner.accept().await?;
+        Ok(Init::new(self.key.clone(), stream))
     }
 }
 
@@ -271,7 +274,7 @@ where
                                 self.stream_write.write_all(&mut buf).await?;
                             }
                         };
-                    },
+                    }
                     msg::ServerMsg::KillSession(session_id) => {
                         buf.put_u8(1u8);
                         buf.put_u64(session_id.timestamp);

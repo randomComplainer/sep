@@ -28,7 +28,7 @@ async fn wrong_key() {
         nonce,
         client_steam,
     );
-    let server_agent = protocol::server_agent::implementation::Init::new(key2, server_stream, 88);
+    let server_agent = protocol::server_agent::implementation::Init::new(key2, server_stream);
 
     client_agent.send_greeting(12).await.unwrap();
     assert!(server_agent.recv_greeting(12).await.is_err());
