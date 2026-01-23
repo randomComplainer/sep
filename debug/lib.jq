@@ -4,11 +4,19 @@ def with_fields(filter):
 def with_spans(filter):
 	select((.spans | type == "array") and (.spans | any(filter)));
 
+def error: "ERROR";
+def warn: "WARN";
+def debug: "DEBUG";
+def info: "INFO";
+def trace: "TRACE";
 def levels:
-	["ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
+	[error, warn, info, debug, trace];
 
 def with_level(filter):
 	select((.level | type == "string") and (.level | filter));
+
+def with_target(filter):
+	select((.target | type == "string") and (.target | filter));
 
 
 # gte
@@ -19,8 +27,7 @@ def level($level_filter_str):
 
 def req_url(url): 
 	with_fields(
-		(.message=="request addr" and (.addr | contains(url))) or 	# client
-		(.message=="request received" and (.addr | contains(url)))  # server
+		(.message=="request" and (.addr | contains(url)))
 	);
 
 def session(session_id):
@@ -28,3 +35,10 @@ def session(session_id):
 
 def no_ping:
 	.span.msg != "Ping" and .fields.message != "ping";
+
+def target(target):
+	with_target(. | contains(target));
+
+def within_span(name):
+	with_spans(.name | contains(name));
+

@@ -7,5 +7,5 @@ pub mod sequence;
 pub mod server;
 
 // TODO: magic number, IDK, maybe do some benchmark to find out
-pub const DATA_BUFF_SIZE: u16 = u16::MAX / 2;
-pub const MAX_BYTES_AHEAD: u32 = (DATA_BUFF_SIZE as u32) * 64; // 2MB
+pub const DATA_BUFF_SIZE: u16 = u16::MAX / 2; // 32 KB
+pub const MAX_BYTES_AHEAD: u32 = 1024 * 1024 * 2; // 2 MB

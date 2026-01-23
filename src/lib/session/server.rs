@@ -31,8 +31,8 @@ impl<TConnectTarget> Into<session::stream_to_sequenced::Config> for Config<TConn
 }
 
 pub async fn run<TConnectTarget>(
-    mut client_msg_read: impl Stream<Item = msg::ClientMsg> + Unpin,
-    mut server_msg_write: impl Sink<msg::ServerMsg, Error = impl std::fmt::Debug>
+    client_msg_read: impl Stream<Item = msg::ClientMsg> + Unpin,
+    server_msg_write: impl Sink<msg::ServerMsg, Error = impl std::fmt::Debug>
     + Unpin
     + Clone
     + Send
@@ -42,6 +42,12 @@ pub async fn run<TConnectTarget>(
 where
     TConnectTarget: ConnectTarget,
 {
+    let mut client_msg_read =
+        client_msg_read.inspect(|msg| tracing::debug!( msg = ?msg, "client msg"));
+
+    let mut server_msg_write =
+        server_msg_write.inspect(|msg| tracing::debug!(msg = ?msg, "server msg"));
+
     let req = match client_msg_read
         .next()
         .instrument(tracing::trace_span!("receive request from client"))
@@ -54,33 +60,34 @@ where
             }
         },
         None => {
-            tracing::error!("client read is broken, exiting");
+            tracing::warn!("client read is broken, exiting");
             return Ok(());
         }
     };
 
-    tracing::debug!(addr = ?req.addr, port = ?req.port, "request received");
+    tracing::debug!(addr = ?req.addr, port = ?req.port, "request");
 
     let (target_stream, local_addr) = match config
         .connect_target
         .connect(req.addr, req.port)
-        .instrument(tracing::trace_span!("conneet to target"))
+        .instrument(tracing::trace_span!("connect to target"))
         .await
     {
         Ok(stream) => stream,
         Err(err) => {
-            tracing::debug!("connect target failed: {:?}", err);
+            tracing::error!(?err, "failed to connect to target");
 
+            let msg = msg::ServerMsg::ReplyError(err.into());
             match server_msg_write
-                .send(msg::ServerMsg::ReplyError(err.into()))
+                .send(msg)
                 .instrument(tracing::trace_span!("send reply error to client"))
                 .await
             {
                 Ok(_) => {
                     return Ok(());
                 }
-                Err(err) => {
-                    tracing::error!("falied to send reply error to client: {:?}", err);
+                Err(_) => {
+                    tracing::warn!("client write is broken, exiting");
                     return Ok(());
                 }
             }
@@ -91,7 +98,6 @@ where
         bound_addr: local_addr,
     }
     .into();
-    tracing::debug!(server_msg = ?server_msg, "server msg");
 
     if let Err(_) = server_msg_write
         .send(server_msg)
@@ -109,14 +115,10 @@ where
 
     let target_to_client = session::stream_to_sequenced::run(
         cmd_target_to_client_cmd_rx,
-        server_msg_write.clone().with_sync(|evt| {
-            let server_msg = match evt {
-                session::stream_to_sequenced::Event::Data(data) => data.into(),
-                session::stream_to_sequenced::Event::Eof(eof) => eof.into(),
-                session::stream_to_sequenced::Event::IoError(err) => err.into(),
-            };
-            tracing::debug!(server_msg = ?server_msg, "server msg");
-            server_msg
+        server_msg_write.clone().with_sync(|evt| match evt {
+            session::stream_to_sequenced::Event::Data(data) => data.into(),
+            session::stream_to_sequenced::Event::Eof(eof) => eof.into(),
+            session::stream_to_sequenced::Event::IoError(err) => err.into(),
         }),
         target_read,
         None,
@@ -139,7 +141,6 @@ where
 
     let client_msg_handling = async move {
         while let Some(msg) = client_msg_read.next().await {
-            tracing::debug!(client_msg = ?msg, "client msg");
             match msg {
                 msg::ClientMsg::Data(data) => {
                     if let Err(_) = client_to_target_cmd_tx.send(data.into()).await {
@@ -171,8 +172,7 @@ where
                 _ => panic!("unexpected client msg: {:?}", msg),
             }
         }
-    }
-    .instrument_with_result(tracing::trace_span!("client message handling"));
+    };
 
     let streaming = async move { tokio::try_join!(target_to_client, client_to_target).map(|_| ()) };
 

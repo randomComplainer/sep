@@ -35,13 +35,12 @@ struct State<Stream, EvtTx> {
 
 macro_rules! try_emit_evt {
     ($evt_tx:expr, $evt:ident) => {
-        tracing::trace!(?$evt, "emit event");
-        let sp = tracing::trace_span!("emit event:", evt = ?$evt);
-        if let Err(_) = $evt_tx.send($evt).instrument(sp).await {
-            tracing::error!("event channel is broken, exiting");
+        tracing::debug!(?$evt, "event");
+        if let Err(_) = $evt_tx.send($evt).await {
+            tracing::warn!("event channel is broken, exiting");
             return Ok(None);
         }
-    }
+    };
 }
 
 impl<Stream, EvtTx, EvtTxErr> State<Stream, EvtTx>
@@ -65,8 +64,6 @@ where
     }
 
     pub async fn handle_command(mut self, cmd: Command) -> Result<Option<Self>, std::io::Error> {
-        tracing::trace!(cmd = ?cmd, "command received");
-
         match cmd {
             Command::Data(data) => {
                 let len = data.data.len() as u32;
@@ -75,8 +72,7 @@ where
                     .push(std::cmp::Reverse(StreamEntry::data(data.seq, data.data)));
 
                 self.buffed_bytes += len;
-
-                tracing::trace!("buffed bytes: {}", self.buffed_bytes);
+                tracing::trace!(bytes = self.buffed_bytes, "buffered");
 
                 if self.buffed_bytes > self.config.max_bytes_ahead {
                     panic!("too many data buffered");
@@ -105,7 +101,8 @@ where
                     self.stream_to_write
                         .write_all(data.as_ref())
                         .instrument(tracing::trace_span!("write to stream", seq, ?len))
-                        .await?;
+                        .await
+                        .inspect_err(|err| tracing::error!(?err, "stream write error"))?;
 
                     self.buffed_bytes -= len as u32;
                     bytes_written += len as u32;
@@ -152,7 +149,12 @@ pub async fn run(
 ) -> Result<(), std::io::Error> {
     let mut state = State::new(config, stream_to_write, evt_tx);
 
-    while let Some(cmd) = cmd_rx.next().await {
+    while let Some(cmd) = cmd_rx
+        .next()
+        .instrument(tracing::trace_span!("recv cmd"))
+        .await
+    {
+        tracing::debug!(cmd = ?cmd, "cmd");
         state = match state.handle_command(cmd).await? {
             Some(new_state) => new_state,
             None => break,

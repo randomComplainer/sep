@@ -1,9 +1,10 @@
-use std::sync::Arc;
-
 use bytes::BytesMut;
 use derive_more::From;
 use futures::prelude::*;
-use tokio::io::{AsyncRead, AsyncReadExt as _};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt as _},
+    sync::{oneshot, watch},
+};
 use tracing::Instrument as _;
 
 use super::msg;
@@ -29,29 +30,23 @@ pub struct Config {
 // return Ok(()) on broken channel
 macro_rules! try_emit_evt {
     ($evt_tx:ident, $evt:ident) => {
-        tracing::trace!(?$evt, "emit event");
-        let sp = tracing::trace_span!("emit event:", evt = ?$evt);
-
-        if let Err(_) = $evt_tx
-            .send($evt)
-            .instrument(sp)
-            .await
-        {
-            tracing::error!("event channel is broken, exiting");
+        tracing::debug!(?$evt, "event");
+        if let Err(_) = $evt_tx.send($evt).await {
+            tracing::warn!("event channel is broken, exiting");
             return Ok(());
         }
-    }
+    };
 }
 
 async fn stream_reading_loop(
     mut seq: u16,
     mut stream_to_read: impl AsyncRead + Unpin + Send + 'static,
     mut evt_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Unpin,
-    mut acked_rx: tokio::sync::watch::Receiver<u64>,
-    eof_acked_rx: Arc<tokio::sync::Notify>,
+    mut acked_rx: watch::Receiver<u64>,
+    eof_acked_rx: oneshot::Receiver<()>,
+    mut total_read: u64,
     config: Config,
 ) -> Result<(), std::io::Error> {
-    let mut total_read = 0u64;
     loop {
         // TODO: reuse buf
         let mut buf = bytes::BytesMut::with_capacity(config.max_packet_size as usize);
@@ -62,59 +57,74 @@ async fn stream_reading_loop(
         {
             Ok(n) => n,
             Err(err) => {
-                tracing::error!("stream read error: {:?}", err);
+                tracing::error!(?err, "stream read error");
                 let evt = msg::IoError.into();
                 try_emit_evt!(evt_tx, evt);
                 return Err(err);
             }
         };
 
-        tracing::trace!(n = n, "read bytes");
+        tracing::trace!(bytes = n, "read");
 
+        let total_sent = total_read;
         total_read += n as u64;
 
         if n == 0 {
-            let evt = msg::Eof { seq }.into();
-            try_emit_evt!(evt_tx, evt);
-            tracing::trace!(seq = seq, "stream eof reached, wait for eof to be acked");
-
-            let lock = acked_rx
-                .wait_for(|acked| *acked >= total_read)
-                .instrument(tracing::trace_span!("wait for all remaining bytes acked"))
-                .await
-                .expect("acked_rx is broken");
-            drop(lock);
-
-            eof_acked_rx
-                .notified()
-                .instrument(tracing::trace_span!("wait for eof acked"))
-                .await;
-            tracing::trace!("eof acked");
-
-            return Ok(());
+            break;
         }
 
-        let lock = match acked_rx
+        let unacked = total_sent - *acked_rx.borrow() as u64;
+        let cur_avail_win = config.max_bytes_ahead as u64 - unacked;
+        match acked_rx
             .wait_for(|acked| total_read - *acked <= config.max_bytes_ahead as u64)
             .instrument(tracing::trace_span!(
-                "wait for enough bytes acked to continue"
+                "wait for available window",
+                seq,
+                data_len = n,
+                unacked,
+                cur_avail_win,
             ))
             .await
         {
-            Ok(lock) => lock,
+            Ok(lock) => drop(lock),
             Err(_) => {
-                tracing::error!("acked_rx is broken, exiting");
+                tracing::warn!("acked_rx is broken, exiting");
                 return Ok(());
             }
         };
-
-        drop(lock);
 
         let evt = msg::Data { seq, data: buf }.into();
         try_emit_evt!(evt_tx, evt);
 
         seq += 1;
     }
+
+    let evt = msg::Eof { seq }.into();
+    try_emit_evt!(evt_tx, evt);
+
+    match acked_rx
+        .wait_for(|acked| *acked >= total_read)
+        .instrument(tracing::trace_span!("wait for all remaining ack"))
+        .await
+    {
+        Ok(lock) => drop(lock),
+        Err(_) => {
+            tracing::warn!("acked_rx is broken, exiting");
+            return Ok(());
+        }
+    };
+
+    assert_eq!(total_read, *acked_rx.borrow());
+
+    if let Err(_) = eof_acked_rx
+        .instrument(tracing::trace_span!("wait for eof acked"))
+        .await
+    {
+        tracing::warn!("eof_acked_rx is broken, exiting");
+        return Ok(());
+    };
+
+    return Ok(());
 }
 
 // Err(std::io::Error) when stream_to_read io error
@@ -128,6 +138,7 @@ pub async fn run(
 ) -> Result<(), std::io::Error> {
     let mut seq = 0;
 
+    let first_pack_len = first_pack.as_ref().map(|p| p.len()).unwrap_or(0);
     if let Some(first_pack) = first_pack {
         if first_pack.len() > 0 {
             let evt = msg::Data {
@@ -140,20 +151,23 @@ pub async fn run(
         }
     }
 
-    let (acked_tx, acked_rx) = tokio::sync::watch::channel(0u64);
-    let eof_acked_notify = Arc::new(tokio::sync::Notify::new());
+    let (acked_tx, acked_rx) = watch::channel(0u64);
+    let (eof_ack_tx, eof_ack_rx) = oneshot::channel::<()>();
 
     let cmd_receiving_task = {
-        let eof_acked_tx = Arc::clone(&eof_acked_notify);
+        let mut eof_acked_tx = Option::Some(eof_ack_tx);
         async move {
             while let Some(cmd) = cmd_rx.next().await {
-                tracing::trace!(cmd = ?cmd, "command received");
+                tracing::debug!(cmd = ?cmd, "command");
                 match cmd {
                     Command::Ack(ack) => {
                         acked_tx.send_modify(|old| *old += ack.bytes as u64);
                     }
                     Command::EofAck(_) => {
-                        eof_acked_tx.notify_one();
+                        if let Err(_) = eof_acked_tx.take().expect("eof acked twice").send(()) {
+                            tracing::warn!("eof acked tx is broken, exiting");
+                            return Ok::<_, std::io::Error>(());
+                        }
                     }
                 }
             }
@@ -162,18 +176,17 @@ pub async fn run(
 
             return Ok::<_, std::io::Error>(());
         }
-    }
-    .instrument(tracing::trace_span!("command receiving task"));
+    };
 
     let stream_reading_task = stream_reading_loop(
         seq,
         stream_to_read,
         event_tx,
         acked_rx,
-        eof_acked_notify,
+        eof_ack_rx,
+        first_pack_len as u64,
         config,
-    )
-    .instrument(tracing::trace_span!("stream reading task"));
+    );
 
     // cmd_receiving_task doesn't end by itself,
     // only when cmd_rx is broken
