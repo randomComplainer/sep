@@ -42,3 +42,8 @@ def target(target):
 def within_span(name):
 	with_spans(.name | contains(name));
 
+def span(name):
+	.span.name | contains(name);
+
+def conn_id($conn_id):
+	with_spans(.conn_id == $conn_id);

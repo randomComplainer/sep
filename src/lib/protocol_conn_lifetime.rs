@@ -45,29 +45,29 @@ where
     let local_send_end_of_stream_tx = send_end_of_stream_tx.clone();
 
     let fut = async move {
-        // dont cancel me,
-        // or you will risk missing message if it's in the middle of being sent
-        let send_loop = async move {
+        let write_loop = async move {
             let mut ping_timer = tokio::time::sleep(config.ping_interval);
             let mut ping_counter = 0;
             let (send_one_tx, send_one_rx) = crate::oneshot_with_ack::channel();
-            let mut send_one_rx = Box::pin(send_one_rx);
+            let mut write_one_rx = Box::pin(send_one_rx);
 
             if let Err(_) = sender_tx.send(send_one_tx).await {
                 return Ok::<_, std::io::Error>(());
             }
 
-            macro_rules! send_msg {
+            macro_rules! write_msg {
                 ($msg:expr) => {
                     let msg:ConnMsg<MessageToSend> = $msg;
-                    let span = tracing::trace_span!("send msg", msg=?msg);
+                    let span = tracing::trace_span!("write msg", msg=?msg);
                     tokio::time::timeout(config.io_write_timeout, stream_write.send_msg(msg)).map(
                         |timeout_result| match timeout_result {
                             Ok(x) => x,
-                            Err(_) => Err(std::io::Error::new(
+                            Err(_) => {
+                                tracing::error!("timeout writing msg");
+                                Err(std::io::Error::new(
                                     std::io::ErrorKind::TimedOut,
-                                    "timeout sending msg",
-                            )),
+                                    "timeout writing msg",
+                            )) },
                         },
                     )
                         .instrument(span)
@@ -79,55 +79,54 @@ where
 
             loop {
                 tokio::select! {
-                    send_one = send_one_rx.as_mut() => {
-                        let (msg, acker) = match send_one  {
-                            Ok(send_one) => send_one,
+                    write_one = write_one_rx.as_mut() => {
+                        let (msg, acker) = match write_one  {
+                            Ok(x) => x,
                             Err(_) => {
                                 return Ok::<_, std::io::Error>(());
                             }
                         };
 
-                        send_msg!(msg.into());
+                        write_msg!(msg.into());
 
                         acker.ack();
 
-                        let (new_send_one_tx, new_send_one_rx) = crate::oneshot_with_ack::channel();
+                        let (new_wirte_one_tx, new_write_one_rx) = crate::oneshot_with_ack::channel();
 
-                        if let Err(_) = sender_tx.send(new_send_one_tx).await {
+                        if let Err(_) = sender_tx.send(new_wirte_one_tx).await {
                             tracing::warn!("sender_tx is broken, exiting");
                             return Ok::<_, std::io::Error>(());
                         }
 
-                        send_one_rx = Box::pin(new_send_one_rx);
+                        write_one_rx = Box::pin(new_write_one_rx);
 
                     },
                     _ = ping_timer => {
                         tracing::trace!(count = ping_counter, "ping");
-                        send_msg!(ConnMsg::Ping);
+                        write_msg!(ConnMsg::Ping);
                         ping_counter += 1;
                     },
                     Some(_) = send_end_of_stream_rx.recv() => {
-                        tracing::debug!("send end of stream");
-                        send_msg!(ConnMsg::EndOfStream);
+                        write_msg!(ConnMsg::EndOfStream);
                         drop(ping_timer);
                         return Ok(());
                     }
                 }
             }
         }
-        .instrument(tracing::trace_span!("send loop"));
+        .instrument(tracing::trace_span!("write loop"));
 
-        let recv_loop = async move {
+        let read_loop = async move {
             let mut alive_timer = tokio::time::sleep(config.aliveness_timeout);
             let mut ping_counter = 0;
 
             loop {
                 tokio::select! {
                     _ = alive_timer => {
-                        tracing::warn!(count = ping_counter, "aliveness timeout, exiting");
+                        tracing::error!(count = ping_counter, "aliveness timeout, exiting");
                         return Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "aliveness timeout"));
                     },
-                    msg = stream_read.recv_msg().instrument(tracing::trace_span!("receive msg from stream")) => {
+                    msg = stream_read.recv_msg().instrument(tracing::trace_span!("read msg")) => {
                         let msg = match msg {
                             Ok(Some(msg)) => msg,
                             Ok(None) => {
@@ -140,12 +139,12 @@ where
                             }
                         };
 
-                        tracing::debug!(?msg, "message from stream");
+                        tracing::debug!(?msg, "msg from stream");
 
                         match msg {
                             ConnMsg::Protocol(msg) => {
                                 if let Err(_) = msg_to_recv_tx.send(msg).await {
-                                    tracing::debug!("msg_to_recv_tx is broken, exiting");
+                                    tracing::warn!("msg_to_recv_tx is broken, exiting");
                                     let _ = local_send_end_of_stream_tx.send(()).await;
                                     return Ok(());
                                 }
@@ -155,7 +154,6 @@ where
                                 ping_counter += 1;
                             },
                             ConnMsg::EndOfStream => {
-                                tracing::debug!("end of stream received");
                                 let _ = local_send_end_of_stream_tx.send(()).await;
                                 return Ok(());
                             }
@@ -165,10 +163,10 @@ where
                     }
                 }
             }
-            }.instrument(tracing::trace_span!("recv loop"))
+            }.instrument(tracing::trace_span!("read loop"))
         ;
 
-        tokio::try_join!(send_loop, recv_loop).map(|_| ())
+        tokio::try_join!(write_loop, read_loop).map(|_| ())
     };
 
     (fut, send_end_of_stream_tx)
