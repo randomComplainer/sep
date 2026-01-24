@@ -92,7 +92,7 @@ where
         )
         .map(|()| Ok::<_, std::io::Error>(()));
 
-        let client_msg_sending_task = crate::dispatch_with_max_concurrency::run(
+        let client_msg_dispatching = crate::dispatch_with_max_concurrency::run(
             session_client_msg_sending_queue_rx,
             self.client_msg_sender_rx.clone(),
         )
@@ -103,17 +103,16 @@ where
         });
 
         let mut evt_tx = self.evt_tx.clone();
-        let session_span = tracing::trace_span!("session", ?session_id);
         let backup_client_msg_sender_rx = self.client_msg_sender_rx.clone();
         let session_task = async move {
             tokio::select! {
                 r = session_task => if let Err(err) = r {
                     tracing::error!(?err, "session task error");
                 },
-                r = client_msg_sending_task => if let Err(err) = r {
+                r = client_msg_dispatching => if let Err(err) = r {
                     tracing::error!(?err, "client msg sending task error");
 
-                    // message loss!
+                    // message loss! kill session
                     loop {
                         let (conn_id, client_msg_tx) = match backup_client_msg_sender_rx.recv().await {
                             Ok(x) => x,
@@ -123,9 +122,8 @@ where
                             },
                         };
 
-                        match client_msg_tx.send(protocol::msg::ClientMsg::KillSession(session_id))
-                            .instrument(tracing::debug_span!("send kill session message", ?session_id, ?conn_id))
-                            .await {
+                        tracing::debug!(?session_id, ?conn_id, "send kill session message");
+                        match client_msg_tx.send(protocol::msg::ClientMsg::KillSession(session_id)).await {
                             Ok(_) => break,
                             Err(_) => {
                                 tracing::warn!(?session_id, ?conn_id, "failed to send kill session message, retry it");
@@ -141,8 +139,7 @@ where
             }
 
             Ok(())
-        }
-        .instrument(session_span);
+        };
 
         self.sessions_scope_handle.run_async(session_task).await;
         self.sessions.insert(

@@ -31,8 +31,6 @@ where
             while let Some(msg) = message_queue.next().await {
                 let permit = limiter.clone().acquire_owned().await.unwrap();
 
-                let forward_message_span = tracing::trace_span!("forward message", ?msg);
-
                 let sender_rx = sender_rx.clone();
                 let send_task = async move {
                     let mut msg = msg;
@@ -65,8 +63,7 @@ where
                             }
                         }
                     }
-                }
-                .instrument(forward_message_span);
+                };
 
                 scope_handle.spawn(send_task).await;
             }

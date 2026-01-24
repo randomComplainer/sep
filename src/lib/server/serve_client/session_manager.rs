@@ -81,7 +81,7 @@ where
             let (session_server_msg_sending_queue_tx, session_server_msg_sending_queue_rx) =
                 mpsc::unbounded();
 
-            let server_msg_sending_task = crate::dispatch_with_max_concurrency::run(
+            let server_msg_dispatching = crate::dispatch_with_max_concurrency::run(
                 session_server_msg_sending_queue_rx,
                 self.server_msg_sender_rx.clone(),
             )
@@ -107,10 +107,10 @@ where
                     r = client_handling_task => if let Err(err) = r {
                         tracing::error!(?err, "client handling error");
                     },
-                    r = server_msg_sending_task => if let Err(err) = r {
+                    r = server_msg_dispatching => if let Err(err) = r {
                         tracing::error!(?err, "server msg sending error");
 
-                        // message loss!
+                        // message loss! kill session
                         loop {
                             let (conn_id, server_msg_tx) = match backup_server_msg_sender_rx.recv().await {
                                 Ok(x) => x,
@@ -120,9 +120,8 @@ where
                                 },
                             };
 
-                            match server_msg_tx.send(protocol::msg::ServerMsg::KillSession(session_id))
-                                .instrument(tracing::debug_span!("send kill session message", ?session_id, ?conn_id))
-                                .await {
+                            tracing::debug!(?session_id, ?conn_id, "send kill session message");
+                            match server_msg_tx.send(protocol::msg::ServerMsg::KillSession(session_id)).await {
                                     Ok(_) => break,
                                     Err(_) => {
                                         tracing::warn!(?session_id, ?conn_id, "failed to send kill session message, retry it");
