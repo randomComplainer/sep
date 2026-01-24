@@ -19,7 +19,6 @@ pub enum Command {
 pub enum Event {
     Data(#[from] msg::Data),
     Eof(#[from] msg::Eof),
-    IoError(#[from] msg::IoError),
 }
 
 pub struct Config {
@@ -58,8 +57,6 @@ async fn stream_reading_loop(
             Ok(n) => n,
             Err(err) => {
                 tracing::error!(?err, "stream read error");
-                let evt = msg::IoError.into();
-                try_emit_evt!(evt_tx, evt);
                 return Err(err);
             }
         };

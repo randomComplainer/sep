@@ -222,10 +222,6 @@ where
                                 buf.put_u8(4u8);
                                 self.stream_write.write_all(&mut buf).await?;
                             }
-                            session::msg::ClientMsg::ProxyeeIoError(_) => {
-                                buf.put_u8(5u8);
-                                self.stream_write.write_all(&mut buf).await?;
-                            }
                         };
                     }
                     msg::ClientMsg::KillSession(session_id) => {

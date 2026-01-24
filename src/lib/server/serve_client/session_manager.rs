@@ -103,34 +103,46 @@ where
             let backup_server_msg_sender_rx = self.server_msg_sender_rx.clone();
             let session_span = tracing::trace_span!("session", ?session_id);
             let session_task = async move {
-                tokio::select! {
+                let result = tokio::select! {
                     r = client_handling_task => if let Err(err) = r {
                         tracing::error!(?err, "client handling error");
-                    },
+                        Err(())
+                    } else { Ok(()) },
                     r = server_msg_dispatching => if let Err(err) = r {
                         tracing::error!(?err, "server msg sending error");
+                        Err(())
+                    } else {Ok(())}
+                };
 
-                        // message loss! kill session
-                        loop {
-                            let (conn_id, server_msg_tx) = match backup_server_msg_sender_rx.recv().await {
+                if let Err(_) = result {
+                    tracing::debug!(?session_id, "killing session");
+                    loop {
+                        let (conn_id, server_msg_tx) =
+                            match backup_server_msg_sender_rx.recv().await {
                                 Ok(x) => x,
                                 Err(_) => {
                                     tracing::error!("server_msg_sender_rx is broken, exiting");
                                     break;
-                                },
+                                }
                             };
 
-                            tracing::debug!(?session_id, ?conn_id, "send kill session message");
-                            match server_msg_tx.send(protocol::msg::ServerMsg::KillSession(session_id)).await {
-                                    Ok(_) => break,
-                                    Err(_) => {
-                                        tracing::warn!(?session_id, ?conn_id, "failed to send kill session message, retry it");
-                                        continue;
-                                    },
-                                };
-                        }
+                        tracing::debug!(?session_id, ?conn_id, "send kill session message");
+                        match server_msg_tx
+                            .send(protocol::msg::ServerMsg::KillSession(session_id))
+                            .await
+                        {
+                            Ok(_) => break,
+                            Err(_) => {
+                                tracing::warn!(
+                                    ?session_id,
+                                    ?conn_id,
+                                    "failed to send kill session message, retry it"
+                                );
+                                continue;
+                            }
+                        };
                     }
-                };
+                }
 
                 if let Err(_) = evt_tx.send(Event::SessionEnded(session_id)).await {
                     tracing::warn!("end of session tx is broken");

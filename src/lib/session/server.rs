@@ -118,7 +118,6 @@ where
         server_msg_write.clone().with_sync(|evt| match evt {
             session::stream_to_sequenced::Event::Data(data) => data.into(),
             session::stream_to_sequenced::Event::Eof(eof) => eof.into(),
-            session::stream_to_sequenced::Event::IoError(err) => err.into(),
         }),
         target_read,
         None,
@@ -165,9 +164,6 @@ where
                         tracing::debug!("target to client command channel is broken");
                         continue;
                     }
-                }
-                msg::ClientMsg::ProxyeeIoError(_) => {
-                    return;
                 }
                 _ => panic!("unexpected client msg: {:?}", msg),
             }

@@ -170,7 +170,6 @@ pub async fn run(
         server_write.clone().with_sync(|evt| match evt {
             session::stream_to_sequenced::Event::Data(data) => data.into(),
             session::stream_to_sequenced::Event::Eof(eof) => eof.into(),
-            session::stream_to_sequenced::Event::IoError(err) => err.into(),
         }),
         proxyee_read,
         Some(buf),
@@ -237,9 +236,6 @@ pub async fn run(
                         tracing::warn!("proxyee to server cmd channel is broken");
                         return;
                     }
-                }
-                msg::ServerMsg::TargetIoError(_) => {
-                    return;
                 }
                 _ => panic!("unexpected server msg: {:?}", msg),
             }

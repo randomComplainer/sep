@@ -269,10 +269,6 @@ where
                                 buf.put_u8(5u8);
                                 self.stream_write.write_all(&mut buf).await?;
                             }
-                            session::msg::ServerMsg::TargetIoError(_) => {
-                                buf.put_u8(6u8);
-                                self.stream_write.write_all(&mut buf).await?;
-                            }
                         };
                     }
                     msg::ServerMsg::KillSession(session_id) => {
