@@ -1,17 +1,17 @@
 use std::collections::HashMap;
 
-use futures::{FutureExt, Sink, SinkExt, TryFutureExt, channel::mpsc};
+use futures::channel::mpsc;
+use futures::prelude::*;
 use tracing::Instrument as _;
 
-use crate::{
-    prelude::*,
-    protocol::{ConnId, SessionId},
-};
+use crate::{prelude::*, protocol_conn_lifetime_new::WriteHandle};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub max_packet_size: u16,
     pub max_bytes_ahead: u32,
+    pub conn_per_session: usize,
+    pub max_connection: usize,
 }
 
 impl Into<session::client::Config> for Config {
@@ -24,39 +24,29 @@ impl Into<session::client::Config> for Config {
 }
 
 pub enum Event {
+    ExpectedToHaveConns(usize),
     SessionEnded(SessionId),
+    SessionErrored(SessionId),
 }
 
 struct SessionEntry {
     pub server_msg_tx: mpsc::UnboundedSender<session::msg::ServerMsg>,
+    pub client_msg_sender_tx:
+        mpsc::UnboundedSender<(ConnId, WriteHandle<protocol::msg::ClientMsg>)>,
 }
 
-pub struct State<EvtTx> {
+pub struct State {
     config: Config,
     sessions: HashMap<SessionId, SessionEntry>,
     sessions_scope_handle: task_scope::ScopeHandle<Never>,
-    evt_tx: EvtTx,
-    client_msg_sender_rx: async_channel::Receiver<(
-        ConnId,
-        oneshot_with_ack::RawSender<protocol::msg::ClientMsg>,
-    )>,
+    evt_tx: mpsc::UnboundedSender<Event>,
 }
 
-impl<EvtTx> State<EvtTx>
-where
-    EvtTx: Sink<Event> + Unpin + Send + Clone + 'static,
-{
+impl State {
     pub fn new(
         config: Config,
-        evt_tx: EvtTx,
-        client_msg_sender_rx: async_channel::Receiver<(
-            ConnId,
-            crate::oneshot_with_ack::RawSender<protocol::msg::ClientMsg>,
-        )>,
-    ) -> (
-        Self,
-        impl Future<Output = Result<(), Never>> + Send + 'static,
-    ) {
+        evt_tx: mpsc::UnboundedSender<Event>,
+    ) -> (Self, impl Future<Output = Result<(), Never>>) {
         let (sessions_scope_handle, sessions_scope_task) = task_scope::new_scope::<Never>();
 
         (
@@ -65,7 +55,6 @@ where
                 sessions: HashMap::new(),
                 sessions_scope_handle,
                 evt_tx,
-                client_msg_sender_rx,
             },
             sessions_scope_task,
         )
@@ -77,93 +66,57 @@ where
         agent: impl socks5::server_agent::Init,
     ) {
         assert!(!self.sessions.contains_key(&session_id));
-
         let (session_server_msg_tx, session_server_msg_rx) = mpsc::unbounded();
-        let (session_client_msg_sending_queue_tx, session_client_msg_sending_queue_rx) =
-            mpsc::unbounded();
+        let (session_client_msg_tx, session_client_msg_rx) = mpsc::unbounded();
 
-        let session_task = session::client::run(
+        let proxyee_io_task = session::client::run(
             agent,
             session_server_msg_rx,
-            session_client_msg_sending_queue_tx.with_sync(move |client_msg| {
-                protocol::msg::ClientMsg::SessionMsg(session_id, client_msg)
+            session_client_msg_tx.with_sync(move |msg: session::msg::ClientMsg| {
+                protocol::msg::ClientMsg::SessionMsg(session_id, msg)
             }),
             self.config.into(),
-        )
-        .map(|()| Ok::<_, std::io::Error>(()));
+        );
 
-        let client_msg_dispatching = crate::dispatch_with_max_concurrency::run(
-            session_client_msg_sending_queue_rx,
-            self.client_msg_sender_rx.clone(),
-        )
-        .map_err(|e| match e {
-            crate::dispatch_with_max_concurrency::Error::MessageLost => {
-                std::io::Error::new(std::io::ErrorKind::Other, "message lost")
-            }
-        });
+        let (session_conn_write_tx, session_conn_write_rx) = mpsc::unbounded();
+
+        let client_msg_sending_task =
+            client_msg_sending_loop(session_client_msg_rx, session_conn_write_rx);
 
         let mut evt_tx = self.evt_tx.clone();
-        let backup_client_msg_sender_rx = self.client_msg_sender_rx.clone();
-        let span = tracing::trace_span!("session", ?session_id);
         let session_task = async move {
-            let result = tokio::select! {
-                r = session_task => if let Err(err) = r {
-                    tracing::error!(?err, "session task error");
-                    Err(())
-                } else {
-                    Ok(())
-                },
-                r = client_msg_dispatching => if let Err(err) = r {
-                    tracing::error!(?err, "client msg sending task error");
-                    Err(())
-
-                } else  {Ok(())},
+            let evt = match tokio::try_join! {
+                proxyee_io_task.map(|()| Ok::<_, ConnId>(())),
+                client_msg_sending_task,
+            } {
+                Ok(_) => Event::SessionEnded(session_id),
+                Err(_) => Event::SessionErrored(session_id),
             };
 
-            if let Err(_) = result {
-                tracing::debug!(?session_id, "killing session");
-                loop {
-                    let (conn_id, client_msg_tx) = match backup_client_msg_sender_rx.recv().await {
-                        Ok(x) => x,
-                        Err(_) => {
-                            tracing::error!("client_msg_sender_rx is broken, exiting");
-                            break;
-                        }
-                    };
-
-                    tracing::debug!(?session_id, ?conn_id, "send kill session message");
-                    match client_msg_tx
-                        .send(protocol::msg::ClientMsg::KillSession(session_id))
-                        .await
-                    {
-                        Ok(_) => break,
-                        Err(_) => {
-                            tracing::warn!(
-                                ?session_id,
-                                ?conn_id,
-                                "failed to send kill session message, retry it"
-                            );
-                            continue;
-                        }
-                    };
-                }
-            }
-
-            if let Err(_) = evt_tx.send(Event::SessionEnded(session_id)).await {
-                tracing::warn!("end of session tx is broken");
+            if let Err(_) = evt_tx.send(evt).await {
+                tracing::warn!("evt_tx is broken");
             }
 
             Ok(())
         }
-        .instrument(span);
+        .instrument(tracing::debug_span!("session", session_id=?session_id));
 
         self.sessions_scope_handle.run_async(session_task).await;
         self.sessions.insert(
             session_id,
             SessionEntry {
                 server_msg_tx: session_server_msg_tx,
+                client_msg_sender_tx: session_conn_write_tx,
             },
         );
+
+        let _ = self
+            .evt_tx
+            .send(Event::ExpectedToHaveConns(std::cmp::min(
+                self.config.conn_per_session * self.sessions.len(),
+                self.config.max_connection,
+            )))
+            .await;
     }
 
     pub async fn server_msg_to_session(
@@ -180,7 +133,25 @@ where
         };
 
         if let Err(_) = entry.server_msg_tx.send(server_msg).await {
-            tracing::warn!("server_msg_tx is broken, exiting");
+            tracing::warn!("server_msg_tx is broken");
+        }
+    }
+
+    pub async fn assign_conn_to_session(
+        &mut self,
+        session_id: SessionId,
+        conn_id: ConnId,
+        write_handle: WriteHandle<protocol::msg::ClientMsg>,
+    ) {
+        if let Some(entry) = self.sessions.get_mut(&session_id) {
+            // tracing::trace!(conn_id=?conn_id, session_id=?session_id, "assign conn to session");
+            if let Err(_) = entry
+                .client_msg_sender_tx
+                .send((conn_id, write_handle))
+                .await
+            {
+                tracing::warn!("client_msg_sender_tx is broken");
+            }
         }
     }
 
@@ -191,4 +162,108 @@ where
     pub fn active_session_count(&self) -> usize {
         self.sessions.len()
     }
+}
+
+// Err = Conn IO Error
+async fn client_msg_sending_loop(
+    mut msg_queue: impl Stream<Item = protocol::msg::ClientMsg> + Unpin,
+    mut conn_writer_rx: impl Stream<Item = (ConnId, WriteHandle<protocol::msg::ClientMsg>)> + Unpin,
+) -> Result<(), ConnId> {
+    use NextSender::*;
+
+    let mut handles: Vec<(ConnId, WriteHandle<protocol::msg::ClientMsg>)> = Vec::new();
+
+    let mut head_msg = None::<protocol::msg::ClientMsg>;
+
+    loop {
+        let msg = match head_msg.take() {
+            Some(msg) => msg,
+            None => match msg_queue.next().await {
+                Some(msg) => msg,
+                None => {
+                    tracing::debug!("end of messages");
+                    return Ok(());
+                }
+            },
+        };
+
+        tracing::trace!(?msg, handles_count = handles.len(), "dispatch client msg");
+
+        let get_next_sender: std::pin::Pin<Box<dyn Future<Output = NextSender> + Send>> =
+            if handles.is_empty() {
+                Box::pin(std::future::pending())
+            } else {
+                Box::pin(next_sender(handles.iter()))
+            };
+
+        tokio::select! {
+            next_sender_result = get_next_sender  => {
+                let (conn_id, sender ) = match next_sender_result {
+                    Found(conn_id, sender) => (conn_id, sender),
+                    Closed(conn_id) => {
+                        let idx = handles.iter().position(|(item_id, _)| conn_id.eq(item_id)).unwrap();
+                        handles.swap_remove(idx);
+                        continue;
+                    },
+                    IoError(conn_id) => return Err(conn_id),
+                };
+
+                tracing::trace!(?conn_id, ?msg, "send msg to conn");
+                match sender.send(msg) {
+                    Ok(_) => continue,
+                    Err(msg) => {
+                        // Closed
+                        tracing::trace!("conn closed, retry sending msg to another conn");
+                        head_msg = Some(msg);
+                        let idx = handles.iter().position(|(item_id, _)| conn_id.eq(item_id)).unwrap();
+                        handles.swap_remove(idx);
+                        continue;
+                    }
+                }
+            },
+
+            conn = conn_writer_rx.next() => {
+                let (conn_id, write_handle) = match conn {
+                    Some(conn) => conn,
+                    None => {
+                        tracing::warn!("end of conn_writer_rx, exiting");
+                        return Ok(());
+                    }
+                };
+
+                head_msg = Some(msg);
+                handles.push((conn_id, write_handle));
+                tracing::trace!(?conn_id, "aquired conn");
+                continue;
+            },
+        }
+    }
+}
+
+pub enum NextSender {
+    Found(
+        ConnId,
+        tokio::sync::oneshot::Sender<protocol::msg::ClientMsg>,
+    ),
+    Closed(ConnId),
+    IoError(ConnId),
+}
+
+pub async fn next_sender(
+    write_handles: impl Iterator<Item = &(ConnId, WriteHandle<protocol::msg::ClientMsg>)>,
+) -> NextSender {
+    use NextSender::*;
+
+    let select_all =
+        futures::future::select_all(write_handles.map(|(conn_id, write_handle)| {
+            Box::pin(write_handle.get_sender().map(
+                |write_handle_result| match write_handle_result {
+                    Ok(Some(sender)) => Found(*conn_id, sender),
+                    Ok(None) => Closed(*conn_id),
+                    Err(_) => IoError(*conn_id),
+                },
+            ))
+        }));
+
+    select_all.await.0
 }

@@ -9,6 +9,7 @@ pub mod handover;
 pub mod never;
 pub mod oneshot_with_ack;
 mod protocol_conn_lifetime;
+mod protocol_conn_lifetime_new;
 pub mod sink_ext;
 pub mod task_scope;
 
@@ -36,7 +37,7 @@ pub mod prelude {
     pub use crate::task_scope;
     pub use crate::{decode, protocol, session, socks5};
     pub use oneshot_with_ack::Sender as _;
-    pub use protocol::{ClientId, Key, Nonce};
+    pub use protocol::{ClientId, ConnId, Key, Nonce, SessionId};
 }
 
 pub mod cli_parameters {

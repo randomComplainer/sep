@@ -101,6 +101,7 @@ async fn async_main(args: Args) {
                 max_packet_size: session::DATA_BUFF_SIZE,
                 max_bytes_ahead: session::MAX_BYTES_AHEAD,
                 max_server_conn: 8,
+                conn_per_session: 4,
             },
         );
 

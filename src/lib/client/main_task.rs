@@ -2,10 +2,13 @@ use futures::prelude::*;
 use thiserror::Error;
 use tracing::*;
 
-use super::{server_connection_manager as conn_manager, session_manager};
+use super::{
+    assignment, conn_manager as conn_manager, global_message_sender, session_manager,
+};
 use crate::client::ServerConnector;
 use crate::prelude::*;
 use crate::protocol::{ConnId, SessionId};
+use crate::protocol_conn_lifetime_new::WriteHandle;
 
 #[derive(Error, Debug)]
 pub enum ClientError {
@@ -18,7 +21,8 @@ pub enum ClientError {
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub max_packet_size: u16,
-    pub max_server_conn: u16,
+    pub max_server_conn: usize,
+    pub conn_per_session: usize,
     pub max_bytes_ahead: u32,
 }
 
@@ -27,46 +31,38 @@ impl Into<session_manager::Config> for Config {
         session_manager::Config {
             max_packet_size: self.max_packet_size,
             max_bytes_ahead: self.max_bytes_ahead,
+            conn_per_session: self.conn_per_session,
+            max_connection: self.max_server_conn,
         }
     }
 }
 
-struct State<SessionEvtTx, ServerConnector>
+struct State<ServerConnector>
 where
     ServerConnector: super::ServerConnector,
 {
     config: Config,
-    sessions_state: session_manager::State<SessionEvtTx>,
+    sessions_state: session_manager::State,
     conns_state: conn_manager::State<ServerConnector>,
+    assignment_state: assignment::State,
+    global_message_handle: global_message_sender::Handle,
 }
 
-impl<SessionEvtTx, ServerConnector> State<SessionEvtTx, ServerConnector>
+impl<ServerConnector> State<ServerConnector>
 where
-    SessionEvtTx: Sink<session_manager::Event> + Unpin + Send + Clone + 'static,
     ServerConnector: super::ServerConnector,
 {
-    pub fn new(
-        config: Config,
-        sessions_state: session_manager::State<SessionEvtTx>,
-        conns_state: conn_manager::State<ServerConnector>,
-    ) -> Self {
-        Self {
-            config,
-            sessions_state,
-            conns_state,
-        }
-    }
-
-    async fn check_expected_conn_count(&mut self) {
-        let expected_conn_count = std::cmp::min(
-            self.config.max_server_conn as usize,
-            self.sessions_state.active_session_count() * 4,
-        );
-
-        self.conns_state
-            .set_expected_conn_count(expected_conn_count)
-            .await
-    }
+    // pub fn new(
+    //     config: Config,
+    //     sessions_state: session_manager::State,
+    //     conns_state: conn_manager::State<ServerConnector>,
+    // ) -> Self {
+    //     Self {
+    //         config,
+    //         sessions_state,
+    //         conns_state,
+    //     }
+    // }
 
     pub async fn new_session(
         &mut self,
@@ -74,7 +70,8 @@ where
         agent: impl socks5::server_agent::Init,
     ) {
         self.sessions_state.new_session(session_id, agent).await;
-        self.check_expected_conn_count().await
+        let actions = self.assignment_state.new_session(session_id);
+        self.apply_assignment_actions(actions).await;
     }
 
     pub async fn server_msg_to_session(
@@ -89,28 +86,62 @@ where
 
     pub async fn end_session(&mut self, session_id: SessionId) {
         self.sessions_state.end_session(session_id).await;
-        self.check_expected_conn_count().await;
+        self.assignment_state.session_ended_or_errored(session_id);
+    }
+
+    pub async fn expected_to_have_conns(&mut self, expected_conn_count: usize) {
+        self.conns_state
+            .set_expected_conn_count(expected_conn_count)
+            .await;
     }
 
     pub async fn connected(
         &mut self,
         conn_id: ConnId,
-        greeted_read: ServerConnector::GreetedRead,
-        greeted_write: ServerConnector::GreetedWrite,
+        write_handle: WriteHandle<protocol::msg::ClientMsg>,
     ) {
         self.conns_state
-            .on_connected(Ok((conn_id, greeted_read, greeted_write)))
-            .await
-            .unwrap();
+            .on_connected(conn_id, write_handle.clone())
+            .await;
+
+        let actions = self.assignment_state.new_conn(conn_id, write_handle);
+        self.apply_assignment_actions(actions).await;
     }
 
     pub async fn connect_attempt_failed(&mut self) {
-        self.conns_state.on_connect_attempt_failed().await;
+        self.conns_state.on_connection_attempt_failed().await;
     }
 
     pub async fn conn_closed(&mut self, conn_id: ConnId) {
         self.conns_state.on_connection_closed(conn_id).await;
-        self.check_expected_conn_count().await;
+        let actions = self.assignment_state.close_conn(conn_id);
+        self.apply_assignment_actions(actions).await;
+    }
+
+    pub async fn conn_errored(&mut self, conn_id: ConnId) {
+        self.conns_state.on_connection_closed(conn_id).await;
+        let actions = self.assignment_state.purge_errored_conn(conn_id);
+        self.apply_assignment_actions(actions).await;
+    }
+
+    async fn apply_assignment_actions(&mut self, actions: Vec<assignment::Action>) {
+        for action in actions {
+            self.apply_assignment_action(action).await;
+        }
+    }
+
+    async fn apply_assignment_action(&mut self, action: assignment::Action) {
+        match action {
+            assignment::Action::Assign(session_id, conn_id, write_handle) => {
+                self.sessions_state
+                    .assign_conn_to_session(session_id, conn_id, write_handle)
+                    .await;
+            }
+            assignment::Action::Kill(session_id) => {
+                self.sessions_state.end_session(session_id).await;
+                self.global_message_handle.kill_session(session_id).await;
+            }
+        }
     }
 }
 
@@ -125,19 +156,25 @@ pub async fn run<TServerConnector>(
 where
     TServerConnector: ServerConnector + Send,
 {
-    let (client_msg_sender_tx, client_msg_sender_rx) = async_channel::unbounded();
-
     let (sessions_evt_tx, mut sessions_evt_rx) = futures::channel::mpsc::unbounded();
     let (sessions_state, sessions_task) =
-        session_manager::State::new(config.into(), sessions_evt_tx, client_msg_sender_rx);
+        session_manager::State::new(config.into(), sessions_evt_tx);
 
     let (conns_evt_tx, mut conns_evt_rx) = futures::channel::mpsc::unbounded();
-    let (conns_state, conns_task) =
-        conn_manager::State::new(connect_to_server, conns_evt_tx, client_msg_sender_tx);
+    let (conns_state, conns_task) = conn_manager::State::new(connect_to_server, conns_evt_tx);
 
-    let mut state = State::new(config, sessions_state, conns_state);
+    let assignment_state = assignment::State::new(config.conn_per_session);
 
-    // TODO: exit condition
+    let (global_message_handle, global_message_task) = global_message_sender::run();
+
+    let mut state = State {
+        config,
+        sessions_state,
+        conns_state,
+        assignment_state,
+        global_message_handle: global_message_handle.clone(),
+    };
+
     let main_loop = async move {
         loop {
             tokio::select! {
@@ -151,9 +188,16 @@ where
                     };
 
                     match session_evt {
-                        session_manager::Event::SessionEnded(session_id) => {
+                        session_manager::Event::SessionEnded(session_id)=>{
                             state.end_session(session_id).await;
                         }
+                        session_manager::Event::ExpectedToHaveConns(n) => {
+                            state.expected_to_have_conns(n).await;
+                        },
+                        session_manager::Event::SessionErrored(session_id) => {
+                            state.end_session(session_id).await;
+                            state.global_message_handle.kill_session(session_id).await;
+                        },
                     };
                 },
                 new_session = new_proxyee_rx.next() => {
@@ -177,8 +221,8 @@ where
                     };
 
                     match conn_evt {
-                        conn_manager::Event::Connected(conn_id, greeted_read, greeted_write) =>
-                            state.connected(conn_id, greeted_read, greeted_write).await,
+                        conn_manager::Event::Connected(conn_id, write_handle) =>
+                            state.connected(conn_id, write_handle).await,
                         conn_manager::Event::ConnectAttemptFailed => {
                             state.connect_attempt_failed().await;
                         }
@@ -201,6 +245,9 @@ where
                                 return;
                             }
                         },
+                        conn_manager::Event::Errored(conn_id) => {
+                            state.conn_errored(conn_id).await;
+                        },
                     };
                 }
             }
@@ -214,6 +261,9 @@ where
         conns_task
             .map(|x| Ok(x.unwrap_never()))
             .instrument(tracing::trace_span!("conn manager")),
+        global_message_task
+            .map(|x| Ok(x.unwrap_never()))
+            .instrument(tracing::trace_span!("global message sender")),
         main_loop
             .map(|_| Ok::<_, std::io::Error>(())) ,
     }
