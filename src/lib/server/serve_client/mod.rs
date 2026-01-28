@@ -8,6 +8,7 @@ use crate::protocol::ConnId;
 use crate::protocol::SessionId;
 
 mod conn_manager;
+mod global_message_sender;
 mod session_manager;
 
 #[derive(Debug, Clone, Copy)]
@@ -40,6 +41,7 @@ impl<TConnectTarget> Into<session_manager::Config<TConnectTarget>> for Config<TC
 pub struct State<TConnectTarget> {
     sessions_state: session_manager::State<TConnectTarget>,
     conns_state: conn_manager::State,
+    global_message_sender: global_message_sender::Handle,
 }
 
 impl<TConnectTarget> State<TConnectTarget>
@@ -49,10 +51,12 @@ where
     pub fn new(
         sessions_state: session_manager::State<TConnectTarget>,
         conns_state: conn_manager::State,
+        global_message_sender: global_message_sender::Handle,
     ) -> Self {
         Self {
             sessions_state,
             conns_state,
+            global_message_sender,
         }
     }
 
@@ -71,23 +75,49 @@ where
     {
         self.conns_state
             .on_new_connection(conn_id, client_read, client_write)
-            .await
+            .await;
+
+        let write_handle = self.conns_state.get_write_handle(conn_id).unwrap();
+        self.global_message_sender
+            .new_conn(conn_id, write_handle)
+            .await;
     }
 
     pub async fn client_msg_to_session(
         &mut self,
+        conn_id: ConnId,
         session_id: SessionId,
         msg: session::msg::ClientMsg,
     ) {
-        self.sessions_state.on_client_msg(session_id, msg).await
+        self.sessions_state
+            .client_msg_to_session(conn_id, session_id, msg)
+            .await
     }
 
     pub async fn on_session_end(&mut self, session_id: SessionId) {
-        self.sessions_state.on_session_end(session_id).await
+        tracing::debug!(?session_id, "on_session_end");
+        self.sessions_state.close_session(session_id).await
     }
 
     pub async fn on_conn_closed(&mut self, conn_id: ConnId) {
         self.conns_state.on_connection_closed(conn_id).await
+    }
+
+    pub async fn on_conn_errored(&mut self, conn_id: ConnId) {
+        self.conns_state.on_connection_closed(conn_id).await;
+        self.sessions_state.on_conn_errored(conn_id).await;
+    }
+
+    pub async fn assign_write_handle_to_session(&mut self, session_id: SessionId, conn_id: ConnId) {
+        if let Some(write_handle) = self.conns_state.get_write_handle(conn_id) {
+            self.sessions_state
+                .assign_conn_to_session(session_id, conn_id, write_handle)
+                .await;
+        }
+    }
+
+    pub async fn notify_kill_session(&mut self, session_id: SessionId) {
+        self.global_message_sender.kill_session(session_id).await;
     }
 }
 
@@ -102,17 +132,17 @@ where
         protocol::MessageWriter<Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>>,
     TConnectTarget: ConnectTarget,
 {
-    let (server_msg_sender_tx, server_msg_sender_rx) = async_channel::unbounded();
-
     let (sessions_evt_tx, mut sessions_evt_rx) = mpsc::unbounded();
     let (conns_evt_tx, mut conns_evt_rx) = mpsc::unbounded();
 
     let (sessions_state, sessions_task) =
-        session_manager::State::new(config.clone().into(), sessions_evt_tx, server_msg_sender_rx);
+        session_manager::State::new(config.clone().into(), sessions_evt_tx);
 
-    let (conns_state, conns_task) = conn_manager::State::new(conns_evt_tx, server_msg_sender_tx);
+    let (conns_state, conns_task) = conn_manager::State::new(conns_evt_tx);
 
-    let mut state = State::new(sessions_state, conns_state);
+    let (global_message_sender, global_message_sender_task) = global_message_sender::run();
+
+    let mut state = State::new(sessions_state, conns_state, global_message_sender);
 
     let main_loop = async move {
         loop {
@@ -141,6 +171,14 @@ where
                     match sessions_evt {
                         session_manager::Event::SessionEnded(session_id) =>
                             state.on_session_end(session_id).await ,
+                        session_manager::Event::SessionErrored(session_id) =>{
+                            state.on_session_end(session_id).await;
+                            state.notify_kill_session(session_id).await;
+                        },
+                        session_manager::Event::RequestWriteHandle(session_id, conn_id) =>{
+                            state.assign_write_handle_to_session(session_id, conn_id).await;
+                        }
+
                     };
                 },
 
@@ -159,13 +197,17 @@ where
                             if state.conns_state.conn_count() == 0  &&
                                 state.sessions_state.active_session_count() == 0
                             {
+                                tracing::debug!("existing condition meet");
                                 return;
                             }
                         },
-                        conn_manager::Event::ClientMsg(client_msg) => {
+                        conn_manager::Event::Errored(conn_id) => {
+                            state.on_conn_errored(conn_id).await;
+                        },
+                        conn_manager::Event::ClientMsg(conn_id, client_msg) => {
                             match client_msg {
                                 protocol::msg::ClientMsg::SessionMsg(session_id, client_msg) =>
-                                    state.client_msg_to_session(session_id, client_msg).await,
+                                    state.client_msg_to_session(conn_id, session_id, client_msg).await,
                                 protocol::msg::ClientMsg::KillSession(session_id) => {
                                     state.on_session_end(session_id).await;
                                 }
@@ -184,7 +226,10 @@ where
         conns_task
             .map(|x| Ok(x.unwrap_never()))
             .instrument(tracing::trace_span!("conn manager")),
-        main_loop.map(|_| Ok::<_, std::io::Error>(()))
+        global_message_sender_task
+            .map(|x| Ok(x.unwrap_never()))
+            .instrument(tracing::trace_span!("global message sender")),
+        main_loop.map(|_| Ok::<_, std::io::Error>(())),
     )
     .map(|_| ())
 }

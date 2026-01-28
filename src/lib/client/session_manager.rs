@@ -80,8 +80,10 @@ impl State {
 
         let (session_conn_write_tx, session_conn_write_rx) = mpsc::unbounded();
 
-        let client_msg_sending_task =
-            client_msg_sending_loop(session_client_msg_rx, session_conn_write_rx);
+        let client_msg_sending_task = crate::protocol_conn_lifetime_new::WriteHandle::loop_through(
+            session_client_msg_rx,
+            session_conn_write_rx,
+        );
 
         let mut evt_tx = self.evt_tx.clone();
         let session_task = async move {
@@ -144,7 +146,6 @@ impl State {
         write_handle: WriteHandle<protocol::msg::ClientMsg>,
     ) {
         if let Some(entry) = self.sessions.get_mut(&session_id) {
-            // tracing::trace!(conn_id=?conn_id, session_id=?session_id, "assign conn to session");
             if let Err(_) = entry
                 .client_msg_sender_tx
                 .send((conn_id, write_handle))
@@ -162,108 +163,4 @@ impl State {
     pub fn active_session_count(&self) -> usize {
         self.sessions.len()
     }
-}
-
-// Err = Conn IO Error
-async fn client_msg_sending_loop(
-    mut msg_queue: impl Stream<Item = protocol::msg::ClientMsg> + Unpin,
-    mut conn_writer_rx: impl Stream<Item = (ConnId, WriteHandle<protocol::msg::ClientMsg>)> + Unpin,
-) -> Result<(), ConnId> {
-    use NextSender::*;
-
-    let mut handles: Vec<(ConnId, WriteHandle<protocol::msg::ClientMsg>)> = Vec::new();
-
-    let mut head_msg = None::<protocol::msg::ClientMsg>;
-
-    loop {
-        let msg = match head_msg.take() {
-            Some(msg) => msg,
-            None => match msg_queue.next().await {
-                Some(msg) => msg,
-                None => {
-                    tracing::debug!("end of messages");
-                    return Ok(());
-                }
-            },
-        };
-
-        tracing::trace!(?msg, handles_count = handles.len(), "dispatch client msg");
-
-        let get_next_sender: std::pin::Pin<Box<dyn Future<Output = NextSender> + Send>> =
-            if handles.is_empty() {
-                Box::pin(std::future::pending())
-            } else {
-                Box::pin(next_sender(handles.iter()))
-            };
-
-        tokio::select! {
-            next_sender_result = get_next_sender  => {
-                let (conn_id, sender ) = match next_sender_result {
-                    Found(conn_id, sender) => (conn_id, sender),
-                    Closed(conn_id) => {
-                        let idx = handles.iter().position(|(item_id, _)| conn_id.eq(item_id)).unwrap();
-                        handles.swap_remove(idx);
-                        continue;
-                    },
-                    IoError(conn_id) => return Err(conn_id),
-                };
-
-                tracing::trace!(?conn_id, ?msg, "send msg to conn");
-                match sender.send(msg) {
-                    Ok(_) => continue,
-                    Err(msg) => {
-                        // Closed
-                        tracing::trace!("conn closed, retry sending msg to another conn");
-                        head_msg = Some(msg);
-                        let idx = handles.iter().position(|(item_id, _)| conn_id.eq(item_id)).unwrap();
-                        handles.swap_remove(idx);
-                        continue;
-                    }
-                }
-            },
-
-            conn = conn_writer_rx.next() => {
-                let (conn_id, write_handle) = match conn {
-                    Some(conn) => conn,
-                    None => {
-                        tracing::warn!("end of conn_writer_rx, exiting");
-                        return Ok(());
-                    }
-                };
-
-                head_msg = Some(msg);
-                handles.push((conn_id, write_handle));
-                tracing::trace!(?conn_id, "aquired conn");
-                continue;
-            },
-        }
-    }
-}
-
-pub enum NextSender {
-    Found(
-        ConnId,
-        tokio::sync::oneshot::Sender<protocol::msg::ClientMsg>,
-    ),
-    Closed(ConnId),
-    IoError(ConnId),
-}
-
-pub async fn next_sender(
-    write_handles: impl Iterator<Item = &(ConnId, WriteHandle<protocol::msg::ClientMsg>)>,
-) -> NextSender {
-    use NextSender::*;
-
-    let select_all =
-        futures::future::select_all(write_handles.map(|(conn_id, write_handle)| {
-            Box::pin(write_handle.get_sender().map(
-                |write_handle_result| match write_handle_result {
-                    Ok(Some(sender)) => Found(*conn_id, sender),
-                    Ok(None) => Closed(*conn_id),
-                    Err(_) => IoError(*conn_id),
-                },
-            ))
-        }));
-
-    select_all.await.0
 }

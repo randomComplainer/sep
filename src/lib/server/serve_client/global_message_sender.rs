@@ -9,7 +9,7 @@ use crate::{
 #[derive(Clone)]
 pub struct Handle {
     global_kill_session_tx: mpsc::UnboundedSender<SessionId>,
-    global_msg_sender_tx: mpsc::UnboundedSender<(ConnId, WriteHandle<protocol::msg::ClientMsg>)>,
+    global_msg_sender_tx: mpsc::UnboundedSender<(ConnId, WriteHandle<protocol::msg::ServerMsg>)>,
 }
 
 impl Handle {
@@ -22,7 +22,7 @@ impl Handle {
     pub async fn new_conn(
         &mut self,
         conn_id: ConnId,
-        write_handle: WriteHandle<protocol::msg::ClientMsg>,
+        write_handle: WriteHandle<protocol::msg::ServerMsg>,
     ) {
         if let Err(_) = self
             .global_msg_sender_tx
@@ -44,7 +44,7 @@ pub fn run() -> (Handle, impl Future<Output = Result<(), Never>>) {
 
         use NextSender::*;
 
-        let mut handles: Vec<(ConnId, WriteHandle<protocol::msg::ClientMsg>)> = Vec::new();
+        let mut handles: Vec<(ConnId, WriteHandle<protocol::msg::ServerMsg>)> = Vec::new();
 
         let mut head_session_id = None::<SessionId>;
         loop {
@@ -61,7 +61,7 @@ pub fn run() -> (Handle, impl Future<Output = Result<(), Never>>) {
 
             head_session_id = Some(session_id);
 
-            let msg = protocol::msg::ClientMsg::KillSession(session_id);
+            let msg = protocol::msg::ServerMsg::KillSession(session_id);
 
             tokio::select! {
                 next_sender_result = WriteHandle::next_sender(&handles)  => {

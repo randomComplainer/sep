@@ -32,6 +32,7 @@ impl Into<session::stream_to_sequenced::Config> for Config {
 // Err(()) on closed server message channels
 // Ok(()) on completed session OR proxyee io error
 // (one can consider a proxyee io error is a completed session)
+// TODO: reutrn proxyee io error
 pub async fn run(
     proxyee: impl socks5::server_agent::Init,
     server_read: impl Stream<Item = msg::ServerMsg> + Send + Unpin + 'static,

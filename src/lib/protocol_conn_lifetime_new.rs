@@ -1,4 +1,5 @@
 use std::fmt::Debug;
+use std::pin::Pin;
 
 use futures::prelude::*;
 use tracing::Instrument as _;
@@ -38,6 +39,12 @@ impl<Msg> Clone for WriteHandle<Msg> {
     }
 }
 
+pub enum NextSender<Msg> {
+    Found(ConnId, tokio::sync::oneshot::Sender<Msg>),
+    Closed(ConnId),
+    IoError(ConnId),
+}
+
 impl<Msg> WriteHandle<Msg> {
     pub async fn get_sender(&self) -> Result<Option<tokio::sync::oneshot::Sender<Msg>>, ()> {
         tokio::select! {
@@ -51,6 +58,103 @@ impl<Msg> WriteHandle<Msg> {
             },
             _ = self.error_rx.wait() => {
                 Err(())
+            }
+        }
+    }
+
+    pub fn next_sender<'a>(
+        write_handles: &'a [(ConnId, WriteHandle<Msg>)],
+    ) -> Pin<Box<dyn Future<Output = NextSender<Msg>> + Send + 'a>>
+    where
+        Msg: Send + Debug + Unpin + 'static,
+    {
+        use NextSender::*;
+
+        if write_handles.is_empty() {
+            return Box::pin(std::future::pending());
+        }
+        Box::pin(
+            futures::future::select_all(write_handles.iter().map(|(conn_id, write_handle)| {
+                Box::pin(write_handle.get_sender().map(|write_handle_result| {
+                    match write_handle_result {
+                        Ok(Some(sender)) => Found(*conn_id, sender),
+                        Ok(None) => Closed(*conn_id),
+                        Err(_) => IoError(*conn_id),
+                    }
+                }))
+            }))
+            .map(|x| x.0),
+        )
+    }
+
+    // Err = Conn IO Error
+    pub async fn loop_through(
+        mut msg_queue: impl Stream<Item = Msg> + Unpin,
+        mut conn_writer_rx: impl Stream<Item = (ConnId, WriteHandle<Msg>)> + Unpin,
+    ) -> Result<(), ConnId>
+    where
+        Msg: Send + Debug + Unpin + 'static,
+    {
+        use NextSender::*;
+
+        let mut handles: Vec<(ConnId, WriteHandle<Msg>)> = Vec::new();
+
+        let mut head_msg = None::<Msg>;
+
+        loop {
+            let msg = match head_msg.take() {
+                Some(msg) => msg,
+                None => match msg_queue.next().await {
+                    Some(msg) => msg,
+                    None => {
+                        tracing::debug!("end of messages");
+                        return Ok(());
+                    }
+                },
+            };
+
+            tracing::trace!(?msg, handles_count = handles.len(), "dispatch msg");
+
+            tokio::select! {
+                next_sender_result = Self::next_sender(&handles)  => {
+                    let (conn_id, sender ) = match next_sender_result {
+                        Found(conn_id, sender) => (conn_id, sender),
+                        Closed(conn_id) => {
+                            let idx = handles.iter().position(|(item_id, _)| conn_id.eq(item_id)).unwrap();
+                            handles.swap_remove(idx);
+                            continue;
+                        },
+                        IoError(conn_id) => return Err(conn_id),
+                    };
+
+                    tracing::trace!(?conn_id, ?msg, "send msg to conn");
+                    match sender.send(msg) {
+                        Ok(_) => continue,
+                        Err(msg) => {
+                            // Closed
+                            tracing::trace!(?conn_id, "conn closed, retry sending msg to another conn");
+                            head_msg = Some(msg);
+                            let idx = handles.iter().position(|(item_id, _)| conn_id.eq(item_id)).unwrap();
+                            handles.swap_remove(idx);
+                            continue;
+                        }
+                    }
+                },
+
+                conn = conn_writer_rx.next() => {
+                    let (conn_id, write_handle) = match conn {
+                        Some(conn) => conn,
+                        None => {
+                            tracing::warn!("end of conn_writer_rx, exiting");
+                            return Ok(());
+                        }
+                    };
+
+                    head_msg = Some(msg);
+                    handles.push((conn_id, write_handle));
+                    tracing::trace!(?conn_id, "aquired conn");
+                    continue;
+                },
             }
         }
     }
