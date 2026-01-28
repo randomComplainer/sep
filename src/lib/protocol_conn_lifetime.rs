@@ -207,12 +207,13 @@ where
     let local_gentle_close_handle = gentle_close_handle.clone();
 
     let write_loop = async move {
-        let mut ping_timer = tokio::time::sleep(config.ping_interval);
+        let mut ping_timer = Box::pin(tokio::time::sleep(config.ping_interval));
         let mut ping_counter = 0;
         let (send_one_tx, send_one_rx) = tokio::sync::oneshot::channel();
         let mut send_one_rx = Box::pin(send_one_rx);
 
         if let Err(_) = sender_tx.send(send_one_tx).await {
+            tracing::warn!("all writehandle dropped");
             return Ok::<_, std::io::Error>(());
         }
 
@@ -233,7 +234,7 @@ where
                     )
                         .instrument(span)
                         .await?;
-                    ping_timer  = tokio::time::sleep(config.ping_interval);
+                    ping_timer  = Box::pin(tokio::time::sleep(config.ping_interval));
 
                 };
             }
@@ -244,7 +245,13 @@ where
                     let msg = match write_one  {
                         Ok(x) => x,
                         Err(_) => {
-                            return Ok::<_, std::io::Error>(());
+                            let (send_one_tx, new_send_one_rx) = tokio::sync::oneshot::channel();
+                            send_one_rx = Box::pin(new_send_one_rx);
+                            if let Err(_) = sender_tx.send(send_one_tx).await {
+                                tracing::warn!("all writehandle dropped");
+                                return Ok::<_, std::io::Error>(());
+                            }
+                            continue;
                         }
                     };
 
@@ -260,7 +267,7 @@ where
                     send_one_rx = Box::pin(new_write_one_rx);
 
                 },
-                _ = ping_timer => {
+                _ = ping_timer.as_mut() => {
                     tracing::trace!(count = ping_counter, "ping");
                     write_msg!(ConnMsg::Ping);
                     ping_counter += 1;
