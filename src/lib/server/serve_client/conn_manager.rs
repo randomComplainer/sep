@@ -8,7 +8,7 @@ use tracing::*;
 
 use crate::prelude::*;
 use crate::protocol::ConnId;
-use crate::protocol_conn_lifetime_new::WriteHandle;
+use crate::protocol_conn_lifetime::WriteHandle;
 
 pub enum Event {
     Closed(ConnId),
@@ -65,7 +65,7 @@ impl State {
                 Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>,
             >,
     {
-        let (lifetime_task, write_handle, close_handle) = crate::protocol_conn_lifetime_new::run(
+        let (lifetime_task, write_handle, close_handle) = crate::protocol_conn_lifetime::run(
             Default::default(),
             client_read,
             client_write,

@@ -3,7 +3,7 @@ use std::{
     fmt::{Debug, Formatter},
 };
 
-use crate::{prelude::*, protocol_conn_lifetime_new::WriteHandle};
+use crate::{prelude::*, protocol_conn_lifetime::WriteHandle};
 
 use Action::*;
 

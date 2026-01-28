@@ -3,7 +3,7 @@ use futures::prelude::*;
 
 use crate::{
     prelude::*,
-    protocol_conn_lifetime_new::{NextSender, WriteHandle},
+    protocol_conn_lifetime::{NextSender, WriteHandle},
 };
 
 #[derive(Clone)]

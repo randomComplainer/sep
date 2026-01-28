@@ -8,7 +8,7 @@ use super::{
 use crate::client::ServerConnector;
 use crate::prelude::*;
 use crate::protocol::{ConnId, SessionId};
-use crate::protocol_conn_lifetime_new::WriteHandle;
+use crate::protocol_conn_lifetime::WriteHandle;
 
 #[derive(Error, Debug)]
 pub enum ClientError {

@@ -6,7 +6,7 @@ use tracing::Instrument as _;
 
 use crate::prelude::*;
 use crate::protocol::ConnId;
-use crate::protocol_conn_lifetime_new::WriteHandle;
+use crate::protocol_conn_lifetime::WriteHandle;
 
 struct ConnEntry {
     write_handle: WriteHandle<protocol::msg::ClientMsg>,
@@ -131,7 +131,7 @@ where
                     }
                 };
 
-                let (lifet_task, write_handle, _) = crate::protocol_conn_lifetime_new::run(
+                let (lifet_task, write_handle, _) = crate::protocol_conn_lifetime::run(
                     Default::default(),
                     conn_read,
                     conn_write,

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use futures::{channel::mpsc, prelude::*};
 use tracing::Instrument as _;
 
-use crate::{prelude::*, protocol_conn_lifetime_new::WriteHandle};
+use crate::{prelude::*, protocol_conn_lifetime::WriteHandle};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config<TConnectTarget> {
@@ -88,7 +88,7 @@ where
             let (session_conn_write_tx, session_conn_write_rx) = mpsc::unbounded();
 
             let server_msg_sending_task =
-                crate::protocol_conn_lifetime_new::WriteHandle::loop_through(
+                crate::protocol_conn_lifetime::WriteHandle::loop_through(
                     session_server_msg_rx,
                     session_conn_write_rx,
                 );

@@ -9,7 +9,6 @@ pub mod handover;
 pub mod never;
 pub mod oneshot_with_ack;
 mod protocol_conn_lifetime;
-mod protocol_conn_lifetime_new;
 pub mod sink_ext;
 pub mod task_scope;
 
