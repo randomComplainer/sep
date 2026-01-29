@@ -2,13 +2,14 @@ use futures::channel::mpsc;
 use futures::prelude::*;
 use tracing::*;
 
+use crate::global_msg_manager;
 use crate::handover;
 use crate::prelude::*;
 use crate::protocol::ConnId;
 use crate::protocol::SessionId;
+use crate::protocol::msg::GlobalCmd;
 
 mod conn_manager;
-mod global_message_sender;
 mod session_manager;
 
 #[derive(Debug, Clone, Copy)]
@@ -41,7 +42,7 @@ impl<TConnectTarget> Into<session_manager::Config<TConnectTarget>> for Config<TC
 pub struct State<TConnectTarget> {
     sessions_state: session_manager::State<TConnectTarget>,
     conns_state: conn_manager::State,
-    global_message_sender: global_message_sender::Handle,
+    global_msg_handle: global_msg_manager::Handle<GlobalCmd, protocol::msg::ServerMsg>,
 }
 
 impl<TConnectTarget> State<TConnectTarget>
@@ -51,12 +52,12 @@ where
     pub fn new(
         sessions_state: session_manager::State<TConnectTarget>,
         conns_state: conn_manager::State,
-        global_message_sender: global_message_sender::Handle,
+        global_msg_handle: global_msg_manager::Handle<GlobalCmd, protocol::msg::ServerMsg>,
     ) -> Self {
         Self {
             sessions_state,
             conns_state,
-            global_message_sender,
+            global_msg_handle,
         }
     }
 
@@ -78,9 +79,7 @@ where
             .await;
 
         let write_handle = self.conns_state.get_write_handle(conn_id).unwrap();
-        self.global_message_sender
-            .new_conn(conn_id, write_handle)
-            .await;
+        self.global_msg_handle.new_conn(conn_id, write_handle).await;
     }
 
     pub async fn client_msg_to_session(
@@ -117,7 +116,9 @@ where
     }
 
     pub async fn notify_kill_session(&mut self, session_id: SessionId) {
-        self.global_message_sender.kill_session(session_id).await;
+        self.global_msg_handle
+            .send_msg(GlobalCmd::KillSession(session_id))
+            .await;
     }
 }
 
@@ -140,9 +141,9 @@ where
 
     let (conns_state, conns_task) = conn_manager::State::new(conns_evt_tx);
 
-    let (global_message_sender, global_message_sender_task) = global_message_sender::run();
+    let (global_msg_handle_task, global_msg_handle) = global_msg_manager::run();
 
-    let mut state = State::new(sessions_state, conns_state, global_message_sender);
+    let mut state = State::new(sessions_state, conns_state, global_msg_handle);
 
     let main_loop = async move {
         loop {
@@ -208,8 +209,19 @@ where
                             match client_msg {
                                 protocol::msg::ClientMsg::SessionMsg(session_id, client_msg) =>
                                     state.client_msg_to_session(conn_id, session_id, client_msg).await,
-                                protocol::msg::ClientMsg::KillSession(session_id) => {
-                                    state.on_session_end(session_id).await;
+                                protocol::msg::ClientMsg::GlobalCmd(cmd) => {
+                                    match cmd {
+                                        protocol::msg::AtLeastOnce::Ack(ack) =>
+                                            state.global_msg_handle.recv_ack(ack).await,
+                                        protocol::msg::AtLeastOnce::Msg(seq, cmd) => {
+                                            state.global_msg_handle.send_ack(seq).await;
+                                            tracing::debug!(?cmd, "global cmd from client");
+                                            match cmd {
+                                                protocol::msg::GlobalCmd::KillSession(session_id) =>
+                                                    state.on_session_end(session_id).await,
+                                            };
+                                        },
+                                    };
                                 }
                             };
                         },
@@ -226,8 +238,11 @@ where
         conns_task
             .map(|x| Ok(x.unwrap_never()))
             .instrument(tracing::trace_span!("conn manager")),
-        global_message_sender_task
-            .map(|x| Ok(x.unwrap_never()))
+        global_msg_handle_task
+            .map_err(|_| std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "failed sending global msg"
+            ))
             .instrument(tracing::trace_span!("global message sender")),
         main_loop.map(|_| Ok::<_, std::io::Error>(())),
     )

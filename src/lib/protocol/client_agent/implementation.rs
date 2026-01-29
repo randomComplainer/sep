@@ -224,10 +224,25 @@ where
                             }
                         };
                     }
-                    msg::ClientMsg::KillSession(session_id) => {
+                    msg::ClientMsg::GlobalCmd(cmd) => {
                         buf.put_u8(1u8);
-                        buf.put_u64(session_id.timestamp);
-                        buf.put_u16(session_id.proxyee_port);
+                        match cmd {
+                            msg::AtLeastOnce::Ack(ack) => {
+                                buf.put_u8(0u8);
+                                buf.put_u32(ack);
+                            }
+                            msg::AtLeastOnce::Msg(seq, msg) => {
+                                buf.put_u8(1u8);
+                                buf.put_u32(seq);
+                                match msg {
+                                    msg::GlobalCmd::KillSession(session_id) => {
+                                        buf.put_u8(0u8);
+                                        buf.put_u64(session_id.timestamp);
+                                        buf.put_u16(session_id.proxyee_port);
+                                    }
+                                };
+                            }
+                        };
                         self.stream_write.write_all(&mut buf).await?;
                     }
                 }

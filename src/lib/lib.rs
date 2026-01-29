@@ -11,6 +11,7 @@ pub mod oneshot_with_ack;
 mod protocol_conn_lifetime;
 pub mod sink_ext;
 pub mod task_scope;
+mod global_msg_manager;
 
 #[macro_use]
 pub mod decode;

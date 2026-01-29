@@ -2,11 +2,13 @@ use futures::prelude::*;
 use thiserror::Error;
 use tracing::*;
 
-use super::{
-    assignment, conn_manager as conn_manager, global_message_sender, session_manager,
-};
+use super::{assignment, conn_manager, session_manager};
 use crate::client::ServerConnector;
+use crate::global_msg_manager;
 use crate::prelude::*;
+use crate::protocol::msg::AtLeastOnce;
+use crate::protocol::msg::GlobalCmd;
+use crate::protocol::msg::ServerMsg;
 use crate::protocol::{ConnId, SessionId};
 use crate::protocol_conn_lifetime::WriteHandle;
 
@@ -45,7 +47,7 @@ where
     sessions_state: session_manager::State,
     conns_state: conn_manager::State<ServerConnector>,
     assignment_state: assignment::State,
-    global_message_handle: global_message_sender::Handle,
+    global_message_handle: global_msg_manager::Handle<GlobalCmd, protocol::msg::ClientMsg>,
 }
 
 impl<ServerConnector> State<ServerConnector>
@@ -104,6 +106,10 @@ where
             .on_connected(conn_id, write_handle.clone())
             .await;
 
+        self.global_message_handle
+            .new_conn(conn_id, write_handle.clone())
+            .await;
+
         let actions = self.assignment_state.new_conn(conn_id, write_handle);
         self.apply_assignment_actions(actions).await;
     }
@@ -139,7 +145,9 @@ where
             }
             assignment::Action::Kill(session_id) => {
                 self.sessions_state.end_session(session_id).await;
-                self.global_message_handle.kill_session(session_id).await;
+                self.global_message_handle
+                    .send_msg(GlobalCmd::KillSession(session_id))
+                    .await;
             }
         }
     }
@@ -165,14 +173,14 @@ where
 
     let assignment_state = assignment::State::new(config.conn_per_session);
 
-    let (global_message_handle, global_message_task) = global_message_sender::run();
+    let (global_message_task, global_message_handle) = global_msg_manager::run();
 
     let mut state = State {
         config,
         sessions_state,
         conns_state,
         assignment_state,
-        global_message_handle: global_message_handle.clone(),
+        global_message_handle,
     };
 
     let main_loop = async move {
@@ -196,7 +204,7 @@ where
                         },
                         session_manager::Event::SessionErrored(session_id) => {
                             state.end_session(session_id).await;
-                            state.global_message_handle.kill_session(session_id).await;
+                            state.global_message_handle.send_msg(GlobalCmd::KillSession(session_id)).await;
                         },
                     };
                 },
@@ -228,10 +236,22 @@ where
                         }
                         conn_manager::Event::ServerMsg(server_msg) => {
                             match server_msg {
-                                protocol::msg::ServerMsg::SessionMsg(session_id, server_msg) =>
+                                ServerMsg::SessionMsg(session_id, server_msg) =>
                                     state.server_msg_to_session(session_id, server_msg).await,
-                                protocol::msg::ServerMsg::KillSession(session_id) => {
-                                    state.end_session(session_id).await;
+
+                                ServerMsg::GlobalCmd(global_cmd) => {
+                                    match global_cmd {
+                                        AtLeastOnce::Ack(ack) =>
+                                            state.global_message_handle.recv_ack(ack).await,
+                                        AtLeastOnce::Msg(seq, cmd) => {
+                                            state.global_message_handle.send_ack(seq).await;
+                                            tracing::debug!(?cmd, "global cmd from server");
+                                            match cmd {
+                                                GlobalCmd::KillSession(session_id) =>
+                                                    state.end_session(session_id).await,
+                                            };
+                                        },
+                                    };
                                 }
                             };
                         },
@@ -262,8 +282,8 @@ where
             .map(|x| Ok(x.unwrap_never()))
             .instrument(tracing::trace_span!("conn manager")),
         global_message_task
-            .map(|x| Ok(x.unwrap_never()))
-            .instrument(tracing::trace_span!("global message sender")),
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "failed sending global msg"))
+            .instrument(tracing::trace_span!("global message manager")),
         main_loop
             .map(|_| Ok::<_, std::io::Error>(())) ,
     }
