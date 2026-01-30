@@ -81,7 +81,13 @@ async fn async_main(args: Args) {
                 Box::pin({
                     let client_id = client_id.clone();
                     async move {
-                        let stream = tokio::net::TcpStream::connect(server_addr.as_ref()).await?;
+                        let socket = match server_addr.as_ref() {
+                            std::net::SocketAddr::V4(_) => tokio::net::TcpSocket::new_v4()?,
+                            std::net::SocketAddr::V6(_) => tokio::net::TcpSocket::new_v6()?,
+                        };
+
+                        socket.set_nodelay(true)?;
+                        let stream = socket.connect(server_addr.as_ref().clone()).await?;
 
                         let server = protocol::client_agent::implementation::Init::new(
                             client_id,

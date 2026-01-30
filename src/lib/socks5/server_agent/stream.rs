@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
@@ -164,7 +164,14 @@ pub struct Socks5Listener {
 
 impl Socks5Listener {
     pub async fn bind(addr: SocketAddr) -> Result<Self, Socks5Error> {
-        let inner = tokio::net::TcpListener::bind(addr).await?;
+        let socket = match addr.ip() {
+            IpAddr::V4(_) => tokio::net::TcpSocket::new_v4()?,
+            IpAddr::V6(_) => tokio::net::TcpSocket::new_v6()?,
+        };
+        socket.set_nodelay(true)?;
+        socket.set_reuseaddr(true)?;
+        socket.bind(addr.clone())?;
+        let inner = socket.listen(addr.port().into())?;
         Ok(Self { inner })
     }
 
