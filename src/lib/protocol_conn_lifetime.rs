@@ -332,6 +332,7 @@ where
     }.instrument(tracing::trace_span!("read loop"));
 
     let io_error_sender = io_error_notifier.clone();
+
     let fut = async move {
         tokio::try_join!(write_loop, read_loop)
             .inspect_err(|_| {

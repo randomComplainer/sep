@@ -4,7 +4,6 @@ use std::ops::Add as _;
 use futures::channel::mpsc;
 use futures::prelude::*;
 use rand::Rng as _;
-use tracing::*;
 
 use crate::prelude::*;
 use crate::protocol::ConnId;
@@ -65,14 +64,18 @@ impl State {
                 Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>,
             >,
     {
-        let (lifetime_task, write_handle, close_handle) = crate::protocol_conn_lifetime::run(
-            Default::default(),
-            client_read,
-            client_write,
-            self.evt_tx
-                .clone()
-                .with_sync(move |client_msg| Event::ClientMsg(conn_id, client_msg)),
-        );
+        let lifetime_span = tracing::info_span!("conn lifetime", ?conn_id);
+
+        let (lifetime_task, write_handle, close_handle) = lifetime_span.in_scope(|| {
+            crate::protocol_conn_lifetime::run(
+                Default::default(),
+                client_read,
+                client_write,
+                self.evt_tx
+                    .clone()
+                    .with_sync(move |client_msg| Event::ClientMsg(conn_id, client_msg)),
+            )
+        });
 
         let duration = std::time::Duration::from_secs(10).add(std::time::Duration::from_mins(
             rand::rng().random_range(..=10u64),
@@ -82,9 +85,9 @@ impl State {
 
         let mut evt_tx = self.evt_tx.clone();
 
-        let managed_task = async move {
+        let managed_task = lifetime_span.in_scope(|| async move {
             let result = match futures::future::select(
-                Box::pin(lifetime_task.instrument(tracing::trace_span!("conn lifetime", ?conn_id))),
+                Box::pin(lifetime_task),
                 Box::pin(tokio::time::sleep(duration)),
             )
             .await
@@ -107,7 +110,7 @@ impl State {
             }
 
             Ok(())
-        };
+        });
 
         self.conns_scope_handle.run_async(managed_task).await;
         self.conns.insert(conn_id, ConnEntry { write_handle });

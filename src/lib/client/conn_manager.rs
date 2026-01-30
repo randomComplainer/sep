@@ -119,11 +119,7 @@ where
                     Err(err) => {
                         tracing::error!(?err, "failed to connect to server");
 
-                        if let Err(_) = event_tx
-                            .send(Event::ConnectAttemptFailed)
-                            .instrument(tracing::trace_span!("connected_tx"))
-                            .await
-                        {
+                        if let Err(_) = event_tx.send(Event::ConnectAttemptFailed).await {
                             tracing::warn!("connected_tx is broken");
                         }
 
@@ -131,38 +127,37 @@ where
                     }
                 };
 
-                let (lifet_task, write_handle, _) = crate::protocol_conn_lifetime::run(
-                    Default::default(),
-                    conn_read,
-                    conn_write,
-                    event_tx.clone().with_sync(Event::ServerMsg),
-                );
+                async move {
+                    let (lifet_task, write_handle, _) = crate::protocol_conn_lifetime::run(
+                        Default::default(),
+                        conn_read,
+                        conn_write,
+                        event_tx.clone().with_sync(Event::ServerMsg),
+                    );
 
-                if let Err(_) = event_tx.send(Event::Connected(conn_id, write_handle)).await {
-                    tracing::warn!("event_tx is broken, exiting");
-                    return Ok(());
+                    if let Err(_) = event_tx.send(Event::Connected(conn_id, write_handle)).await {
+                        tracing::warn!("event_tx is broken, exiting");
+                        return Ok(());
+                    }
+
+                    match lifet_task.await {
+                        Ok(_) => {
+                            if let Err(_) = event_tx.send(Event::Closed(conn_id)).await {
+                                tracing::warn!("event_tx is broken");
+                            }
+                        }
+                        Err(err) => {
+                            tracing::error!(?err, "connection error");
+                            if let Err(_) = event_tx.send(Event::Errored(conn_id)).await {
+                                tracing::warn!("connected_tx is broken");
+                            }
+                        }
+                    };
+
+                    Ok::<_, Never>(())
                 }
-
-                match lifet_task
-                    .instrument(tracing::trace_span!("conn lifetime", ?conn_id))
-                    .await
-                {
-                    Ok(_) => {
-                        if let Err(_) = event_tx.send(Event::Closed(conn_id)).await {
-                            tracing::warn!("event_tx is broken");
-                        }
-                    }
-                    Err(err) => {
-                        tracing::error!(?err, "connection error");
-                        if let Err(_) = event_tx
-                            .send(Event::Errored(conn_id))
-                            .instrument(tracing::trace_span!("connected_tx"))
-                            .await
-                        {
-                            tracing::warn!("connected_tx is broken");
-                        }
-                    }
-                };
+                .instrument(tracing::trace_span!("conn lifetime", ?conn_id))
+                .await?;
 
                 Ok(())
             })
