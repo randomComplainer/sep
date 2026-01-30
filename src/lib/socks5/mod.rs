@@ -21,6 +21,16 @@ pub enum Socks5Error {
     },
 }
 
+impl Into<std::io::Error> for Socks5Error {
+    fn into(self) -> std::io::Error {
+        match self {
+            Socks5Error::Io(err) => err,
+            Socks5Error::Protocol(err) => std::io::Error::new(std::io::ErrorKind::Other, err),
+            Socks5Error::Contextualized { source, .. } => Into::<std::io::Error>::into(*source),
+        }
+    }
+}
+
 impl From<String> for Socks5Error {
     fn from(s: String) -> Self {
         Self::Protocol(s)

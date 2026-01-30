@@ -32,7 +32,6 @@ impl Into<session::stream_to_sequenced::Config> for Config {
 // Err(()) on closed server message channels
 // Ok(()) on completed session OR proxyee io error
 // (one can consider a proxyee io error is a completed session)
-// TODO: reutrn proxyee io error
 pub async fn run(
     proxyee: impl socks5::server_agent::Init,
     server_read: impl Stream<Item = msg::ServerMsg> + Send + Unpin + 'static,
@@ -42,7 +41,7 @@ pub async fn run(
     + Clone
     + 'static,
     config: Config,
-) {
+) -> Result<(), std::io::Error> {
     let mut server_read = server_read.inspect(|msg| tracing::debug!(msg = ?msg, "server msg"));
     let mut server_write = server_write.inspect(|msg| tracing::debug!(msg = ?msg, "client msg"));
 
@@ -57,7 +56,7 @@ pub async fn run(
         Ok(x) => x,
         Err(err) => {
             tracing::error!("socks5 error: {:?}", err);
-            return;
+            return Err(err.into());
         }
     };
 
@@ -71,7 +70,7 @@ pub async fn run(
         Ok(x) => x,
         Err(err) => {
             tracing::error!("socks5 error: {:?}", err);
-            return;
+            return Err(err.into());
         }
     };
 
@@ -89,9 +88,9 @@ pub async fn run(
         .await
     {
         Ok(_) => (),
-        Err(err) => {
-            tracing::warn!("server write is broken, exiting: {:?}", err);
-            return;
+        Err(_) => {
+            tracing::warn!("server write is broken, exiting");
+            return Ok(());
         }
     };
 
@@ -124,7 +123,7 @@ pub async fn run(
                             })
                             .instrument(tracing::trace_span!("send reply error to proxyee"))
                             .await;
-                        return;
+                        return Ok(());
                     }
                     msg::ServerMsg::Data(data) => {
                         early_target_packages.push(data.into());
@@ -143,7 +142,7 @@ pub async fn run(
                         .instrument(tracing::trace_span!("send reply error to proxyee"))
                         .await;
 
-                    return;
+                    return Ok(());
                 }
             };
         }
@@ -158,7 +157,7 @@ pub async fn run(
         Err(err) => {
             // TODO: notify server
             tracing::error!(?err, "proxyee io error");
-            return;
+            return Ok(());
         }
     };
 
@@ -247,13 +246,12 @@ pub async fn run(
 
     let streaming = async move {
         // streaming tasks error on Io Error, which doesn't matter
-        let _ = tokio::try_join!(server_to_proxyee, proxyee_to_server);
-        ()
+        tokio::try_join!(server_to_proxyee, proxyee_to_server).map(|_| ())
     };
 
     tokio::select! {
         r = streaming => r,
-        _ = server_msg_handling =>()
+        _ = server_msg_handling => Ok(())
     }
 }
 

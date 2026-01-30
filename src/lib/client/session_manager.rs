@@ -88,8 +88,8 @@ impl State {
         let mut evt_tx = self.evt_tx.clone();
         let session_task = async move {
             let evt = match tokio::try_join! {
-                proxyee_io_task.map(|()| Ok::<_, ConnId>(())),
-                client_msg_sending_task,
+                proxyee_io_task.map_err(|_| ()),
+                client_msg_sending_task.map_err(|_| ()),
             } {
                 Ok(_) => Event::SessionEnded(session_id),
                 Err(_) => Event::SessionErrored(session_id),
