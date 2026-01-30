@@ -3,15 +3,14 @@
 
 mod async_channel_ext;
 pub mod connect_target;
-mod dispatch_with_max_concurrency;
 pub mod future_ext;
+mod global_msg_manager;
 pub mod handover;
 pub mod never;
 pub mod oneshot_with_ack;
 mod protocol_conn_lifetime;
 pub mod sink_ext;
 pub mod task_scope;
-mod global_msg_manager;
 
 #[macro_use]
 pub mod decode;

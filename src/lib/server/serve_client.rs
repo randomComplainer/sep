@@ -9,8 +9,7 @@ use crate::protocol::ConnId;
 use crate::protocol::SessionId;
 use crate::protocol::msg::GlobalCmd;
 
-mod conn_manager;
-mod session_manager;
+use super::{conn_manager, session_manager};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config<TConnectTarget> {

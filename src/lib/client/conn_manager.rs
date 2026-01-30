@@ -143,7 +143,10 @@ where
                     return Ok(());
                 }
 
-                match lifet_task.await {
+                match lifet_task
+                    .instrument(tracing::trace_span!("conn lifetime", ?conn_id))
+                    .await
+                {
                     Ok(_) => {
                         if let Err(_) = event_tx.send(Event::Closed(conn_id)).await {
                             tracing::warn!("event_tx is broken");
