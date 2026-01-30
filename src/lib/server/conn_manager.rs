@@ -84,7 +84,7 @@ impl State {
 
         let managed_task = async move {
             let result = match futures::future::select(
-                Box::pin(lifetime_task),
+                Box::pin(lifetime_task.instrument(tracing::trace_span!("conn lifetime", ?conn_id))),
                 Box::pin(tokio::time::sleep(duration)),
             )
             .await
@@ -107,8 +107,7 @@ impl State {
             }
 
             Ok(())
-        }
-        .instrument(tracing::trace_span!("conn lifetime", ?conn_id));
+        };
 
         self.conns_scope_handle.run_async(managed_task).await;
         self.conns.insert(conn_id, ConnEntry { write_handle });
