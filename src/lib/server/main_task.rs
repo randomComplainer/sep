@@ -15,12 +15,15 @@ pub struct Config {
     pub max_bytes_ahead: u32,
 }
 
-impl Into<serve_client::Config<crate::connect_target::ConnectTargetImpl>> for Config {
-    fn into(self) -> serve_client::Config<crate::connect_target::ConnectTargetImpl> {
+// impl Into<serve_client::Config<crate::connect_target::ConnectTargetDirect>> for Config {
+// fn into(self) -> serve_client::Config<crate::connect_target::ConnectTargetDirect> {
+impl Into<serve_client::Config<crate::connect_target::ConnectTargetWithDnsCache>> for Config {
+    fn into(self) -> serve_client::Config<crate::connect_target::ConnectTargetWithDnsCache> {
         serve_client::Config {
             max_packet_size: self.max_packet_size,
             max_bytes_ahead: self.max_bytes_ahead,
-            connect_target: crate::connect_target::ConnectTargetImpl(
+            // connect_target: crate::connect_target::ConnectTargetDirect,
+            connect_target: crate::connect_target::ConnectTargetWithDnsCache(
                 crate::connect_target::cache::Cache::new(
                     crate::connect_target::cache::EvictQueue::new(
                         std::time::Duration::from_secs(60),
