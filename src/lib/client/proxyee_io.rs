@@ -1,8 +1,8 @@
 use futures::prelude::*;
 use tracing::Instrument as _;
 
-use super::msg;
 use crate::prelude::*;
+use protocol::msg::session as msg;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
@@ -10,18 +10,18 @@ pub struct Config {
     pub max_bytes_ahead: u32,
 }
 
-impl Into<session::sequenced_to_stream::Config> for Config {
-    fn into(self) -> session::sequenced_to_stream::Config {
-        session::sequenced_to_stream::Config {
+impl Into<crate::sequenced_to_stream::Config> for Config {
+    fn into(self) -> crate::sequenced_to_stream::Config {
+        crate::sequenced_to_stream::Config {
             max_bytes_ahead: self.max_bytes_ahead,
             max_packet_size: self.max_packet_size,
         }
     }
 }
 
-impl Into<session::stream_to_sequenced::Config> for Config {
-    fn into(self) -> session::stream_to_sequenced::Config {
-        session::stream_to_sequenced::Config {
+impl Into<crate::stream_to_sequenced::Config> for Config {
+    fn into(self) -> crate::stream_to_sequenced::Config {
+        crate::stream_to_sequenced::Config {
             max_packet_size: self.max_packet_size,
             max_bytes_ahead: self.max_bytes_ahead,
         }
@@ -98,7 +98,7 @@ pub async fn run(
         // target might start send data as soon as server connected to it.
         // so we need to buffer it until client receives server reply.
         // TODO: Magic btw
-        let mut early_target_packages: Vec<session::sequenced_to_stream::Command> =
+        let mut early_target_packages: Vec<crate::sequenced_to_stream::Command> =
             Vec::with_capacity(8);
 
         loop {
@@ -112,7 +112,7 @@ pub async fn run(
                         break (msg, early_target_packages);
                     }
                     msg::ServerMsg::ReplyError(err) => {
-                        use session::msg::ConnectionError::*;
+                        use protocol::msg::session::ConnectionError::*;
                         let _ = proxyee
                             .reply_error(match err {
                                 General => 1,
@@ -165,11 +165,11 @@ pub async fn run(
         futures::channel::mpsc::unbounded();
 
     let (buf, proxyee_read) = proxyee_read.into_parts();
-    let proxyee_to_server = session::stream_to_sequenced::run(
+    let proxyee_to_server = crate::stream_to_sequenced::run(
         proxyee_to_server_cmd_rx,
         server_write.clone().with_sync(|evt| match evt {
-            session::stream_to_sequenced::Event::Data(data) => data.into(),
-            session::stream_to_sequenced::Event::Eof(eof) => eof.into(),
+            crate::stream_to_sequenced::Event::Data(data) => data.into(),
+            crate::stream_to_sequenced::Event::Eof(eof) => eof.into(),
         }),
         proxyee_read,
         Some(buf),
@@ -191,11 +191,11 @@ pub async fn run(
     }
     .instrument(tracing::trace_span!("server to proxyee early packages"));
 
-    let server_to_proxyee = session::sequenced_to_stream::run(
+    let server_to_proxyee = crate::sequenced_to_stream::run(
         server_to_proxyee_cmd_rx,
         server_write.clone().with_sync(|evt| match evt {
-            session::sequenced_to_stream::Event::Ack(ack) => ack.into(),
-            session::sequenced_to_stream::Event::EofAck(eof_ack) => eof_ack.into(),
+            crate::sequenced_to_stream::Event::Ack(ack) => ack.into(),
+            crate::sequenced_to_stream::Event::EofAck(eof_ack) => eof_ack.into(),
         }),
         proxyee_write,
         config.into(),

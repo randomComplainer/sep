@@ -48,6 +48,7 @@ impl ConnectTarget for ConnectTargetDirect {
             }
         };
 
+        tracing::trace!(addrs=?addrs.as_ref(), "resolved");
         for addr in addrs.as_ref() {
             tracing::trace!(?addr, "create tcp conn");
             match tokio::net::TcpStream::connect(&addr).await {

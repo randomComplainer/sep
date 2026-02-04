@@ -228,7 +228,7 @@ where
                         buf.put_u64(session_id.timestamp);
                         buf.put_u16(session_id.proxyee_port);
                         match server_msg {
-                            session::msg::ServerMsg::Reply(reply) => {
+                            msg::session::ServerMsg::Reply(reply) => {
                                 buf.put_u8(0u8);
                                 match &reply.bound_addr {
                                     std::net::SocketAddr::V4(addr) => {
@@ -243,9 +243,9 @@ where
                                 buf.put_u16(reply.bound_addr.port());
                                 self.stream_write.write_all(&mut buf).await?;
                             }
-                            session::msg::ServerMsg::ReplyError(err) => {
+                            msg::session::ServerMsg::ReplyError(err) => {
                                 buf.put_u8(1u8);
-                                use session::msg::ConnectionError::*;
+                                use msg::session::ConnectionError::*;
                                 buf.put_u8(match err {
                                     General => 0,
                                     NetworkUnreachable => 1,
@@ -255,24 +255,24 @@ where
                                 });
                                 self.stream_write.write_all(&mut buf).await?;
                             }
-                            session::msg::ServerMsg::Data(mut data) => {
+                            msg::session::ServerMsg::Data(mut data) => {
                                 buf.put_u8(2u8);
                                 buf.put_u16(data.seq);
                                 buf.put_u16(data.data.len().try_into().unwrap());
                                 self.stream_write.write_all(&mut buf).await?;
                                 self.stream_write.write_all(&mut data.data).await?;
                             }
-                            session::msg::ServerMsg::Ack(ack) => {
+                            msg::session::ServerMsg::Ack(ack) => {
                                 buf.put_u8(3u8);
                                 buf.put_u32(ack.bytes);
                                 self.stream_write.write_all(&mut buf).await?;
                             }
-                            session::msg::ServerMsg::Eof(eof) => {
+                            msg::session::ServerMsg::Eof(eof) => {
                                 buf.put_u8(4u8);
                                 buf.put_u16(eof.seq);
                                 self.stream_write.write_all(&mut buf).await?;
                             }
-                            session::msg::ServerMsg::EofAck(_) => {
+                            msg::session::ServerMsg::EofAck(_) => {
                                 buf.put_u8(5u8);
                                 self.stream_write.write_all(&mut buf).await?;
                             }

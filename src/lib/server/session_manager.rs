@@ -4,6 +4,7 @@ use futures::{channel::mpsc, prelude::*};
 use tracing::Instrument as _;
 
 use crate::{prelude::*, protocol_conn_lifetime::WriteHandle};
+use super::target_io;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config<TConnectTarget> {
@@ -12,9 +13,9 @@ pub struct Config<TConnectTarget> {
     pub connect_target: TConnectTarget,
 }
 
-impl<TConnectTarget> Into<session::server::Config<TConnectTarget>> for Config<TConnectTarget> {
-    fn into(self) -> session::server::Config<TConnectTarget> {
-        session::server::Config {
+impl<TConnectTarget> Into<target_io::Config<TConnectTarget>> for Config<TConnectTarget> {
+    fn into(self) -> target_io::Config<TConnectTarget> {
+        target_io::Config {
             max_packet_size: self.max_packet_size,
             max_bytes_ahead: self.max_bytes_ahead,
             connect_target: self.connect_target,
@@ -29,7 +30,7 @@ pub enum Event {
 }
 
 pub struct SessionEntry {
-    pub client_msg_tx: mpsc::UnboundedSender<session::msg::ClientMsg>,
+    pub client_msg_tx: mpsc::UnboundedSender<protocol::msg::session::ClientMsg>,
     pub session_server_writer_tx:
         mpsc::UnboundedSender<(ConnId, WriteHandle<protocol::msg::ServerMsg>)>,
     pub conns: HashSet<ConnId>,
@@ -69,15 +70,15 @@ where
         &mut self,
         conn_id: ConnId,
         session_id: SessionId,
-        msg: session::msg::ClientMsg,
+        msg: protocol::msg::session::ClientMsg,
     ) {
-        if let session::msg::ClientMsg::Request(_) = &msg {
+        if let protocol::msg::session::ClientMsg::Request(_) = &msg {
             assert!(!self.sessions.contains_key(&session_id));
 
             let (session_client_msg_tx, session_client_msg_rx) = mpsc::unbounded();
             let (session_server_msg_tx, session_server_msg_rx) = mpsc::unbounded();
 
-            let target_io_task = session::server::run(
+            let target_io_task = target_io::run(
                 session_client_msg_rx,
                 session_server_msg_tx.with_sync(move |server_msg| {
                     protocol::msg::ServerMsg::SessionMsg(session_id, server_msg)
@@ -87,11 +88,10 @@ where
 
             let (session_conn_write_tx, session_conn_write_rx) = mpsc::unbounded();
 
-            let server_msg_sending_task =
-                crate::protocol_conn_lifetime::WriteHandle::loop_through(
-                    session_server_msg_rx,
-                    session_conn_write_rx,
-                );
+            let server_msg_sending_task = crate::protocol_conn_lifetime::WriteHandle::loop_through(
+                session_server_msg_rx,
+                session_conn_write_rx,
+            );
 
             let mut evt_tx = self.evt_tx.clone();
 

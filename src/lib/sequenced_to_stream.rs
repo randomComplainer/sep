@@ -3,9 +3,9 @@ use futures::prelude::*;
 use tokio::io::{AsyncWrite, AsyncWriteExt as _};
 use tracing::Instrument as _;
 
-use crate::session::sequence::{StreamEntry, StreamEntryValue};
+use crate::sequence::{StreamEntry, StreamEntryValue};
 
-use super::msg;
+use crate::protocol::msg::session as msg;
 
 #[derive(Debug, From)]
 pub enum Command {

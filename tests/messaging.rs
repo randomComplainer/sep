@@ -1,6 +1,7 @@
 #![feature(assert_matches)]
 use std::net::SocketAddr;
 
+use protocol::msg;
 use sep_lib::{
     prelude::*,
     protocol::{MessageReader as _, MessageWriter as _, SessionId},
@@ -19,8 +20,8 @@ async fn client_req_v4() {
     let client = async move {
         client_write
             .send_msg(
-                session::msg::ClientMsg::Request(
-                    session::msg::Request {
+                msg::session::ClientMsg::Request(
+                    msg::session::Request {
                         addr: decode::ReadRequestAddr::Ipv4(req_ip),
                         port: req_port,
                     }
@@ -39,7 +40,7 @@ async fn client_req_v4() {
         match msg {
             protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
-                session::msg::ClientMsg::Request(session::msg::Request {
+                msg::session::ClientMsg::Request(msg::session::Request {
                     addr: decode::ReadRequestAddr::Ipv4(addr),
                     port,
                 }),
@@ -68,8 +69,8 @@ async fn client_req_v6() {
     let client = async move {
         client_write
             .send_msg(
-                session::msg::ClientMsg::Request(
-                    session::msg::Request {
+                msg::session::ClientMsg::Request(
+                    msg::session::Request {
                         addr: decode::ReadRequestAddr::Ipv6(req_ip),
                         port: req_port,
                     }
@@ -88,7 +89,7 @@ async fn client_req_v6() {
         match msg {
             protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
-                session::msg::ClientMsg::Request(session::msg::Request {
+                msg::session::ClientMsg::Request(msg::session::Request {
                     addr: decode::ReadRequestAddr::Ipv6(addr),
                     port,
                 }),
@@ -117,7 +118,7 @@ async fn client_req_domain() {
     let client = async move {
         client_write
             .send_msg(
-                session::msg::ClientMsg::Request(session::msg::Request {
+                msg::session::ClientMsg::Request(msg::session::Request {
                     addr: decode::ReadRequestAddr::Domain(req_domain.into()),
                     port: req_port,
                 })
@@ -134,7 +135,7 @@ async fn client_req_domain() {
         match msg {
             protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
-                session::msg::ClientMsg::Request(session::msg::Request {
+                msg::session::ClientMsg::Request(msg::session::Request {
                     addr: decode::ReadRequestAddr::Domain(addr),
                     port,
                 }),
@@ -166,7 +167,7 @@ async fn server_reply_v4() {
         match msg {
             protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ServerMsg::SessionMsg(
                 proxyee_id,
-                session::msg::ServerMsg::Reply(session::msg::Reply {
+                msg::session::ServerMsg::Reply(msg::session::Reply {
                     bound_addr: recv_addr,
                 }),
             )) => {
@@ -182,7 +183,7 @@ async fn server_reply_v4() {
     let server = async move {
         server_write
             .send_msg(
-                session::msg::ServerMsg::Reply(session::msg::Reply {
+                msg::session::ServerMsg::Reply(msg::session::Reply {
                     bound_addr: SocketAddr::new(reply_ip.into(), reply_port),
                 })
                 .with_session_id(SessionId::new(0, 0))
@@ -208,7 +209,7 @@ async fn client_data() {
         async move {
             client_write
                 .send_msg(
-                    session::msg::ClientMsg::Data(session::msg::Data {
+                    msg::session::ClientMsg::Data(msg::session::Data {
                         seq: 1,
                         data: bytes::BytesMut::from(data.as_ref()),
                     })
@@ -226,7 +227,7 @@ async fn client_data() {
         match msg {
             protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
-                session::msg::ClientMsg::Data(session::msg::Data {
+                msg::session::ClientMsg::Data(msg::session::Data {
                     seq,
                     data: recv_data,
                 }),
@@ -258,7 +259,7 @@ async fn server_data() {
             match msg {
                 protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ServerMsg::SessionMsg(
                     proxyee_id,
-                    session::msg::ServerMsg::Data(session::msg::Data {
+                    msg::session::ServerMsg::Data(msg::session::Data {
                         seq,
                         data: recv_data,
                     }),
@@ -277,7 +278,7 @@ async fn server_data() {
     let server = async move {
         server_write
             .send_msg(
-                session::msg::ServerMsg::Data(session::msg::Data {
+                msg::session::ServerMsg::Data(msg::session::Data {
                     seq: 1,
                     data: bytes::BytesMut::from(data.as_ref()),
                 })
@@ -301,7 +302,7 @@ async fn client_ack() {
         async move {
             client_write
                 .send_msg(
-                    session::msg::ClientMsg::Ack(session::msg::Ack { bytes: 4 })
+                    msg::session::ClientMsg::Ack(msg::session::Ack { bytes: 4 })
                         .with_session_id(SessionId::new(0, 1))
                         .into(),
                 )
@@ -316,7 +317,7 @@ async fn client_ack() {
         match msg {
             protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
-                session::msg::ClientMsg::Ack(session::msg::Ack { bytes }),
+                msg::session::ClientMsg::Ack(msg::session::Ack { bytes }),
             )) => {
                 assert_eq!(proxyee_id, SessionId::new(0, 1));
                 assert_eq!(bytes, 4);
@@ -341,7 +342,7 @@ async fn server_ack() {
             match msg {
                 protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ServerMsg::SessionMsg(
                     proxyee_id,
-                    session::msg::ServerMsg::Ack(session::msg::Ack { bytes }),
+                    msg::session::ServerMsg::Ack(msg::session::Ack { bytes }),
                 )) => {
                     assert_eq!(proxyee_id, SessionId::new(0, 1));
                     assert_eq!(bytes, 4);
@@ -356,7 +357,7 @@ async fn server_ack() {
     let server = async move {
         server_write
             .send_msg(
-                session::msg::ServerMsg::Ack(session::msg::Ack { bytes: 4 })
+                msg::session::ServerMsg::Ack(msg::session::Ack { bytes: 4 })
                     .with_session_id(SessionId::new(0, 1))
                     .into(),
             )
@@ -377,7 +378,7 @@ async fn client_eof() {
         async move {
             client_write
                 .send_msg(
-                    session::msg::ClientMsg::Eof(session::msg::Eof { seq: 5 })
+                    msg::session::ClientMsg::Eof(msg::session::Eof { seq: 5 })
                         .with_session_id(SessionId::new(0, 1))
                         .into(),
                 )
@@ -392,7 +393,7 @@ async fn client_eof() {
         match msg {
             protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
-                session::msg::ClientMsg::Eof(session::msg::Eof { seq }),
+                msg::session::ClientMsg::Eof(msg::session::Eof { seq }),
             )) => {
                 assert_eq!(proxyee_id, SessionId::new(0, 1));
                 assert_eq!(seq, 5);
@@ -417,7 +418,7 @@ async fn server_eof() {
             match msg {
                 protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ServerMsg::SessionMsg(
                     proxyee_id,
-                    session::msg::ServerMsg::Eof(session::msg::Eof { seq }),
+                    msg::session::ServerMsg::Eof(msg::session::Eof { seq }),
                 )) => {
                     assert_eq!(proxyee_id, SessionId::new(0, 1));
                     assert_eq!(seq, 5);
@@ -432,7 +433,7 @@ async fn server_eof() {
     let server = async move {
         server_write
             .send_msg(
-                session::msg::ServerMsg::Eof(session::msg::Eof { seq: 5 })
+                msg::session::ServerMsg::Eof(msg::session::Eof { seq: 5 })
                     .with_session_id(SessionId::new(0, 1))
                     .into(),
             )

@@ -7,7 +7,7 @@ use tokio::{
 };
 use tracing::Instrument as _;
 
-use super::msg;
+use crate::protocol::msg::session as msg;
 
 #[derive(Debug, From)]
 pub enum Command {

@@ -180,7 +180,7 @@ where
                         buf.put_u64(session_id.timestamp);
                         buf.put_u16(session_id.proxyee_port);
                         match session_msg {
-                            session::msg::ClientMsg::Request(req) => {
+                            msg::session::ClientMsg::Request(req) => {
                                 buf.put_u8(0u8);
                                 match &req.addr {
                                     decode::ReadRequestAddr::Ipv4(addr) => {
@@ -201,24 +201,24 @@ where
                                 buf.put_u16(req.port);
                                 self.stream_write.write_all(&mut buf).await?;
                             }
-                            session::msg::ClientMsg::Data(mut data) => {
+                            msg::session::ClientMsg::Data(mut data) => {
                                 buf.put_u8(1u8);
                                 buf.put_u16(data.seq);
                                 buf.put_u16(data.data.len().try_into().unwrap());
                                 self.stream_write.write_all(&mut buf).await?;
                                 self.stream_write.write_all(&mut data.data).await?;
                             }
-                            session::msg::ClientMsg::Ack(ack) => {
+                            msg::session::ClientMsg::Ack(ack) => {
                                 buf.put_u8(2u8);
                                 buf.put_u32(ack.bytes);
                                 self.stream_write.write_all(&mut buf).await?;
                             }
-                            session::msg::ClientMsg::Eof(eof) => {
+                            msg::session::ClientMsg::Eof(eof) => {
                                 buf.put_u8(3u8);
                                 buf.put_u16(eof.seq);
                                 self.stream_write.write_all(&mut buf).await?;
                             }
-                            session::msg::ClientMsg::EofAck(_) => {
+                            msg::session::ClientMsg::EofAck(_) => {
                                 buf.put_u8(4u8);
                                 self.stream_write.write_all(&mut buf).await?;
                             }

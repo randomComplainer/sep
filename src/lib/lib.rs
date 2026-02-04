@@ -9,7 +9,9 @@ pub mod handover;
 pub mod never;
 pub mod oneshot_with_ack;
 mod protocol_conn_lifetime;
+mod sequenced_to_stream;
 pub mod sink_ext;
+mod stream_to_sequenced;
 pub mod task_scope;
 
 #[macro_use]
@@ -17,7 +19,7 @@ pub mod decode;
 pub mod encrypt;
 
 pub mod protocol;
-pub mod session;
+mod sequence;
 pub mod socks5;
 
 pub mod client;
@@ -34,7 +36,7 @@ pub mod prelude {
     pub use crate::sink_ext::SinkExt as _;
     pub use crate::socks5::server_agent::{Greeted as _, Init as _, Requested as _};
     pub use crate::task_scope;
-    pub use crate::{decode, protocol, session, socks5};
+    pub use crate::{decode, protocol, socks5};
     pub use oneshot_with_ack::Sender as _;
     pub use protocol::{ClientId, ConnId, Key, Nonce, SessionId};
 }

@@ -9,7 +9,7 @@ use crate::protocol::ConnId;
 use crate::protocol::SessionId;
 use crate::protocol::msg::GlobalCmd;
 
-use super::{conn_manager, session_manager};
+use super::{conn_manager, session_manager, target_io};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config<TConnectTarget> {
@@ -18,9 +18,9 @@ pub struct Config<TConnectTarget> {
     pub connect_target: TConnectTarget,
 }
 
-impl<TConnectTarget> Into<session::server::Config<TConnectTarget>> for Config<TConnectTarget> {
-    fn into(self) -> session::server::Config<TConnectTarget> {
-        session::server::Config {
+impl<TConnectTarget> Into<target_io::Config<TConnectTarget>> for Config<TConnectTarget> {
+    fn into(self) -> target_io::Config<TConnectTarget> {
+        target_io::Config {
             max_packet_size: self.max_packet_size,
             max_bytes_ahead: self.max_bytes_ahead,
             connect_target: self.connect_target,
@@ -85,7 +85,7 @@ where
         &mut self,
         conn_id: ConnId,
         session_id: SessionId,
-        msg: session::msg::ClientMsg,
+        msg: protocol::msg::session::ClientMsg,
     ) {
         self.sessions_state
             .client_msg_to_session(conn_id, session_id, msg)

@@ -4,6 +4,7 @@ use futures::channel::mpsc;
 use futures::prelude::*;
 use tracing::Instrument as _;
 
+use super::proxyee_io;
 use crate::{prelude::*, protocol_conn_lifetime::WriteHandle};
 
 #[derive(Debug, Clone, Copy)]
@@ -14,9 +15,9 @@ pub struct Config {
     pub max_connection: usize,
 }
 
-impl Into<session::client::Config> for Config {
-    fn into(self) -> session::client::Config {
-        session::client::Config {
+impl Into<proxyee_io::Config> for Config {
+    fn into(self) -> proxyee_io::Config {
+        proxyee_io::Config {
             max_packet_size: self.max_packet_size,
             max_bytes_ahead: self.max_bytes_ahead,
         }
@@ -30,7 +31,7 @@ pub enum Event {
 }
 
 struct SessionEntry {
-    pub server_msg_tx: mpsc::UnboundedSender<session::msg::ServerMsg>,
+    pub server_msg_tx: mpsc::UnboundedSender<protocol::msg::session::ServerMsg>,
     pub client_msg_sender_tx:
         mpsc::UnboundedSender<(ConnId, WriteHandle<protocol::msg::ClientMsg>)>,
 }
@@ -69,10 +70,10 @@ impl State {
         let (session_server_msg_tx, session_server_msg_rx) = mpsc::unbounded();
         let (session_client_msg_tx, session_client_msg_rx) = mpsc::unbounded();
 
-        let proxyee_io_task = session::client::run(
+        let proxyee_io_task = proxyee_io::run(
             agent,
             session_server_msg_rx,
-            session_client_msg_tx.with_sync(move |msg: session::msg::ClientMsg| {
+            session_client_msg_tx.with_sync(move |msg: protocol::msg::session::ClientMsg| {
                 protocol::msg::ClientMsg::SessionMsg(session_id, msg)
             }),
             self.config.into(),
@@ -124,7 +125,7 @@ impl State {
     pub async fn server_msg_to_session(
         &mut self,
         session_id: SessionId,
-        server_msg: session::msg::ServerMsg,
+        server_msg: protocol::msg::session::ServerMsg,
     ) {
         let entry = match self.sessions.get_mut(&session_id) {
             Some(entry) => entry,

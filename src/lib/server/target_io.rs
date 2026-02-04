@@ -2,8 +2,8 @@ use futures::StreamExt;
 use futures::prelude::*;
 use tracing::Instrument as _;
 
-use super::msg;
 use crate::prelude::*;
+use protocol::msg::session as msg;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config<TConnectTarget> {
@@ -12,18 +12,18 @@ pub struct Config<TConnectTarget> {
     pub connect_target: TConnectTarget,
 }
 
-impl<TConnectTarget> Into<session::sequenced_to_stream::Config> for Config<TConnectTarget> {
-    fn into(self) -> session::sequenced_to_stream::Config {
-        session::sequenced_to_stream::Config {
+impl<TConnectTarget> Into<crate::sequenced_to_stream::Config> for Config<TConnectTarget> {
+    fn into(self) -> crate::sequenced_to_stream::Config {
+        crate::sequenced_to_stream::Config {
             max_bytes_ahead: self.max_bytes_ahead,
             max_packet_size: self.max_packet_size,
         }
     }
 }
 
-impl<TConnectTarget> Into<session::stream_to_sequenced::Config> for Config<TConnectTarget> {
-    fn into(self) -> session::stream_to_sequenced::Config {
-        session::stream_to_sequenced::Config {
+impl<TConnectTarget> Into<crate::stream_to_sequenced::Config> for Config<TConnectTarget> {
+    fn into(self) -> crate::stream_to_sequenced::Config {
+        crate::stream_to_sequenced::Config {
             max_packet_size: self.max_packet_size,
             max_bytes_ahead: self.max_bytes_ahead,
         }
@@ -113,11 +113,11 @@ where
     let (mut target_to_client_cmd_tx, cmd_target_to_client_cmd_rx) =
         futures::channel::mpsc::unbounded();
 
-    let target_to_client = session::stream_to_sequenced::run(
+    let target_to_client = crate::stream_to_sequenced::run(
         cmd_target_to_client_cmd_rx,
         server_msg_write.clone().with_sync(|evt| match evt {
-            session::stream_to_sequenced::Event::Data(data) => data.into(),
-            session::stream_to_sequenced::Event::Eof(eof) => eof.into(),
+            crate::stream_to_sequenced::Event::Data(data) => data.into(),
+            crate::stream_to_sequenced::Event::Eof(eof) => eof.into(),
         }),
         target_read,
         None,
@@ -127,11 +127,11 @@ where
 
     let (mut client_to_target_cmd_tx, client_to_target_cmd_rx) =
         futures::channel::mpsc::unbounded();
-    let client_to_target = session::sequenced_to_stream::run(
+    let client_to_target = crate::sequenced_to_stream::run(
         client_to_target_cmd_rx,
         server_msg_write.clone().with_sync(|evt| match evt {
-            session::sequenced_to_stream::Event::Ack(ack) => ack.into(),
-            session::sequenced_to_stream::Event::EofAck(eof_ack) => eof_ack.into(),
+            crate::sequenced_to_stream::Event::Ack(ack) => ack.into(),
+            crate::sequenced_to_stream::Event::EofAck(eof_ack) => eof_ack.into(),
         }),
         target_write,
         config.into(),

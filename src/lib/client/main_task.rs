@@ -79,7 +79,7 @@ where
     pub async fn server_msg_to_session(
         &mut self,
         session_id: SessionId,
-        server_msg: session::msg::ServerMsg,
+        server_msg: protocol::msg::session::ServerMsg,
     ) {
         self.sessions_state
             .server_msg_to_session(session_id, server_msg)

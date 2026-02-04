@@ -27,7 +27,5 @@ async fn main() {
         .unwrap()
         .collect::<Vec<_>>();
 
-    for addr in addrs {
-        dbg!(addr);
-    }
+    dbg!(addrs);
 }
