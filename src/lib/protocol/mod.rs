@@ -77,6 +77,8 @@ where
         &mut self,
         msg: Self::Message,
     ) -> impl Future<Output = Result<(), std::io::Error>> + Send;
+
+    fn shutdown(self) -> impl Future<Output = Result<(), std::io::Error>> + Send;
 }
 
 pub trait MessageReader

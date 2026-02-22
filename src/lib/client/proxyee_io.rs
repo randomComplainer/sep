@@ -35,7 +35,7 @@ impl Into<crate::stream_to_sequenced::Config> for Config {
 pub async fn run(
     proxyee: impl socks5::server_agent::Init,
     server_read: impl Stream<Item = msg::ServerMsg> + Send + Unpin + 'static,
-    server_write: impl Sink<msg::ClientMsg, Error = impl std::fmt::Debug>
+    server_write: impl Sink<msg::ClientMsg>
     + Unpin
     + Send
     + Clone

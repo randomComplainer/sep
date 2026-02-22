@@ -51,6 +51,7 @@ impl ConnectTarget for ConnectTargetDirect {
         tracing::trace!(addrs=?addrs.as_ref(), "resolved");
         for addr in addrs.as_ref() {
             tracing::trace!(?addr, "create tcp conn");
+            // TODO: socket no delay
             match tokio::net::TcpStream::connect(&addr).await {
                 Ok(stream) => {
                     let addr = stream.local_addr()?;

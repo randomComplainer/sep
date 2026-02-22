@@ -43,11 +43,10 @@ macro_rules! try_emit_evt {
     };
 }
 
-impl<Stream, EvtTx, EvtTxErr> State<Stream, EvtTx>
+impl<Stream, EvtTx> State<Stream, EvtTx>
 where
     Stream: AsyncWrite + Unpin + Send + 'static,
-    EvtTxErr: std::fmt::Debug,
-    EvtTx: Sink<Event, Error = EvtTxErr> + Unpin + Send + 'static,
+    EvtTx: Sink<Event> + Unpin + Send + 'static,
 {
     pub fn new(config: Config, stream_to_write: Stream, evt_tx: EvtTx) -> Self {
         let estimated_buffered_packets =
@@ -143,7 +142,7 @@ where
 
 pub async fn run(
     mut cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
-    evt_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Unpin + Send + 'static,
+    evt_tx: impl Sink<Event> + Unpin + Send + 'static,
     stream_to_write: impl AsyncWrite + Unpin + Send + 'static,
     config: Config,
 ) -> Result<(), std::io::Error> {

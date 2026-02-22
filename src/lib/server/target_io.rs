@@ -32,7 +32,7 @@ impl<TConnectTarget> Into<crate::stream_to_sequenced::Config> for Config<TConnec
 
 pub async fn run<TConnectTarget>(
     client_msg_read: impl Stream<Item = msg::ClientMsg> + Unpin,
-    server_msg_write: impl Sink<msg::ServerMsg, Error = impl std::fmt::Debug>
+    server_msg_write: impl Sink<msg::ServerMsg>
     + Unpin
     + Clone
     + Send

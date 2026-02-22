@@ -289,10 +289,19 @@ where
                                 buf.put_u8(1u8);
                                 buf.put_u32(seq);
                                 match msg {
-                                    msg::GlobalCmd::KillSession(session_id) => {
+                                    msg::global_cmd::ServerCmd::KillSession(session_id) => {
                                         buf.put_u8(0u8);
                                         buf.put_u64(session_id.timestamp);
                                         buf.put_u16(session_id.proxyee_port);
+                                    }
+                                    msg::global_cmd::ServerCmd::UpgradeSession {
+                                        session_id,
+                                        conn_count_to_keep,
+                                    } => {
+                                        buf.put_u8(1u8);
+                                        buf.put_u64(session_id.timestamp);
+                                        buf.put_u16(session_id.proxyee_port);
+                                        buf.put_u8(conn_count_to_keep);
                                     }
                                 };
                             }
@@ -312,6 +321,10 @@ where
         }
 
         Ok(())
+    }
+
+    fn shutdown(self) -> impl Future<Output = Result<(), std::io::Error>> + Send {
+        self.stream_write.close()
     }
 }
 

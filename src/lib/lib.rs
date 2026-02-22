@@ -1,10 +1,12 @@
 #![feature(trait_alias)]
+#![feature(get_mut_unchecked)]
 #![feature(assert_matches)]
 
+mod assignment;
 mod async_channel_ext;
 pub mod connect_target;
 pub mod future_ext;
-mod global_msg_manager;
+mod global_cmd_manager;
 pub mod handover;
 pub mod never;
 pub mod oneshot_with_ack;

@@ -1,8 +1,8 @@
 pub mod main_task;
-pub mod conn_manager;
-pub mod session_manager;
-pub mod server_connector;
-pub mod assignment;
 mod proxyee_io;
+pub mod server_connector;
+
+mod conn_host;
+mod session_host;
 
 pub use server_connector::ServerConnector;

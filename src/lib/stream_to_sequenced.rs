@@ -40,7 +40,7 @@ macro_rules! try_emit_evt {
 async fn stream_reading_loop(
     mut seq: u16,
     mut stream_to_read: impl AsyncRead + Unpin + Send + 'static,
-    mut evt_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Unpin,
+    mut evt_tx: impl Sink<Event> + Unpin,
     mut acked_rx: watch::Receiver<u64>,
     eof_acked_rx: oneshot::Receiver<()>,
     mut total_read: u64,
@@ -128,7 +128,7 @@ async fn stream_reading_loop(
 // Ok(()) otherwise, including when cmd/evt channels are broken
 pub async fn run(
     mut cmd_rx: impl Stream<Item = Command> + Unpin,
-    mut event_tx: impl Sink<Event, Error = impl std::fmt::Debug> + Unpin,
+    mut event_tx: impl Sink<Event> + Unpin,
     stream_to_read: impl AsyncRead + Unpin + Send + 'static,
     first_pack: Option<BytesMut>,
     config: Config,

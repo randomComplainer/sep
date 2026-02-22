@@ -1,16 +1,13 @@
+use futures::channel::mpsc;
 use futures::prelude::*;
 use thiserror::Error;
-use tracing::*;
+use tracing::Instrument as _;
 
-use super::{assignment, conn_manager, session_manager};
-use crate::client::ServerConnector;
-use crate::global_msg_manager;
+use super::{conn_host, session_host};
 use crate::prelude::*;
 use crate::protocol::msg::AtLeastOnce;
-use crate::protocol::msg::GlobalCmd;
 use crate::protocol::msg::ServerMsg;
-use crate::protocol::{ConnId, SessionId};
-use crate::protocol_conn_lifetime::WriteHandle;
+use crate::{assignment, global_cmd_manager};
 
 #[derive(Error, Debug)]
 pub enum ClientError {
@@ -28,127 +25,184 @@ pub struct Config {
     pub max_bytes_ahead: u32,
 }
 
-impl Into<session_manager::Config> for Config {
-    fn into(self) -> session_manager::Config {
-        session_manager::Config {
+impl Into<session_host::Config> for Config {
+    fn into(self) -> session_host::Config {
+        session_host::Config {
             max_packet_size: self.max_packet_size,
             max_bytes_ahead: self.max_bytes_ahead,
-            conn_per_session: self.conn_per_session,
-            max_connection: self.max_server_conn,
         }
     }
 }
 
-struct State<ServerConnector>
-where
-    ServerConnector: super::ServerConnector,
-{
+struct State<ServerConnector, SessionEvtTx, ConnEvtTx> {
     config: Config,
-    sessions_state: session_manager::State,
-    conns_state: conn_manager::State<ServerConnector>,
-    assignment_state: assignment::State,
-    global_message_handle: global_msg_manager::Handle<GlobalCmd, protocol::msg::ClientMsg>,
+    session_handle: session_host::Handle<SessionEvtTx>,
+    conn_handle: conn_host::Handle<ConnEvtTx, ServerConnector>,
+    global_cmd_handle: global_cmd_manager::Handle<protocol::msg::global_cmd::ClientCmd>,
+    assignment: assignment::State<protocol::msg::ClientMsg, protocol::msg::session::ServerMsg>,
+    attempting_conn_count: usize,
 }
 
-impl<ServerConnector> State<ServerConnector>
+impl<ServerConnector, SessionEvtTx, ConnEvtTx, ConnEvtTxErr>
+    State<ServerConnector, SessionEvtTx, ConnEvtTx>
 where
     ServerConnector: super::ServerConnector,
+    SessionEvtTx: Sink<session_host::Event> + Unpin + Send + Clone + 'static,
+    ConnEvtTx: Sink<conn_host::Event, Error = ConnEvtTxErr> + Unpin + Send + Clone + 'static,
+    ConnEvtTxErr: std::fmt::Debug + Send,
 {
-    // pub fn new(
-    //     config: Config,
-    //     sessions_state: session_manager::State,
-    //     conns_state: conn_manager::State<ServerConnector>,
-    // ) -> Self {
-    //     Self {
-    //         config,
-    //         sessions_state,
-    //         conns_state,
-    //     }
-    // }
-
-    pub async fn new_session(
-        &mut self,
-        session_id: SessionId,
-        agent: impl socks5::server_agent::Init,
-    ) {
-        self.sessions_state.new_session(session_id, agent).await;
-        let actions = self.assignment_state.new_session(session_id);
-        self.apply_assignment_actions(actions).await;
-    }
-
-    pub async fn server_msg_to_session(
-        &mut self,
-        session_id: SessionId,
-        server_msg: protocol::msg::session::ServerMsg,
-    ) {
-        self.sessions_state
-            .server_msg_to_session(session_id, server_msg)
-            .await;
-    }
-
-    pub async fn end_session(&mut self, session_id: SessionId) {
-        self.sessions_state.end_session(session_id).await;
-        self.assignment_state.session_ended_or_errored(session_id);
-    }
-
-    pub async fn expected_to_have_conns(&mut self, expected_conn_count: usize) {
-        self.conns_state
-            .set_expected_conn_count(expected_conn_count)
-            .await;
-    }
-
-    pub async fn connected(
-        &mut self,
-        conn_id: ConnId,
-        write_handle: WriteHandle<protocol::msg::ClientMsg>,
-    ) {
-        self.conns_state
-            .on_connected(conn_id, write_handle.clone())
-            .await;
-
-        self.global_message_handle
-            .new_conn(conn_id, write_handle.clone())
-            .await;
-
-        let actions = self.assignment_state.new_conn(conn_id, write_handle);
-        self.apply_assignment_actions(actions).await;
-    }
-
-    pub async fn connect_attempt_failed(&mut self) {
-        self.conns_state.on_connection_attempt_failed().await;
-    }
-
-    pub async fn conn_closed(&mut self, conn_id: ConnId) {
-        self.conns_state.on_connection_closed(conn_id).await;
-        let actions = self.assignment_state.close_conn(conn_id);
-        self.apply_assignment_actions(actions).await;
-    }
-
-    pub async fn conn_errored(&mut self, conn_id: ConnId) {
-        self.conns_state.on_connection_closed(conn_id).await;
-        let actions = self.assignment_state.purge_errored_conn(conn_id);
-        self.apply_assignment_actions(actions).await;
-    }
-
-    async fn apply_assignment_actions(&mut self, actions: Vec<assignment::Action>) {
-        for action in actions {
-            self.apply_assignment_action(action).await;
+    pub fn new(
+        config: Config,
+        session_handle: session_host::Handle<SessionEvtTx>,
+        conn_handle: conn_host::Handle<ConnEvtTx, ServerConnector>,
+        global_cmd_handle: global_cmd_manager::Handle<protocol::msg::global_cmd::ClientCmd>,
+    ) -> Self {
+        Self {
+            config,
+            session_handle,
+            conn_handle,
+            global_cmd_handle,
+            assignment: assignment::State::new(),
+            attempting_conn_count: 0,
         }
     }
 
-    async fn apply_assignment_action(&mut self, action: assignment::Action) {
-        match action {
-            assignment::Action::Assign(session_id, conn_id, write_handle) => {
-                self.sessions_state
-                    .assign_conn_to_session(session_id, conn_id, write_handle)
-                    .await;
+    pub async fn handle_new_proxyee(
+        &mut self,
+        session_id: SessionId,
+        proxyee: impl socks5::server_agent::Init,
+    ) {
+        let session_msg_tx = self.session_handle.new_session(session_id, proxyee).await;
+        self.assignment.on_new_session(session_id, session_msg_tx);
+    }
+
+    pub async fn handle_session_evt(&mut self, evt: session_host::Event) {
+        match evt {
+            session_host::Event::SessionEnded(session_id) => {
+                self.assignment.on_session_ended(&session_id);
             }
-            assignment::Action::Kill(session_id) => {
-                self.sessions_state.end_session(session_id).await;
-                self.global_message_handle
-                    .send_msg(GlobalCmd::KillSession(session_id))
-                    .await;
+            session_host::Event::ClientMsg(session_id, client_session_msg) => {
+                let actions = self.assignment.new_outgoing_session_msg(
+                    &session_id,
+                    protocol::msg::ClientMsg::SessionMsg(session_id, client_session_msg),
+                );
+
+                self.handle_assignment_actions(actions).await;
             }
+        };
+    }
+
+    pub async fn handle_conn_evt(&mut self, evt: conn_host::Event) {
+        match evt {
+            conn_host::Event::ServerConnected(conn_id) => {
+                self.attempting_conn_count -= 1;
+                self.assignment.on_conn_created(conn_id);
+            }
+            conn_host::Event::ClientMsgSenderReady(conn_id, sender) => {
+                self.assignment.conn_ready_to_send(&conn_id, sender);
+            }
+            conn_host::Event::ConnectionAttemptFailed => {
+                self.attempting_conn_count -= 1;
+                self.match_expected_conn_count().await;
+            }
+            conn_host::Event::ConnectionErrored(conn_id) => {
+                let actions = self.assignment.on_conn_errored(&conn_id);
+                self.handle_assignment_actions(actions).await;
+            }
+            conn_host::Event::ConnectionEnded(conn_id) => {
+                self.assignment.on_conn_closed(&conn_id);
+                self.match_expected_conn_count().await;
+            }
+            conn_host::Event::ServerMsg(conn_id, server_msg) => {
+                match server_msg {
+                    ServerMsg::SessionMsg(session_id, server_msg) => {
+                        self.assignment
+                            .on_msg_to_session(&conn_id, &session_id, server_msg)
+                            .await;
+                    }
+                    ServerMsg::GlobalCmd(at_least_once) => {
+                        match at_least_once {
+                            AtLeastOnce::Ack(seq) => {
+                                self.global_cmd_handle.ack(seq).await;
+                            }
+                            AtLeastOnce::Msg(seq, msg) => {
+                                self.assignment.new_outgoing_global_msg(
+                                    protocol::msg::ClientMsg::GlobalCmd(
+                                        protocol::msg::AtLeastOnce::Ack(seq),
+                                    ),
+                                );
+
+                                match msg {
+                                    protocol::msg::global_cmd::ServerCmd::KillSession(
+                                        session_id,
+                                    ) => {
+                                        self.assignment.on_session_ended(&session_id);
+                                    }
+                                    protocol::msg::global_cmd::ServerCmd::UpgradeSession {
+                                        session_id,
+                                        conn_count_to_keep,
+                                    } => {
+                                        self.assignment.upgrade_session(
+                                            &session_id,
+                                            conn_count_to_keep as usize,
+                                        );
+                                        self.match_expected_conn_count().await;
+                                    }
+                                };
+                            }
+                        };
+                    }
+                };
+            }
+        };
+    }
+
+    pub fn handle_global_cmd_event(
+        &mut self,
+        evt: global_cmd_manager::Event<protocol::msg::global_cmd::ClientCmd>,
+    ) {
+        match evt {
+            global_cmd_manager::Event::Send(at_least_once) => {
+                self.assignment
+                    .new_outgoing_global_msg(at_least_once.into());
+            }
+        };
+    }
+
+    async fn handle_assignment_actions(
+        &mut self,
+        actions: impl IntoIterator<Item = assignment::Action>,
+    ) {
+        for action in actions.into_iter() {
+            match action {
+                assignment::Action::UpgradeSession {
+                    session_id: _,
+                    conn_count_to_keep: _,
+                } => {
+                    // nothing to do as client
+                }
+                assignment::Action::KillSession(session_id) => {
+                    self.global_cmd_handle
+                        .queue(protocol::msg::global_cmd::ClientCmd::KillSession(
+                            session_id,
+                        ))
+                        .await;
+                }
+            };
+        }
+
+        self.match_expected_conn_count().await;
+    }
+
+    async fn match_expected_conn_count(&mut self) {
+        while (self.attempting_conn_count + self.assignment.conn_count())
+            < std::cmp::min(
+                self.config.max_server_conn,
+                self.assignment.max_conn_count_to_keep_for_session,
+            )
+        {
+            self.conn_handle.create_connection().await;
+            self.attempting_conn_count += 1;
         }
     }
 }
@@ -162,31 +216,35 @@ pub async fn run<TServerConnector>(
     config: Config,
 ) -> std::io::Result<()>
 where
-    TServerConnector: ServerConnector + Send,
+    TServerConnector: super::ServerConnector + Send,
 {
-    let (sessions_evt_tx, mut sessions_evt_rx) = futures::channel::mpsc::unbounded();
-    let (sessions_state, sessions_task) =
-        session_manager::State::new(config.into(), sessions_evt_tx);
+    let (session_evt_tx, mut session_evt_rx) = mpsc::unbounded::<session_host::Event>();
+    let (session_host_fut, session_handle) = session_host::create(config.into(), session_evt_tx);
 
-    let (conns_evt_tx, mut conns_evt_rx) = futures::channel::mpsc::unbounded();
-    let (conns_state, conns_task) = conn_manager::State::new(connect_to_server, conns_evt_tx);
+    let (conn_evt_tx, mut conn_evt_rx) = mpsc::unbounded::<conn_host::Event>();
+    let (conn_host_fut, conn_handle) = conn_host::create(conn_evt_tx, connect_to_server);
 
-    let assignment_state = assignment::State::new(config.conn_per_session);
+    let (global_cmd_evt_tx, mut global_cmd_evt_rx) = mpsc::unbounded();
+    let (global_cmd_fut, global_cmd_handle) = global_cmd_manager::run(global_cmd_evt_tx);
 
-    let (global_message_task, global_message_handle) = global_msg_manager::run();
-
-    let mut state = State {
-        config,
-        sessions_state,
-        conns_state,
-        assignment_state,
-        global_message_handle,
-    };
+    let mut state = State::new(config, session_handle, conn_handle, global_cmd_handle);
 
     let main_loop = async move {
         loop {
             tokio::select! {
-                session_evt = sessions_evt_rx.next() => {
+                proxyee = new_proxyee_rx.next() => {
+                    let (session_id, proxyee ) = match proxyee {
+                        Some(x) => x,
+                        None => {
+                            tracing::warn!("new_proxyee_rx is broken, exiting");
+                            return;
+                        },
+                    };
+
+                    state.handle_new_proxyee(session_id, proxyee).await;
+                },
+
+                session_evt = session_evt_rx.next() => {
                     let session_evt = match session_evt {
                         Some(session_evt) => session_evt,
                         None => {
@@ -195,31 +253,10 @@ where
                         }
                     };
 
-                    match session_evt {
-                        session_manager::Event::SessionEnded(session_id)=>{
-                            state.end_session(session_id).await;
-                        }
-                        session_manager::Event::ExpectedToHaveConns(n) => {
-                            state.expected_to_have_conns(n).await;
-                        },
-                        session_manager::Event::SessionErrored(session_id) => {
-                            state.end_session(session_id).await;
-                            state.global_message_handle.send_msg(GlobalCmd::KillSession(session_id)).await;
-                        },
-                    };
-                },
-                new_session = new_proxyee_rx.next() => {
-                    let new_session = match new_session {
-                        Some(new_session) => new_session,
-                        None => {
-                            tracing::warn!("new_proxyee_rx is broken, exiting");
-                            return;
-                        }
-                    };
-                    state.new_session(new_session.0, new_session.1).await;
+                    state.handle_session_evt(session_evt).await;
                 },
 
-                conn_evt = conns_evt_rx.next() => {
+                conn_evt = conn_evt_rx.next() => {
                     let conn_evt = match conn_evt {
                         Some(conn_evt) => conn_evt,
                         None => {
@@ -228,64 +265,35 @@ where
                         }
                     };
 
-                    match conn_evt {
-                        conn_manager::Event::Connected(conn_id, write_handle) =>
-                            state.connected(conn_id, write_handle).await,
-                        conn_manager::Event::ConnectAttemptFailed => {
-                            state.connect_attempt_failed().await;
+                    state.handle_conn_evt(conn_evt).await;
+                },
+
+                global_cmd_evt = global_cmd_evt_rx.next() => {
+                    let global_cmd_evt = match global_cmd_evt {
+                        Some(global_cmd_evt) => global_cmd_evt,
+                        None => {
+                            tracing::warn!("global_cmd_evt_rx is broken, exiting");
+                            return;
                         }
-                        conn_manager::Event::ServerMsg(server_msg) => {
-                            match server_msg {
-                                ServerMsg::SessionMsg(session_id, server_msg) =>
-                                    state.server_msg_to_session(session_id, server_msg).await,
-
-                                ServerMsg::GlobalCmd(global_cmd) => {
-                                    match global_cmd {
-                                        AtLeastOnce::Ack(ack) =>
-                                            state.global_message_handle.recv_ack(ack).await,
-                                        AtLeastOnce::Msg(seq, cmd) => {
-                                            state.global_message_handle.send_ack(seq).await;
-                                            tracing::debug!(?cmd, "global cmd from server");
-                                            match cmd {
-                                                GlobalCmd::KillSession(session_id) =>
-                                                    state.end_session(session_id).await,
-                                            };
-                                        },
-                                    };
-                                }
-                            };
-                        },
-                        conn_manager::Event::Closed(conn_id) => {
-                            state.conn_closed(conn_id).await;
-
-                            if state.conns_state.active_conn_count() == 0  &&
-                                state.sessions_state.active_session_count() == 0
-                            {
-                                tracing::info!("all conns & sessions ended, exiting");
-                                return;
-                            }
-                        },
-                        conn_manager::Event::Errored(conn_id) => {
-                            state.conn_errored(conn_id).await;
-                        },
                     };
-                }
+
+                    state.handle_global_cmd_event(global_cmd_evt);
+                },
             }
         }
     };
 
     tokio::try_join! {
-        sessions_task
-            .map(|x| Ok(x.unwrap_never()))
-            .instrument(tracing::trace_span!("session manager")),
-        conns_task
-            .map(|x| Ok(x.unwrap_never()))
-            .instrument(tracing::trace_span!("conn manager")),
-        global_message_task
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "failed sending global msg"))
-            .instrument(tracing::trace_span!("global message manager")),
-        main_loop
-            .map(|_| Ok::<_, std::io::Error>(())) ,
+        session_host_fut
+            .map(|_| Ok::<_, std::io::Error>(()))
+            .instrument(tracing::trace_span!("session host")),
+        conn_host_fut
+            .map(|_| Ok(()))
+            .instrument(tracing::trace_span!("conn host")),
+        global_cmd_fut
+            .instrument(tracing::trace_span!("global cmd")),
+        main_loop.map(|_| Ok(()))
+            .instrument(tracing::trace_span!("main loop")),
     }
     .map(|_| ())
 }
