@@ -282,11 +282,14 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
         for session_id in conn.assigned_sessions.iter() {
             // remove session from session list &
             // remove session from assigned connections
-            if let Some(session) = self.sessions.remove(session_id) {
-                for assigned_conn_id in session.assigned_conns.iter() {
-                    let assigned_conn = self.conns.get_mut(assigned_conn_id).unwrap();
-                    assert!(assigned_conn.assigned_sessions.remove(session_id));
-                }
+            let session = self.sessions.remove(session_id).unwrap();
+            for assigned_conn_id in session
+                .assigned_conns
+                .iter()
+                .filter(|assigned_conn_id| !assigned_conn_id.eq(&conn_id))
+            {
+                let assigned_conn = self.conns.get_mut(assigned_conn_id).unwrap();
+                assert!(assigned_conn.assigned_sessions.remove(session_id));
             }
         }
 
