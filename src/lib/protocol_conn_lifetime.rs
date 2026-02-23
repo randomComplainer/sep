@@ -112,6 +112,13 @@ where
             close_signal = close_rx.receive() => {
                 match close_signal {
                     Ok(_) => {
+                        // in case of both close_single and message is sent
+                        // and tokio::select happens to select the branch
+                        send_one_rx.close();
+                        if let Ok(msg) = send_one_rx.try_recv() {
+                            write_msg!(msg.into());
+                            drop(ping_timer);
+                        }
                         shutdown!();
                     },
                     Err(_) => {
