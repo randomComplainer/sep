@@ -70,7 +70,7 @@ where
             loop {
                 tokio::select! {
                     _ = &mut timeout => {
-                        if retry_count >= 5 {
+                        if retry_count >= 8 {
                             tracing::error!(?seq, ?msg, "timeout waiting for command's ack");
                             return Err(std::io::Error::new(
                                     std::io::ErrorKind::TimedOut,

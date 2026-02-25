@@ -1,7 +1,8 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use futures::channel::mpsc;
 use futures::prelude::*;
+use rapidhash::fast::{RapidHashMap as HashMap, RapidHashSet as HashSet};
 use tokio::sync::oneshot;
 
 use crate::prelude::*;
