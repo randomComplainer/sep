@@ -110,13 +110,21 @@ impl ConnectTarget for ConnectTargetWithDnsCache {
         >,
     > + Send {
         async move {
-            // TODO: DNS cache
             let addrs = self.resolve_addrs(addr, port).await.map_err(|_| {
                 std::io::Error::new(std::io::ErrorKind::Other, "failed to resolve domain")
             })?;
 
             for addr in addrs.as_ref() {
-                match tokio::net::TcpStream::connect(&addr).await {
+                let socket = match addr {
+                    std::net::SocketAddr::V4(_) => tokio::net::TcpSocket::new_v4()?,
+                    std::net::SocketAddr::V6(_) => tokio::net::TcpSocket::new_v6()?,
+                };
+
+                if let Err(_) = socket.set_nodelay(true) {
+                    continue;
+                };
+
+                match socket.connect(addr.clone()).await {
                     Ok(stream) => {
                         let addr = stream.local_addr()?;
                         return Ok((stream, addr));
