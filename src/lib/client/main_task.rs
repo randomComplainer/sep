@@ -21,7 +21,6 @@ pub enum ClientError {
 pub struct Config {
     pub max_packet_size: u16,
     pub max_server_conn: usize,
-    pub conn_per_session: usize,
     pub max_bytes_ahead: u32,
 }
 
