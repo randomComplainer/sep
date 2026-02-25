@@ -6,22 +6,25 @@ use tokio::sync::oneshot;
 
 use crate::prelude::*;
 
-struct SessionEntry<IncomingMsg> {
+struct SessionEntry<OutgoingMsg, IncomingMsg> {
     assigned_conns: HashSet<ConnId>,
     incomming_msg_tx: mpsc::UnboundedSender<IncomingMsg>,
     conn_count_to_keep: usize,
+    outgoing_msg_queue: VecDeque<(u64, OutgoingMsg)>,
 }
 
 struct ConnEntry<OutgoingMsg> {
     assigned_sessions: HashSet<SessionId>,
-    outgoing_msg_tx: Option<oneshot::Sender<OutgoingMsg>>,
+    outgoing_msg_tx: Option<(u64, oneshot::Sender<OutgoingMsg>)>,
 }
 
 pub struct State<OutgoingMsg, IncomingMsg> {
-    sessions: HashMap<SessionId, SessionEntry<IncomingMsg>>,
+    session_msg_seq: u64,
+    conn_msg_sender_seq: u64,
+    sessions: HashMap<SessionId, SessionEntry<OutgoingMsg, IncomingMsg>>,
     conns: HashMap<ConnId, ConnEntry<OutgoingMsg>>,
     conns_by_num_of_assignment: Vec<ConnId>, // keep sorted
-    outgoing_queue: VecDeque<(Option<SessionId>, OutgoingMsg)>, // None session id for global msg
+    global_outgoing_queue: VecDeque<OutgoingMsg>, // None session id for global msg
     pub max_conn_count_to_keep_for_session: usize,
 }
 
@@ -37,10 +40,12 @@ pub enum Action {
 impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
     pub fn new() -> Self {
         Self {
+            session_msg_seq: 0,
+            conn_msg_sender_seq: 0,
             sessions: Default::default(),
             conns: Default::default(),
             conns_by_num_of_assignment: Default::default(),
-            outgoing_queue: Default::default(),
+            global_outgoing_queue: Default::default(),
             max_conn_count_to_keep_for_session: 0,
         }
     }
@@ -60,20 +65,42 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
         };
 
         // try sending via an assigned connection that is available right now first
-        // TODO: distribute workload to connections more evenly
-        for conn_id in session.assigned_conns.iter() {
-            let conn = self.conns.get_mut(conn_id).unwrap();
-            match conn.outgoing_msg_tx.take() {
-                Some(msg_tx) => {
-                    match msg_tx.send(msg) {
-                        Ok(_) => return Default::default(),
-                        Err(rejected) => {
-                            msg = rejected;
-                            continue;
-                        }
+        loop {
+            let conn_opt = session
+                .assigned_conns
+                .iter()
+                .fold(None, |r: Option<(ConnId, u64)>, conn_id| {
+                    let conn_sender_seq = match self.conns.get(conn_id).unwrap().outgoing_msg_tx {
+                        Some((x, _)) => x,
+                        None => return r,
                     };
+
+                    match &r {
+                        Some((_, r_seq)) => {
+                            if conn_sender_seq.lt(r_seq) {
+                                Some((*conn_id, conn_sender_seq))
+                            } else {
+                                r
+                            }
+                        }
+                        None => Some((*conn_id, conn_sender_seq)),
+                    }
+                })
+                .map(|(conn_id, _)| conn_id);
+
+            let conn_id = match conn_opt {
+                Some(x) => x,
+                None => break,
+            };
+
+            let conn = self.conns.get_mut(&conn_id).unwrap();
+            let msg_tx = conn.outgoing_msg_tx.take().unwrap().1;
+            match msg_tx.send(msg) {
+                Ok(_) => return Default::default(),
+                Err(rejected) => {
+                    msg = rejected;
+                    continue;
                 }
-                None => continue,
             };
         }
 
@@ -87,7 +114,7 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
                 let conn = self.conns.get_mut(conn_id).unwrap();
 
                 let msg_tx = match conn.outgoing_msg_tx.take() {
-                    Some(x) => x,
+                    Some(x) => x.1,
                     None => continue,
                 };
 
@@ -114,9 +141,12 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
 
         // no connection available, queue the message
         // and requet new connection if conn_count_to_keep is already fulfilled
-        self.outgoing_queue.push_back((Some(*session_id), msg));
+        session
+            .outgoing_msg_queue
+            .push_back((self.session_msg_seq, msg));
+        self.session_msg_seq += 1;
         if session.conn_count_to_keep <= session.assigned_conns.len() {
-            session.conn_count_to_keep += 2;
+            session.conn_count_to_keep += 4;
             self.max_conn_count_to_keep_for_session = std::cmp::max(
                 self.max_conn_count_to_keep_for_session,
                 session.conn_count_to_keep,
@@ -134,7 +164,7 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
         for conn_id in self.conns_by_num_of_assignment.iter() {
             let conn = self.conns.get_mut(conn_id).unwrap();
             let sender = match conn.outgoing_msg_tx.take() {
-                Some(sender) => sender,
+                Some(x) => x.1,
                 None => continue,
             };
 
@@ -146,7 +176,7 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
             }
         }
 
-        self.outgoing_queue.push_front((None, msg));
+        self.global_outgoing_queue.push_front(msg);
 
         return Default::default();
     }
@@ -164,59 +194,108 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
             }
         };
 
-        // send queued msg that
-        // - is global message or
-        // - is from sessions the connection is assigned to
-        // first
-        // TODO: remove/insert msg is O(msg_count_in_queue)
-        if let Some((idx, session_id, msg)) = self
-            .outgoing_queue
-            .iter()
-            .position(|(session_id_opt, _)| {
-                session_id_opt
-                    .map(|session_id| conn.assigned_sessions.contains(&session_id))
-                    .unwrap_or(true)
-            })
-            .map(|idx| {
-                let (session_id, msg) = self.outgoing_queue.remove(idx).unwrap();
-                (idx, session_id, msg)
-            })
-        {
+        // send global msg first
+        if let Some(msg) = self.global_outgoing_queue.pop_front() {
             if let Err(rejected) = conn_msg_tx.send(msg) {
                 tracing::warn!(?conn_id, "failed to send message to conn");
-                self.outgoing_queue.insert(idx, (session_id, rejected));
+                self.global_outgoing_queue.push_front(rejected);
             }
 
             return;
         }
 
-        // send the first msg in queue
-        if let Some((session_id_opt, msg)) = self.outgoing_queue.pop_front() {
+        // send msg from assigned sessions
+        if let Some((session_id, _)) =
+            conn.assigned_sessions
+                .iter()
+                .fold(None, |r: Option<(SessionId, u64)>, session_id| {
+                    let session_msg_seq = match self
+                        .sessions
+                        .get(session_id)
+                        .unwrap()
+                        .outgoing_msg_queue
+                        .get(0)
+                        .map(|x| x.0)
+                    {
+                        Some(x) => x,
+                        None => return r,
+                    };
+
+                    match &r {
+                        Some((_, r_session_id)) => {
+                            if session_msg_seq.lt(r_session_id) {
+                                Some((*session_id, session_msg_seq))
+                            } else {
+                                r
+                            }
+                        }
+                        None => Some((*session_id, session_msg_seq)),
+                    }
+                })
+        {
+            let session = self.sessions.get_mut(&session_id).unwrap();
+
+            let (seq, msg) = session.outgoing_msg_queue.pop_front().unwrap();
+
             if let Err(rejected) = conn_msg_tx.send(msg) {
                 tracing::warn!(?conn_id, "failed to send message to conn");
-                self.outgoing_queue.push_front((session_id_opt, rejected));
-                // return here to avoid assignment of this broken conn
+                session.outgoing_msg_queue.push_front((seq, rejected));
+            }
+
+            return;
+        }
+
+        // send any queued msg from any session
+        if let Some((session_id, _)) = self.sessions.iter().fold(
+            None,
+            |r: Option<(SessionId, u64)>, (session_id, session)| {
+                if conn.assigned_sessions.contains(session_id) {
+                    return r;
+                }
+
+                let session_msg_seq = match session.outgoing_msg_queue.get(0).map(|x| x.0) {
+                    Some(x) => x,
+                    None => return r,
+                };
+
+                match &r {
+                    Some((_, r_session_id)) => {
+                        if session_msg_seq.lt(r_session_id) {
+                            Some((*session_id, session_msg_seq))
+                        } else {
+                            r
+                        }
+                    }
+                    None => Some((*session_id, session_msg_seq)),
+                }
+            },
+        ) {
+            let session = self.sessions.get_mut(&session_id).unwrap();
+
+            let (seq, msg) = session.outgoing_msg_queue.pop_front().unwrap();
+
+            if let Err(rejected) = conn_msg_tx.send(msg) {
+                tracing::warn!(?conn_id, "failed to send message to conn");
+                session.outgoing_msg_queue.push_front((seq, rejected));
                 return;
             }
 
-            // and assign the connection to it,
-            // if that's a session msg of a session
-            if let Some((session_id, session)) = session_id_opt.and_then(|session_id| {
-                self.sessions
-                    .get_mut(&session_id)
-                    .map(|session| (session_id, session))
-            }) {
-                assert!(session.assigned_conns.insert(*conn_id));
-                assert!(conn.assigned_sessions.insert(session_id));
+            // and assign the connection to it
+            assert!(session.assigned_conns.insert(*conn_id));
+            assert!(conn.assigned_sessions.insert(session_id));
 
-                self.sort_conns();
-            };
+            self.sort_conns();
 
             return;
         }
 
         // no message to send at the moment, store the msg sender
-        assert!(conn.outgoing_msg_tx.replace(conn_msg_tx).is_none());
+        assert!(
+            conn.outgoing_msg_tx
+                .replace((self.conn_msg_sender_seq, conn_msg_tx))
+                .is_none()
+        );
+        self.conn_msg_sender_seq += 1;
     }
 
     pub fn on_conn_created(&mut self, conn_id: ConnId) {
@@ -272,13 +351,6 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
                 .unwrap(),
         );
 
-        self.outgoing_queue.retain(|(session_id_opt, _)| {
-            session_id_opt
-                .as_ref()
-                .map(|msg_session_id| !conn.assigned_sessions.contains(&msg_session_id))
-                .unwrap_or(true)
-        });
-
         for session_id in conn.assigned_sessions.iter() {
             // remove session from session list &
             // remove session from assigned connections
@@ -313,6 +385,7 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
                 assigned_conns: Default::default(),
                 incomming_msg_tx: session_incomming_msg_tx,
                 conn_count_to_keep: 2,
+                outgoing_msg_queue: Default::default(),
             }
             .into(),
         );
