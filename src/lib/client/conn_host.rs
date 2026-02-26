@@ -75,39 +75,40 @@ where
                 }
             };
 
-            if let Err(_) = evt_tx.send(Event::ServerConnected(conn_id)).await {
-                tracing::warn!("event_tx is broken, exiting");
-                return;
+            async move {
+                if let Err(_) = evt_tx.send(Event::ServerConnected(conn_id)).await {
+                    tracing::warn!("event_tx is broken, exiting");
+                    return;
+                }
+
+                let (lifetime_task, _gentle_close_sender) = crate::protocol_conn_lifetime::run(
+                    Default::default(),
+                    conn_read,
+                    conn_write,
+                    evt_tx
+                        .clone()
+                        .with_sync(move |server_msg| Event::ServerMsg(conn_id, server_msg)),
+                    evt_tx
+                        .clone()
+                        .with_sync(move |sender| Event::ClientMsgSenderReady(conn_id, sender)),
+                );
+
+                match lifetime_task.await {
+                    Ok(_) => {
+                        if let Err(_) = evt_tx.send(Event::ConnectionEnded(conn_id)).await {
+                            tracing::warn!("event_tx is broken");
+                        }
+                    }
+                    Err(err) => {
+                        tracing::error!(?err, "connection error");
+                        if let Err(_) = evt_tx.send(Event::ConnectionErrored(conn_id)).await {
+                            tracing::warn!("connected_tx is broken");
+                        }
+                    }
+                };
             }
-
-            let (lifetime_task, _gentle_close_sender) = crate::protocol_conn_lifetime::run(
-                Default::default(),
-                conn_read,
-                conn_write,
-                evt_tx
-                    .clone()
-                    .with_sync(move |server_msg| Event::ServerMsg(conn_id, server_msg)),
-                evt_tx
-                    .clone()
-                    .with_sync(move |sender| Event::ClientMsgSenderReady(conn_id, sender)),
-            );
-
-            match lifetime_task
-                .instrument(tracing::trace_span!("conn lifetime", ?conn_id))
-                .await
-            {
-                Ok(_) => {
-                    if let Err(_) = evt_tx.send(Event::ConnectionEnded(conn_id)).await {
-                        tracing::warn!("event_tx is broken");
-                    }
-                }
-                Err(err) => {
-                    tracing::error!(?err, "connection error");
-                    if let Err(_) = evt_tx.send(Event::ConnectionErrored(conn_id)).await {
-                        tracing::warn!("connected_tx is broken");
-                    }
-                }
-            };
+            .instrument(tracing::trace_span!("conn lifetime", ?conn_id))
+            .await
         };
 
         self.scope_handle.run_async(task.map(|_| Ok(()))).await;
