@@ -20,7 +20,7 @@ pub mod server_agent;
 
 // TODO: magic numbers, IDK, maybe do some benchmark to find out
 pub const DATA_BUFF_SIZE: u16 = u16::MAX / 2; // 32 KB
-pub const MAX_BYTES_AHEAD: u32 = 1024 * 1024; // 1 MB
+pub const MAX_BYTES_AHEAD: u32 = 1024 * 1024 * 2; // 2 MB
 const RAND_BYTE_LEN_MAX: usize = 1024;
 
 pub type Key = [u8; 32];
