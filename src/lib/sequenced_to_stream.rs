@@ -1,5 +1,6 @@
 use derive_more::From;
-use futures::prelude::*;
+use futures::channel::mpsc;
+use futures::{SinkExt, StreamExt, prelude::*};
 use tokio::io::{AsyncWrite, AsyncWriteExt as _};
 use tracing::Instrument as _;
 
@@ -30,6 +31,7 @@ struct State<Stream, EvtTx> {
     buffed_bytes: u32,
     buffed_entries: std::collections::BinaryHeap<std::cmp::Reverse<StreamEntry>>,
     stream_to_write: Stream,
+    ack_tx: mpsc::UnboundedSender<u32>,
     evt_tx: EvtTx,
 }
 
@@ -38,7 +40,7 @@ macro_rules! try_emit_evt {
         tracing::debug!(?$evt, "event");
         if let Err(_) = $evt_tx.send($evt).await {
             tracing::warn!("event channel is broken, exiting");
-            return Ok(None);
+            return Ok(Default::default());
         }
     };
 }
@@ -48,7 +50,12 @@ where
     Stream: AsyncWrite + Unpin + Send + 'static,
     EvtTx: Sink<Event> + Unpin + Send + 'static,
 {
-    pub fn new(config: Config, stream_to_write: Stream, evt_tx: EvtTx) -> Self {
+    pub fn new(
+        config: Config,
+        stream_to_write: Stream,
+        ack_tx: mpsc::UnboundedSender<u32>,
+        evt_tx: EvtTx,
+    ) -> Self {
         let estimated_buffered_packets =
             (config.max_bytes_ahead as usize / config.max_packet_size as usize) + 1;
 
@@ -58,6 +65,7 @@ where
             buffed_bytes: 0,
             buffed_entries: std::collections::BinaryHeap::with_capacity(estimated_buffered_packets),
             stream_to_write,
+            ack_tx,
             evt_tx,
         }
     }
@@ -83,7 +91,6 @@ where
             }
         };
 
-        let mut bytes_written = 0u32;
         while self
             .buffed_entries
             .peek()
@@ -104,20 +111,12 @@ where
                         .inspect_err(|err| tracing::error!(?err, "stream write error"))?;
 
                     self.buffed_bytes -= len as u32;
-                    bytes_written += len as u32;
+                    let _ = self.ack_tx.send(len as u32).await;
                 }
                 StreamEntryValue::Eof => {
                     assert_eq!(0, self.buffed_bytes);
                     assert_eq!(0, self.buffed_entries.len());
-
-                    if bytes_written > 0 {
-                        let evt = msg::Ack {
-                            bytes: bytes_written as u32,
-                        }
-                        .into();
-
-                        try_emit_evt!(self.evt_tx, evt);
-                    }
+                    drop(self.ack_tx);
 
                     let evt = msg::EofAck.into();
                     try_emit_evt!(self.evt_tx, evt);
@@ -128,39 +127,91 @@ where
             self.next_seq += 1;
         }
 
-        if bytes_written > 0 {
-            let evt = msg::Ack {
-                bytes: bytes_written as u32,
-            }
-            .into();
-            try_emit_evt!(self.evt_tx, evt);
-        }
-
         Ok(Some(self))
+    }
+}
+
+async fn ack_loop(
+    mut ack_rx: mpsc::UnboundedReceiver<u32>,
+    mut evt_tx: impl Sink<Event> + Unpin + Send + 'static,
+) -> std::io::Result<()> {
+    const MAX_DELAY: std::time::Duration = std::time::Duration::from_millis(4);
+
+    loop {
+        let mut acc: u32 = 0;
+
+        let ack = match ack_rx.next().await {
+            Some(x) => x,
+            None => return Ok(()),
+        };
+
+        acc += ack;
+
+        let mut timer = std::pin::pin!(tokio::time::sleep(MAX_DELAY));
+
+        loop {
+            tokio::select! {
+                ack_opt = ack_rx.next() => {
+                    match ack_opt {
+                        Some(ack) => {
+                            acc += ack;
+                            continue;
+                        },
+                        None => {
+                            let evt = msg::Ack {
+                                bytes: acc,
+                            }.into();
+
+                            try_emit_evt!(evt_tx, evt);
+                            return Ok(());
+                        },
+                    }
+                },
+
+                _ = &mut timer => {
+                    let evt = msg::Ack {
+                        bytes: acc,
+                    }.into();
+
+                    try_emit_evt!(evt_tx, evt);
+                    break;
+                }
+            };
+        }
     }
 }
 
 pub async fn run(
     mut cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
-    evt_tx: impl Sink<Event> + Unpin + Send + 'static,
+    evt_tx: impl Sink<Event> + Unpin + Send + Clone + 'static,
     stream_to_write: impl AsyncWrite + Unpin + Send + 'static,
     config: Config,
 ) -> Result<(), std::io::Error> {
-    let mut state = State::new(config, stream_to_write, evt_tx);
+    let (ack_tx, ack_rx) = mpsc::unbounded();
+    let ack_fut = ack_loop(ack_rx, evt_tx.clone());
+    let mut state = State::new(config, stream_to_write, ack_tx, evt_tx);
 
-    while let Some(cmd) = cmd_rx
-        .next()
-        .instrument(tracing::trace_span!("recv cmd"))
-        .await
-    {
-        tracing::debug!(cmd = ?cmd, "cmd");
-        state = match state.handle_command(cmd).await? {
-            Some(new_state) => new_state,
-            None => break,
+    let cmd_fut = async move {
+        while let Some(cmd) = cmd_rx
+            .next()
+            .instrument(tracing::trace_span!("recv cmd"))
+            .await
+        {
+            tracing::debug!(cmd = ?cmd, "cmd");
+            state = match state.handle_command(cmd).await? {
+                Some(new_state) => new_state,
+                None => break,
+            }
         }
-    }
 
-    Ok(())
+        Ok::<(), std::io::Error>(())
+    };
+
+    tokio::try_join! {
+        ack_fut,
+        cmd_fut,
+    }
+    .map(|_| ())
 }
 
 #[cfg(test)]
