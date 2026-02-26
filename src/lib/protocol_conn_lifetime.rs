@@ -74,20 +74,20 @@ where
 
     if let Err(_) = msg_sender_tx.send(send_one_tx).await {
         tracing::error!("all writehandle dropped, exiting");
-        shutdown!();
+        return Ok(());
     }
 
     loop {
         tokio::select! {
-            write_one = send_one_rx.as_mut() => {
-                let msg = match write_one  {
+            msg_opt = send_one_rx.as_mut() => {
+                let msg = match msg_opt  {
                     Ok(x) => x,
                     Err(_) => {
                         let (send_one_tx, new_send_one_rx) = tokio::sync::oneshot::channel();
                         send_one_rx = Box::pin(new_send_one_rx);
                         if let Err(_) = msg_sender_tx.send(send_one_tx).await {
                             tracing::error!("all writehandle dropped");
-                            shutdown!();
+                            return Ok(());
                         }
                         continue;
                     }
@@ -99,7 +99,7 @@ where
 
                 if let Err(_) = msg_sender_tx.send(new_wirte_one_tx).await {
                     tracing::error!("sender_tx is broken, exiting");
-                    shutdown!();
+                    return Ok(());
                 }
 
                 send_one_rx = Box::pin(new_write_one_rx);
@@ -112,8 +112,8 @@ where
             close_signal = close_rx.receive() => {
                 match close_signal {
                     Ok(_) => {
-                        // in case of both close_single and message is sent
-                        // and tokio::select happens to select the branch
+                        // in case of both close_single and a message is sent
+                        // and tokio::select happens to pick this branch
                         send_one_rx.close();
                         if let Ok(msg) = send_one_rx.try_recv() {
                             write_msg!(msg.into());

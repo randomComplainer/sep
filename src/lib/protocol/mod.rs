@@ -20,7 +20,9 @@ pub mod server_agent;
 
 // TODO: magic numbers, IDK, maybe do some benchmark to find out
 pub const DATA_BUFF_SIZE: u16 = u16::MAX / 2; // 32 KB
-pub const MAX_BYTES_AHEAD: u32 = 1024 * 1024 * 3; // 3 MB
+// TODO: should be a multiplier to assigned connection count?
+// need to limit in memory buffed data per stream as well
+pub const MAX_BYTES_AHEAD: u32 = 1024 * 1024 * 6; // 6 MB
 const RAND_BYTE_LEN_MAX: usize = 1024;
 
 pub type Key = [u8; 32];

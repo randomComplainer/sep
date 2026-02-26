@@ -67,7 +67,7 @@ where
             );
 
             let duration = std::time::Duration::from_secs(10).add(std::time::Duration::from_mins(
-                rand::rng().random_range(..=10u64),
+                rand::rng().random_range(..=8u64),
             ));
 
             // let duration = std::time::Duration::from_secs(5).add(std::time::Duration::from_secs(
