@@ -2,6 +2,7 @@ use futures::channel::mpsc;
 use futures::prelude::*;
 use tracing::Instrument as _;
 
+use super::target_io;
 use super::{conn_host, session_host};
 use crate::handover;
 use crate::prelude::*;
@@ -12,7 +13,7 @@ use crate::{assignment, global_cmd_manager};
 #[derive(Debug, Clone, Copy)]
 pub struct Config<TConnectTarget> {
     pub max_packet_size: u16,
-    pub max_bytes_ahead: u32,
+    pub max_bytes_ahead_per_conn: u32,
     pub connect_target: TConnectTarget,
 }
 
@@ -20,7 +21,7 @@ impl<TConnectTarget> Into<session_host::Config<TConnectTarget>> for Config<TConn
     fn into(self) -> session_host::Config<TConnectTarget> {
         session_host::Config {
             max_packet_size: self.max_packet_size,
-            max_bytes_ahead: self.max_bytes_ahead,
+            max_bytes_ahead: self.max_bytes_ahead_per_conn * 2,
             connect_target: self.connect_target,
         }
     }
@@ -31,7 +32,7 @@ struct State<TConnectTarget, SessionEvtTx, ConnEvtTx> {
     session_handle: session_host::Handle<SessionEvtTx, TConnectTarget>,
     conn_handle: conn_host::Handle<ConnEvtTx>,
     global_cmd_handle: global_cmd_manager::Handle<protocol::msg::global_cmd::ServerCmd>,
-    assignment: assignment::State<protocol::msg::ServerMsg, protocol::msg::session::ClientMsg>,
+    assignment: assignment::State<protocol::msg::ServerMsg, target_io::Cmd>,
 }
 
 impl<TConnectTarget, SessionEvtTx, ConnEvtTx, ConnEvtTxErr>
@@ -95,7 +96,8 @@ where
     pub async fn handle_conn_evt(&mut self, evt: conn_host::Event) {
         match evt {
             conn_host::Event::ServerMsgSenderReady(conn_id, sender) => {
-                self.assignment.conn_ready_to_send(&conn_id, sender);
+                let actions = self.assignment.conn_ready_to_send(&conn_id, sender);
+                self.handle_assignment_actions(actions).await;
             }
             conn_host::Event::ConnectionErrored(conn_id) => {
                 let actions = self.assignment.on_conn_errored(&conn_id);
@@ -114,9 +116,12 @@ where
                                 .on_new_session(session_id, session_client_msg_rx);
                         }
 
-                        self.assignment
-                            .on_msg_to_session(&conn_id, &session_id, client_msg)
+                        let actions = self
+                            .assignment
+                            .on_remote_msg_to_session(&conn_id, &session_id, client_msg.into())
                             .await;
+
+                        self.handle_assignment_actions(actions).await;
                     }
                     ClientMsg::GlobalCmd(at_least_once) => {
                         match at_least_once {
@@ -179,6 +184,20 @@ where
                         .queue(protocol::msg::global_cmd::ServerCmd::KillSession(
                             session_id,
                         ))
+                        .await;
+                }
+                assignment::Action::Assigned {
+                    session_id,
+                    assigned_conn_count,
+                } => {
+                    self.assignment
+                        .on_local_msg_to_session(
+                            &session_id,
+                            target_io::Cmd::UpgradeMaxBytesAhead(
+                                self.config.max_bytes_ahead_per_conn as u64
+                                    * assigned_conn_count as u64,
+                            ),
+                        )
                         .await;
                 }
             };

@@ -66,7 +66,7 @@ where
                     .with_sync(move |sender| Event::ServerMsgSenderReady(conn_id, sender)),
             );
 
-            let duration = std::time::Duration::from_secs(10).add(std::time::Duration::from_mins(
+            let duration = std::time::Duration::from_secs(20).add(std::time::Duration::from_mins(
                 rand::rng().random_range(..=8u64),
             ));
 

@@ -19,10 +19,10 @@ pub mod server_agent;
 // Client <-> Server: EOF (for proxied connection)
 
 // TODO: magic numbers, IDK, maybe do some benchmark to find out
-pub const DATA_BUFF_SIZE: u16 = u16::MAX / 2; // 32 KB
-// TODO: should be a multiplier to assigned connection count?
-// need to limit in memory buffed data per stream as well
-pub const MAX_BYTES_AHEAD: u32 = 1024 * 1024 * 6; // 6 MB
+pub const DATA_BUFF_SIZE: u16 = u16::MAX; // 64 KB
+// TODO: need to limit in memory buffed data per stream
+pub const MAX_BYTES_AHEAD_PER_CONN: u32 = 1024 * 1024 * 1; // 1 MB
+
 const RAND_BYTE_LEN_MAX: usize = 1024;
 
 pub type Key = [u8; 32];

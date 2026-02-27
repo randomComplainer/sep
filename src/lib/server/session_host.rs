@@ -59,7 +59,7 @@ where
     pub async fn new_session(
         &mut self,
         session_id: SessionId,
-    ) -> mpsc::UnboundedSender<protocol::msg::session::ClientMsg> {
+    ) -> mpsc::UnboundedSender<target_io::Cmd> {
         let (session_client_msg_tx, session_client_msg_rx) = mpsc::unbounded();
         let mut evt_tx = self.evt_tx.clone();
 

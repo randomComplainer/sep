@@ -1,7 +1,8 @@
+use derive_more::From;
 use futures::prelude::*;
 use tracing::Instrument as _;
 
-use crate::prelude::*;
+use crate::{prelude::*, stream_to_sequenced};
 use protocol::msg::session as msg;
 
 #[derive(Debug, Clone, Copy)]
@@ -28,21 +29,23 @@ impl Into<crate::stream_to_sequenced::Config> for Config {
     }
 }
 
+#[derive(From, Debug)]
+pub enum Cmd {
+    ClientMsg(#[from] msg::ServerMsg),
+    UpgradeMaxBytesAhead(u64),
+}
+
 // panic on protocol error (cache overflow/unexpected message)
 // Err(()) on closed server message channels
 // Ok(()) on completed session OR proxyee io error
 // (one can consider a proxyee io error is a completed session)
 pub async fn run(
     proxyee: impl socks5::server_agent::Init,
-    server_read: impl Stream<Item = msg::ServerMsg> + Send + Unpin + 'static,
-    server_write: impl Sink<msg::ClientMsg>
-    + Unpin
-    + Send
-    + Clone
-    + 'static,
+    cmd_read: impl Stream<Item = Cmd> + Send + Unpin + 'static,
+    server_write: impl Sink<msg::ClientMsg> + Unpin + Send + Clone + 'static,
     config: Config,
 ) -> Result<(), std::io::Error> {
-    let mut server_read = server_read.inspect(|msg| tracing::debug!(msg = ?msg, "server msg"));
+    let mut cmd_read = cmd_read.inspect(|cmd| tracing::debug!(cmd = ?cmd, "cmd"));
     let mut server_write = server_write.inspect(|msg| tracing::debug!(msg = ?msg, "client msg"));
 
     // TODO: duplicated code
@@ -94,45 +97,52 @@ pub async fn run(
         }
     };
 
-    let (reply, early_target_cmds) = {
+    let (reply, max_bytes_ahead, early_target_cmds) = {
         // target might start send data as soon as server connected to it.
         // so we need to buffer it until client receives server reply.
         // TODO: Magic btw
         let mut early_target_packages: Vec<crate::sequenced_to_stream::Command> =
             Vec::with_capacity(8);
 
+        let mut max_bytes_ahead = config.max_bytes_ahead as u64;
+
         loop {
-            match server_read
+            match cmd_read
                 .next()
                 .instrument(tracing::trace_span!("receive reply from server"))
                 .await
             {
-                Some(msg) => match msg {
-                    msg::ServerMsg::Reply(msg) => {
-                        break (msg, early_target_packages);
-                    }
-                    msg::ServerMsg::ReplyError(err) => {
-                        use protocol::msg::session::ConnectionError::*;
-                        let _ = proxyee
-                            .reply_error(match err {
-                                General => 1,
-                                NetworkUnreachable => 3,
-                                HostUnreachable => 4,
-                                ConnectionRefused => 5,
-                                TtlExpired => 6,
-                            })
-                            .instrument(tracing::trace_span!("send reply error to proxyee"))
-                            .await;
-                        return Ok(());
-                    }
-                    msg::ServerMsg::Data(data) => {
-                        early_target_packages.push(data.into());
-                    }
-                    msg::ServerMsg::Eof(eof) => {
-                        early_target_packages.push(eof.into());
-                    }
-                    msg => {
-                        panic!("unexpected server msg while receiving reply: [{:?}]", msg);
+                Some(cmd) => match cmd {
+                    Cmd::ClientMsg(msg) => match msg {
+                        msg::ServerMsg::Reply(msg) => {
+                            break (msg, max_bytes_ahead, early_target_packages);
+                        }
+                        msg::ServerMsg::ReplyError(err) => {
+                            use protocol::msg::session::ConnectionError::*;
+                            let _ = proxyee
+                                .reply_error(match err {
+                                    General => 1,
+                                    NetworkUnreachable => 3,
+                                    HostUnreachable => 4,
+                                    ConnectionRefused => 5,
+                                    TtlExpired => 6,
+                                })
+                                .instrument(tracing::trace_span!("send reply error to proxyee"))
+                                .await;
+                            return Ok(());
+                        }
+                        msg::ServerMsg::Data(data) => {
+                            early_target_packages.push(data.into());
+                        }
+                        msg::ServerMsg::Eof(eof) => {
+                            early_target_packages.push(eof.into());
+                        }
+                        msg => {
+                            panic!("unexpected server msg while receiving reply: [{:?}]", msg);
+                        }
+                    },
+                    Cmd::UpgradeMaxBytesAhead(x) => {
+                        max_bytes_ahead = std::cmp::max(max_bytes_ahead as u64, x);
                     }
                 },
                 None => {
@@ -165,6 +175,9 @@ pub async fn run(
         futures::channel::mpsc::unbounded();
 
     let (buf, proxyee_read) = proxyee_read.into_parts();
+    let mut proxyee_to_server_config: crate::stream_to_sequenced::Config = config.into();
+    // TODO: consistant types please
+    proxyee_to_server_config.max_bytes_ahead = max_bytes_ahead as u32;
     let proxyee_to_server = crate::stream_to_sequenced::run(
         proxyee_to_server_cmd_rx,
         server_write.clone().with_sync(|evt| match evt {
@@ -173,7 +186,7 @@ pub async fn run(
         }),
         proxyee_read,
         Some(buf),
-        config.into(),
+        proxyee_to_server_config,
     )
     .instrument(tracing::trace_span!("proxyee to server"));
 
@@ -207,37 +220,48 @@ pub async fn run(
     };
 
     let server_msg_handling = async move {
-        while let Some(msg) = server_read
+        while let Some(cmd) = cmd_read
             .next()
             .instrument(tracing::trace_span!("recv server msg"))
             .await
         {
-            match msg {
-                msg::ServerMsg::Data(data) => {
-                    if let Err(_) = server_to_proxyee_cmd_tx.send(data.into()).await {
-                        tracing::warn!("server to proxyee cmd channel is broken, exiting");
-                        return;
+            match cmd {
+                Cmd::ClientMsg(msg) => match msg {
+                    msg::ServerMsg::Data(data) => {
+                        if let Err(_) = server_to_proxyee_cmd_tx.send(data.into()).await {
+                            tracing::warn!("server to proxyee cmd channel is broken, exiting");
+                            return;
+                        }
                     }
-                }
-                msg::ServerMsg::Eof(eof) => {
-                    if let Err(_) = server_to_proxyee_cmd_tx.send(eof.into()).await {
-                        tracing::warn!("server to proxyee cmd channel is broken, exiting");
-                        return;
+                    msg::ServerMsg::Eof(eof) => {
+                        if let Err(_) = server_to_proxyee_cmd_tx.send(eof.into()).await {
+                            tracing::warn!("server to proxyee cmd channel is broken, exiting");
+                            return;
+                        }
                     }
-                }
-                msg::ServerMsg::Ack(ack) => {
-                    if let Err(_) = proxyee_to_server_cmd_tx.send(ack.into()).await {
-                        tracing::warn!("proxyee to server cmd channel is broken, exiting");
-                        return;
+                    msg::ServerMsg::Ack(ack) => {
+                        if let Err(_) = proxyee_to_server_cmd_tx.send(ack.into()).await {
+                            tracing::warn!("proxyee to server cmd channel is broken, exiting");
+                            return;
+                        }
                     }
-                }
-                msg::ServerMsg::EofAck(eof_ack) => {
-                    if let Err(_) = proxyee_to_server_cmd_tx.send(eof_ack.into()).await {
+                    msg::ServerMsg::EofAck(eof_ack) => {
+                        if let Err(_) = proxyee_to_server_cmd_tx.send(eof_ack.into()).await {
+                            tracing::warn!("proxyee to server cmd channel is broken");
+                            return;
+                        }
+                    }
+                    _ => panic!("unexpected server msg: {:?}", msg),
+                },
+                Cmd::UpgradeMaxBytesAhead(x) => {
+                    if let Err(_) = proxyee_to_server_cmd_tx
+                        .send(stream_to_sequenced::Command::UpgradeMaxBytesAhead(x))
+                        .await
+                    {
                         tracing::warn!("proxyee to server cmd channel is broken");
                         return;
                     }
                 }
-                _ => panic!("unexpected server msg: {:?}", msg),
             }
         }
 

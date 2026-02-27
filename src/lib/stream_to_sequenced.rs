@@ -13,6 +13,7 @@ use crate::protocol::msg::session as msg;
 pub enum Command {
     Ack(#[from] msg::Ack),
     EofAck(#[from] msg::EofAck),
+    UpgradeMaxBytesAhead(u64),
 }
 
 #[derive(Debug, From)]
@@ -37,11 +38,27 @@ macro_rules! try_emit_evt {
     };
 }
 
+#[derive(Clone, Copy)]
+struct ExternalState {
+    acked: u64,
+    max_bytes_ahead: u64,
+}
+
+impl ExternalState {
+    pub fn has_capacity_for(&self, total_read: u64) -> bool {
+        total_read - self.acked <= self.max_bytes_ahead
+    }
+
+    pub fn all_acked(&self, total_sent: u64) -> bool {
+        self.acked >= total_sent
+    }
+}
+
 async fn stream_reading_loop(
     mut seq: u16,
     mut stream_to_read: impl AsyncRead + Unpin + Send + 'static,
     mut evt_tx: impl Sink<Event> + Unpin,
-    mut acked_rx: watch::Receiver<u64>,
+    mut external_state: watch::Receiver<ExternalState>,
     eof_acked_rx: oneshot::Receiver<()>,
     mut total_read: u64,
     config: Config,
@@ -70,10 +87,17 @@ async fn stream_reading_loop(
             break;
         }
 
-        let unacked = total_sent - *acked_rx.borrow() as u64;
-        let cur_avail_win = config.max_bytes_ahead as u64 - unacked;
-        match acked_rx
-            .wait_for(|acked| total_read - *acked <= config.max_bytes_ahead as u64)
+        let ExternalState {
+            acked,
+            max_bytes_ahead,
+        } = {
+            let lock = external_state.borrow();
+            lock.clone()
+        };
+        let unacked = total_sent - acked;
+        let cur_avail_win = max_bytes_ahead - unacked;
+        match external_state
+            .wait_for(|state| state.has_capacity_for(total_read))
             .instrument(tracing::trace_span!(
                 "wait for available window",
                 seq,
@@ -99,8 +123,8 @@ async fn stream_reading_loop(
     let evt = msg::Eof { seq }.into();
     try_emit_evt!(evt_tx, evt);
 
-    match acked_rx
-        .wait_for(|acked| *acked >= total_read)
+    match external_state
+        .wait_for(|state| state.all_acked(total_read))
         .instrument(tracing::trace_span!("wait for all remaining ack"))
         .await
     {
@@ -111,7 +135,7 @@ async fn stream_reading_loop(
         }
     };
 
-    assert_eq!(total_read, *acked_rx.borrow());
+    assert_eq!(total_read, external_state.borrow().acked);
 
     if let Err(_) = eof_acked_rx
         .instrument(tracing::trace_span!("wait for eof acked"))
@@ -148,7 +172,10 @@ pub async fn run(
         }
     }
 
-    let (acked_tx, acked_rx) = watch::channel(0u64);
+    let (external_state_tx, external_state_rx) = watch::channel(ExternalState {
+        acked: 0,
+        max_bytes_ahead: config.max_bytes_ahead as u64,
+    });
     let (eof_ack_tx, eof_ack_rx) = oneshot::channel::<()>();
 
     let cmd_receiving_task = {
@@ -158,13 +185,18 @@ pub async fn run(
                 tracing::debug!(cmd = ?cmd, "command");
                 match cmd {
                     Command::Ack(ack) => {
-                        acked_tx.send_modify(|old| *old += ack.bytes as u64);
+                        external_state_tx.send_modify(|old| old.acked += ack.bytes as u64);
                     }
                     Command::EofAck(_) => {
                         if let Err(_) = eof_acked_tx.take().expect("eof acked twice").send(()) {
                             tracing::warn!("eof acked tx is broken, exiting");
                             return Ok::<_, std::io::Error>(());
                         }
+                    }
+                    Command::UpgradeMaxBytesAhead(new_value) => {
+                        external_state_tx.send_modify(|old| {
+                            old.max_bytes_ahead = std::cmp::max(old.max_bytes_ahead, new_value)
+                        });
                     }
                 }
             }
@@ -179,7 +211,7 @@ pub async fn run(
         seq,
         stream_to_read,
         event_tx,
-        acked_rx,
+        external_state_rx,
         eof_ack_rx,
         first_pack_len as u64,
         config,

@@ -1,8 +1,10 @@
+use derive_more::From;
 use futures::StreamExt;
 use futures::prelude::*;
 use tracing::Instrument as _;
 
 use crate::prelude::*;
+use crate::stream_to_sequenced;
 use protocol::msg::session as msg;
 
 #[derive(Debug, Clone, Copy)]
@@ -30,37 +32,38 @@ impl<TConnectTarget> Into<crate::stream_to_sequenced::Config> for Config<TConnec
     }
 }
 
+#[derive(From, Debug)]
+pub enum Cmd {
+    ClientMsg(#[from] msg::ClientMsg),
+    UpgradeMaxBytesAhead(u64),
+}
+
 pub async fn run<TConnectTarget>(
-    client_msg_read: impl Stream<Item = msg::ClientMsg> + Unpin,
-    server_msg_write: impl Sink<msg::ServerMsg>
-    + Unpin
-    + Clone
-    + Send
-    + 'static,
+    cmd_read: impl Stream<Item = Cmd> + Unpin,
+    server_msg_write: impl Sink<msg::ServerMsg> + Unpin + Clone + Send + 'static,
     config: Config<TConnectTarget>,
 ) -> Result<(), std::io::Error>
 where
     TConnectTarget: ConnectTarget,
 {
-    let mut client_msg_read =
-        client_msg_read.inspect(|msg| tracing::debug!( msg = ?msg, "client msg"));
+    let mut cmd_read = cmd_read.inspect(|cmd| tracing::debug!( cmd = ?cmd, "cmd"));
 
     let mut server_msg_write =
         server_msg_write.inspect(|msg| tracing::debug!(msg = ?msg, "server msg"));
 
-    let req = match client_msg_read
+    let req = match cmd_read
         .next()
         .instrument(tracing::trace_span!("receive request from client"))
         .await
     {
-        Some(msg) => match msg {
-            msg::ClientMsg::Request(msg) => msg,
+        Some(cmd) => match cmd {
+            Cmd::ClientMsg(msg::ClientMsg::Request(msg)) => msg,
             _ => {
-                panic!("unexpected client msg: [{:?}], expected request", msg);
+                panic!("unexpected cmd: [{:?}], expected request message", cmd);
             }
         },
         None => {
-            tracing::warn!("client read is broken, exiting");
+            tracing::warn!("cmd read is broken, exiting");
             return Ok(());
         }
     };
@@ -139,33 +142,44 @@ where
     .instrument_with_result(tracing::trace_span!("client to target"));
 
     let client_msg_handling = async move {
-        while let Some(msg) = client_msg_read.next().await {
-            match msg {
-                msg::ClientMsg::Data(data) => {
-                    if let Err(_) = client_to_target_cmd_tx.send(data.into()).await {
-                        tracing::debug!("client to target command channel is broken");
-                        continue;
+        while let Some(cmd) = cmd_read.next().await {
+            match cmd {
+                Cmd::ClientMsg(msg) => match msg {
+                    msg::ClientMsg::Data(data) => {
+                        if let Err(_) = client_to_target_cmd_tx.send(data.into()).await {
+                            tracing::debug!("client to target command channel is broken");
+                            continue;
+                        }
                     }
-                }
-                msg::ClientMsg::Ack(ack) => {
-                    if let Err(_) = target_to_client_cmd_tx.send(ack.into()).await {
+                    msg::ClientMsg::Ack(ack) => {
+                        if let Err(_) = target_to_client_cmd_tx.send(ack.into()).await {
+                            tracing::debug!("target to client command channel is broken");
+                            continue;
+                        }
+                    }
+                    msg::ClientMsg::Eof(eof) => {
+                        if let Err(_) = client_to_target_cmd_tx.send(eof.into()).await {
+                            tracing::debug!("client to target command channel is broken");
+                            continue;
+                        }
+                    }
+                    msg::ClientMsg::EofAck(eof_ack) => {
+                        if let Err(_) = target_to_client_cmd_tx.send(eof_ack.into()).await {
+                            tracing::debug!("target to client command channel is broken");
+                            continue;
+                        }
+                    }
+                    _ => panic!("unexpected client msg: {:?}", msg),
+                },
+                Cmd::UpgradeMaxBytesAhead(v) => {
+                    if let Err(_) = target_to_client_cmd_tx
+                        .send(stream_to_sequenced::Command::UpgradeMaxBytesAhead(v))
+                        .await
+                    {
                         tracing::debug!("target to client command channel is broken");
                         continue;
                     }
                 }
-                msg::ClientMsg::Eof(eof) => {
-                    if let Err(_) = client_to_target_cmd_tx.send(eof.into()).await {
-                        tracing::debug!("client to target command channel is broken");
-                        continue;
-                    }
-                }
-                msg::ClientMsg::EofAck(eof_ack) => {
-                    if let Err(_) = target_to_client_cmd_tx.send(eof_ack.into()).await {
-                        tracing::debug!("target to client command channel is broken");
-                        continue;
-                    }
-                }
-                _ => panic!("unexpected client msg: {:?}", msg),
             }
         }
     };

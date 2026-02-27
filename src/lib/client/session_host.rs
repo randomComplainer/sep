@@ -57,7 +57,7 @@ where
         &mut self,
         session_id: SessionId,
         agent: impl socks5::server_agent::Init,
-    ) -> mpsc::UnboundedSender<protocol::msg::session::ServerMsg> {
+    ) -> mpsc::UnboundedSender<proxyee_io::Cmd> {
         let (session_server_msg_tx, session_server_msg_rx) = mpsc::unbounded();
         let mut evt_tx = self.evt_tx.clone();
 

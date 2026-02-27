@@ -80,7 +80,7 @@ async fn async_main(args: Args) {
         new_client_conn_rx,
         sep_lib::server::main_task::Config {
             max_packet_size: protocol::DATA_BUFF_SIZE,
-            max_bytes_ahead: protocol::MAX_BYTES_AHEAD,
+            max_bytes_ahead_per_conn: protocol::MAX_BYTES_AHEAD_PER_CONN,
         },
     );
 
