@@ -22,6 +22,7 @@ pub struct Config {
     pub max_packet_size: u16,
     pub max_server_conn: usize,
     pub max_bytes_ahead_per_conn: u32,
+    pub max_conn_per_session: u8,
 }
 
 impl Into<session_host::Config> for Config {
@@ -29,6 +30,14 @@ impl Into<session_host::Config> for Config {
         session_host::Config {
             max_packet_size: self.max_packet_size,
             max_bytes_ahead: self.max_bytes_ahead_per_conn * 2,
+        }
+    }
+}
+
+impl Into<assignment::Config> for Config {
+    fn into(self) -> assignment::Config {
+        assignment::Config {
+            max_conn_per_session: self.max_conn_per_session,
         }
     }
 }
@@ -61,7 +70,7 @@ where
             session_handle,
             conn_handle,
             global_cmd_handle,
-            assignment: assignment::State::new(),
+            assignment: assignment::State::new(config.into()),
             attempting_conn_count: 0,
         }
     }

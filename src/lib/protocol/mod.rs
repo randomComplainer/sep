@@ -22,6 +22,7 @@ pub mod server_agent;
 pub const DATA_BUFF_SIZE: u16 = u16::MAX; // 64 KB
 // TODO: need to limit in memory buffed data per stream
 pub const MAX_BYTES_AHEAD_PER_CONN: u32 = 1024 * 1024 * 1; // 1 MB
+pub const MAX_CONN_PER_SESSION: u8 = 8;
 
 const RAND_BYTE_LEN_MAX: usize = 1024;
 

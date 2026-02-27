@@ -15,6 +15,7 @@ pub struct Config<TConnectTarget> {
     pub max_packet_size: u16,
     pub max_bytes_ahead_per_conn: u32,
     pub connect_target: TConnectTarget,
+    pub max_conn_per_session: u8,
 }
 
 impl<TConnectTarget> Into<session_host::Config<TConnectTarget>> for Config<TConnectTarget> {
@@ -23,6 +24,14 @@ impl<TConnectTarget> Into<session_host::Config<TConnectTarget>> for Config<TConn
             max_packet_size: self.max_packet_size,
             max_bytes_ahead: self.max_bytes_ahead_per_conn * 2,
             connect_target: self.connect_target,
+        }
+    }
+}
+
+impl<TConnectTarget> Into<assignment::Config> for Config<TConnectTarget> {
+    fn into(self) -> assignment::Config {
+        assignment::Config {
+            max_conn_per_session: self.max_conn_per_session,
         }
     }
 }
@@ -50,11 +59,11 @@ where
         global_cmd_handle: global_cmd_manager::Handle<protocol::msg::global_cmd::ServerCmd>,
     ) -> Self {
         Self {
-            config,
+            config: config.clone(),
             session_handle,
             conn_handle,
             global_cmd_handle,
-            assignment: assignment::State::new(),
+            assignment: assignment::State::new(config.into()),
         }
     }
 

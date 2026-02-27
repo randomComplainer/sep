@@ -81,6 +81,7 @@ async fn async_main(args: Args) {
         sep_lib::server::main_task::Config {
             max_packet_size: protocol::DATA_BUFF_SIZE,
             max_bytes_ahead_per_conn: protocol::MAX_BYTES_AHEAD_PER_CONN,
+            max_conn_per_session: protocol::MAX_CONN_PER_SESSION,
         },
     );
 

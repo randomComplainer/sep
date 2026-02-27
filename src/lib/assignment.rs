@@ -7,6 +7,10 @@ use tokio::sync::oneshot;
 
 use crate::prelude::*;
 
+pub struct Config {
+    pub max_conn_per_session: u8,
+}
+
 struct SessionEntry<OutgoingMsg, IncomingMsg> {
     assigned_conns: HashSet<ConnId>,
     incomming_msg_tx: mpsc::UnboundedSender<IncomingMsg>,
@@ -20,6 +24,7 @@ struct ConnEntry<OutgoingMsg> {
 }
 
 pub struct State<OutgoingMsg, IncomingMsg> {
+    config: Config,
     session_msg_seq: u64,
     conn_msg_sender_seq: u64,
     sessions: HashMap<SessionId, SessionEntry<OutgoingMsg, IncomingMsg>>,
@@ -43,8 +48,9 @@ pub enum Action {
 }
 
 impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
-    pub fn new() -> Self {
+    pub fn new(config: Config) -> Self {
         Self {
+            config,
             session_msg_seq: 0,
             conn_msg_sender_seq: 0,
             sessions: Default::default(),
@@ -111,11 +117,10 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
 
         // try assigning an existing connection that is available right now
         msg = {
-            for conn_id in self
-                .conns_by_num_of_assignment
-                .iter()
-                .filter(|conn_id| !session.assigned_conns.contains(conn_id))
-            {
+            for conn_id in self.conns_by_num_of_assignment.iter().filter(|conn_id| {
+                session.assigned_conns.len() < self.config.max_conn_per_session as usize
+                    && !session.assigned_conns.contains(conn_id)
+            }) {
                 let conn = self.conns.get_mut(conn_id).unwrap();
 
                 let msg_tx = match conn.outgoing_msg_tx.take() {
@@ -261,7 +266,9 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
         if let Some((session_id, _)) = self.sessions.iter().fold(
             None,
             |r: Option<(SessionId, u64)>, (session_id, session)| {
-                if conn.assigned_sessions.contains(session_id) {
+                if session.assigned_conns.len() >= self.config.max_conn_per_session as usize
+                    || conn.assigned_sessions.contains(session_id)
+                {
                     return r;
                 }
 

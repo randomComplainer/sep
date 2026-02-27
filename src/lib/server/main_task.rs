@@ -13,6 +13,7 @@ use crate::protocol::ConnId;
 pub struct Config {
     pub max_packet_size: u16,
     pub max_bytes_ahead_per_conn: u32,
+    pub max_conn_per_session: u8,
 }
 
 // impl Into<serve_client::Config<crate::connect_target::ConnectTargetDirect>> for Config {
@@ -22,6 +23,7 @@ impl Into<serve_client::Config<crate::connect_target::ConnectTargetWithDnsCache>
         serve_client::Config {
             max_packet_size: self.max_packet_size,
             max_bytes_ahead_per_conn: self.max_bytes_ahead_per_conn,
+            max_conn_per_session: self.max_conn_per_session,
             // connect_target: crate::connect_target::ConnectTargetDirect,
             connect_target: crate::connect_target::ConnectTargetWithDnsCache(
                 crate::connect_target::cache::Cache::new(
