@@ -363,4 +363,19 @@ where
 
         Ok(msg)
     }
+
+    async fn recv_msg_with_timeout(
+        &mut self,
+        time_limit: Duration,
+    ) -> Result<Option<Self::Message>, DecodeError> {
+        let msg = self
+            .stream_read
+            .read_next_with_timeout(
+                msg::conn::conn_msg_peeker(msg::client_msg_peeker()),
+                time_limit,
+            )
+            .await?;
+
+        Ok(msg)
+    }
 }

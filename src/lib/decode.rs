@@ -1,6 +1,7 @@
 use std::{
     io::Cursor,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    time::Duration,
 };
 
 use bytes::{Buf, BytesMut};
@@ -540,6 +541,37 @@ where
 
             self.buf.reserve(1);
             let n = self.inner.read_buf(&mut self.buf).await?;
+
+            if n == 0 {
+                return Ok(None);
+            }
+        }
+    }
+
+    pub async fn read_next_with_timeout<T, P: Peeker<T>>(
+        &mut self,
+        peeker: P,
+        time_limit: Duration,
+    ) -> Result<Option<T>, DecodeError> {
+        loop {
+            let mut cursor = Cursor::new(self.buf.as_ref());
+            match peeker.peek(&mut cursor) {
+                Ok(Some(reader)) => return Ok(Some(reader.read(&mut self.buf))),
+                Ok(None) => {}
+                Err(err) => return Err(err),
+            };
+
+            self.buf.reserve(1);
+
+            let n = tokio::select! {
+                n = self.inner.read_buf(&mut self.buf) => n?,
+                _ = tokio::time::sleep(time_limit) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "timeout reading stream",
+                    ).into());
+                }
+            };
 
             if n == 0 {
                 return Ok(None);

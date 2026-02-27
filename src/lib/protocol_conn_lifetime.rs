@@ -21,7 +21,7 @@ impl Default for Config {
         Self {
             io_write_timeout: std::time::Duration::from_secs(20),
             ping_interval: std::time::Duration::from_secs(5),
-            aliveness_timeout: std::time::Duration::from_secs(25),
+            aliveness_timeout: std::time::Duration::from_secs(10),
         }
     }
 }
@@ -143,16 +143,11 @@ async fn read_loop<MessageToRead>(
 where
     MessageToRead: Send + Debug + Unpin + 'static,
 {
-    let mut alive_timer = tokio::time::sleep(config.aliveness_timeout);
     let mut ping_counter = 0;
 
     loop {
         tokio::select! {
-            _ = alive_timer => {
-                tracing::error!(count = ping_counter, "aliveness timeout, exiting");
-                return Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "aliveness timeout"));
-            },
-            msg = stream_read.recv_msg() => {
+            msg = stream_read.recv_msg_with_timeout(config.aliveness_timeout) => {
                 let msg = match msg {
                     Ok(Some(msg)) => msg,
                     Ok(None) => {
@@ -185,7 +180,6 @@ where
                     }
                 };
 
-                alive_timer = tokio::time::sleep(config.aliveness_timeout);
             }
         }
     }

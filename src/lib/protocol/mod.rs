@@ -1,4 +1,4 @@
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use chacha20::cipher::StreamCipher;
 use rand::RngCore;
@@ -89,8 +89,16 @@ where
 {
     type Message: Send;
 
+    // TODO: duplication
+    // merge these two functions?
+    // Or build timeout into the underling stream?
     fn recv_msg(
         &mut self,
+    ) -> impl Future<Output = Result<Option<Self::Message>, DecodeError>> + Send;
+
+    fn recv_msg_with_timeout(
+        &mut self,
+        time_limit: Duration,
     ) -> impl Future<Output = Result<Option<Self::Message>, DecodeError>> + Send;
 }
 
