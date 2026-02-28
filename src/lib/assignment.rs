@@ -14,7 +14,6 @@ pub struct Config {
 struct SessionEntry<OutgoingMsg, IncomingMsg> {
     assigned_conns: HashSet<ConnId>,
     incomming_msg_tx: mpsc::UnboundedSender<IncomingMsg>,
-    conn_count_to_keep: usize,
     outgoing_msg_queue: VecDeque<(u64, OutgoingMsg)>,
 }
 
@@ -31,19 +30,18 @@ pub struct State<OutgoingMsg, IncomingMsg> {
     conns: HashMap<ConnId, ConnEntry<OutgoingMsg>>,
     conns_by_num_of_assignment: Vec<ConnId>, // keep sorted
     global_outgoing_queue: VecDeque<OutgoingMsg>, // None session id for global msg
-    pub max_conn_count_to_keep_for_session: usize,
+    can_request_more_conn: bool,
 }
 
 #[derive(Debug)]
 pub enum Action {
-    UpgradeSession {
-        session_id: SessionId,
-        conn_count_to_keep: usize,
-    },
     KillSession(SessionId),
     Assigned {
         session_id: SessionId,
         assigned_conn_count: usize,
+    },
+    ConnectMore {
+        expected: usize,
     },
 }
 
@@ -57,7 +55,7 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
             conns: Default::default(),
             conns_by_num_of_assignment: Default::default(),
             global_outgoing_queue: Default::default(),
-            max_conn_count_to_keep_for_session: 0,
+            can_request_more_conn: true,
         }
     }
 
@@ -115,12 +113,17 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
             };
         }
 
+        if session.assigned_conns.len() >= self.config.max_conn_per_session as usize {
+            return Default::default();
+        }
+
         // try assigning an existing connection that is available right now
         msg = {
-            for conn_id in self.conns_by_num_of_assignment.iter().filter(|conn_id| {
-                session.assigned_conns.len() < self.config.max_conn_per_session as usize
-                    && !session.assigned_conns.contains(conn_id)
-            }) {
+            for conn_id in self
+                .conns_by_num_of_assignment
+                .iter()
+                .filter(|conn_id| !session.assigned_conns.contains(conn_id))
+            {
                 let conn = self.conns.get_mut(conn_id).unwrap();
 
                 let msg_tx = match conn.outgoing_msg_tx.take() {
@@ -133,9 +136,6 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
                         // assign
                         assert!(conn.assigned_sessions.insert(*session_id));
                         assert!(session.assigned_conns.insert(*conn_id));
-
-                        session.conn_count_to_keep =
-                            std::cmp::max(session.conn_count_to_keep, session.assigned_conns.len());
 
                         let assigned_conn_count = session.assigned_conns.len();
 
@@ -156,25 +156,20 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
             msg
         };
 
-        // no connection available, queue the message
-        // and requet new connection if conn_count_to_keep is already fulfilled
+        // no connection available, queue the message and request new connection
         session
             .outgoing_msg_queue
             .push_back((self.session_msg_seq, msg));
         self.session_msg_seq += 1;
-        if session.conn_count_to_keep <= session.assigned_conns.len() {
-            session.conn_count_to_keep += 4;
-            self.max_conn_count_to_keep_for_session = std::cmp::max(
-                self.max_conn_count_to_keep_for_session,
-                session.conn_count_to_keep,
-            );
-            return vec![Action::UpgradeSession {
-                session_id: *session_id,
-                conn_count_to_keep: session.conn_count_to_keep,
+
+        if self.can_request_more_conn {
+            self.can_request_more_conn = false;
+            return vec![Action::ConnectMore {
+                expected: self.conns.len() + 2,
             }];
-        } else {
-            return Default::default();
         }
+
+        Default::default()
     }
 
     pub fn new_outgoing_global_msg(&mut self, mut msg: OutgoingMsg) {
@@ -332,6 +327,7 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
 
         self.conns.insert(conn_id, conn);
         self.conns_by_num_of_assignment.insert(0, conn_id);
+        self.can_request_more_conn = true;
     }
 
     pub fn on_conn_closed(&mut self, conn_id: &ConnId) {
@@ -354,6 +350,8 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
             //     session.assigned_conns.remove(&conn_id);
             // }
         }
+
+        self.can_request_more_conn = true;
     }
 
     pub fn on_conn_errored(&mut self, conn_id: &ConnId) -> Vec<Action> {
@@ -392,6 +390,7 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
         }
 
         self.sort_conns();
+        self.can_request_more_conn = true;
 
         actions
     }
@@ -410,14 +409,10 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
             SessionEntry {
                 assigned_conns: Default::default(),
                 incomming_msg_tx: session_incomming_msg_tx,
-                conn_count_to_keep: 2,
                 outgoing_msg_queue: Default::default(),
             }
             .into(),
         );
-
-        self.max_conn_count_to_keep_for_session =
-            std::cmp::max(2, self.max_conn_count_to_keep_for_session);
     }
 
     pub async fn on_remote_msg_to_session(
@@ -490,28 +485,6 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
         }
 
         self.sort_conns();
-
-        if session.conn_count_to_keep == self.max_conn_count_to_keep_for_session {
-            self.max_conn_count_to_keep_for_session = self
-                .sessions
-                .values()
-                .map(|s| s.conn_count_to_keep)
-                .max()
-                .unwrap_or(0);
-        }
-    }
-
-    pub fn upgrade_session(&mut self, session_id: &SessionId, conn_num: usize) {
-        let session = match self.sessions.get_mut(session_id) {
-            Some(x) => x,
-            None => return,
-        };
-
-        session.conn_count_to_keep = std::cmp::max(session.conn_count_to_keep, conn_num);
-        self.max_conn_count_to_keep_for_session = std::cmp::max(
-            self.max_conn_count_to_keep_for_session,
-            session.conn_count_to_keep,
-        );
     }
 
     fn sort_conns(&mut self) {

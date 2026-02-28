@@ -267,18 +267,12 @@ pub mod global_cmd {
     #[derive(Debug, PartialEq, Eq, Clone)]
     pub enum ServerCmd {
         KillSession(SessionId),
-        UpgradeSession {
-            session_id: SessionId,
-            conn_count_to_keep: u8,
-        },
+        ConnectMore { expected: u8 },
     }
 
     pub enum ServerCmdReader {
         KillSession(SessionIdReader),
-        UpgradeSession {
-            session_id: SessionIdReader,
-            conn_count_to_keep: U8Reader,
-        },
+        ConnectMore { expected: U8Reader },
     }
 
     impl Reader for ServerCmdReader {
@@ -288,12 +282,8 @@ pub mod global_cmd {
             buf.split_to(1)[0];
             match self {
                 Self::KillSession(session_id) => ServerCmd::KillSession(session_id.read(buf)),
-                Self::UpgradeSession {
-                    session_id,
-                    conn_count_to_keep,
-                } => ServerCmd::UpgradeSession {
-                    session_id: session_id.read(buf),
-                    conn_count_to_keep: conn_count_to_keep.read(buf),
+                Self::ConnectMore { expected } => ServerCmd::ConnectMore {
+                    expected: expected.read(buf),
                 },
             }
         }
@@ -303,9 +293,8 @@ pub mod global_cmd {
         peek::peek_enum(|cursor, enum_code| {
             Ok(Some(match enum_code {
                 0 => ServerCmdReader::KillSession(crate::peek!(session_id_peeker().peek(cursor))),
-                1 => ServerCmdReader::UpgradeSession {
-                    session_id: crate::peek!(session_id_peeker().peek(cursor)),
-                    conn_count_to_keep: crate::peek!(u8_peeker().peek(cursor)),
+                1 => ServerCmdReader::ConnectMore {
+                    expected: crate::peek!(u8_peeker().peek(cursor)),
                 },
                 x => {
                     return Err(decode::unknown_enum_code("server command", x).into());

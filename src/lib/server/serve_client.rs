@@ -177,17 +177,17 @@ where
     ) {
         for action in actions.into_iter() {
             match action {
-                assignment::Action::UpgradeSession {
-                    session_id,
-                    conn_count_to_keep,
-                } => {
-                    self.global_cmd_handle
-                        .queue(protocol::msg::global_cmd::ServerCmd::UpgradeSession {
-                            session_id,
-                            conn_count_to_keep: conn_count_to_keep.try_into().unwrap(),
-                        })
-                        .await
-                }
+                // assignment::Action::UpgradeSession {
+                //     session_id,
+                //     conn_count_to_keep,
+                // } => {
+                //     self.global_cmd_handle
+                //         .queue(protocol::msg::global_cmd::ServerCmd::UpgradeSession {
+                //             session_id,
+                //             conn_count_to_keep: conn_count_to_keep.try_into().unwrap(),
+                //         })
+                //         .await
+                // }
                 assignment::Action::KillSession(session_id) => {
                     self.global_cmd_handle
                         .queue(protocol::msg::global_cmd::ServerCmd::KillSession(
@@ -208,6 +208,13 @@ where
                             ),
                         )
                         .await;
+                }
+                assignment::Action::ConnectMore { expected } => {
+                    self.global_cmd_handle
+                        .queue(protocol::msg::global_cmd::ServerCmd::ConnectMore {
+                            expected: expected.try_into().unwrap(),
+                        })
+                        .await
                 }
             };
         }

@@ -111,8 +111,8 @@ where
                 self.handle_assignment_actions(actions).await;
             }
             conn_host::Event::ConnectionAttemptFailed => {
-                self.attempting_conn_count -= 1;
-                self.match_expected_conn_count().await;
+                // TODO: delay? retry limitation?
+                self.conn_handle.create_connection().await;
             }
             conn_host::Event::ConnectionErrored(conn_id) => {
                 let actions = self.assignment.on_conn_errored(&conn_id);
@@ -120,7 +120,6 @@ where
             }
             conn_host::Event::ConnectionEnded(conn_id) => {
                 self.assignment.on_conn_closed(&conn_id);
-                self.match_expected_conn_count().await;
             }
             conn_host::Event::ServerMsg(conn_id, server_msg) => {
                 match server_msg {
@@ -150,15 +149,10 @@ where
                                     ) => {
                                         self.assignment.on_session_ended(&session_id);
                                     }
-                                    protocol::msg::global_cmd::ServerCmd::UpgradeSession {
-                                        session_id,
-                                        conn_count_to_keep,
+                                    protocol::msg::global_cmd::ServerCmd::ConnectMore {
+                                        expected,
                                     } => {
-                                        self.assignment.upgrade_session(
-                                            &session_id,
-                                            conn_count_to_keep as usize,
-                                        );
-                                        self.match_expected_conn_count().await;
+                                        self.match_expected_conn_count(expected.into()).await;
                                     }
                                 };
                             }
@@ -187,12 +181,6 @@ where
     ) {
         for action in actions.into_iter() {
             match action {
-                assignment::Action::UpgradeSession {
-                    session_id: _,
-                    conn_count_to_keep: _,
-                } => {
-                    // nothing to do as client
-                }
                 assignment::Action::KillSession(session_id) => {
                     self.global_cmd_handle
                         .queue(protocol::msg::global_cmd::ClientCmd::KillSession(
@@ -214,18 +202,16 @@ where
                         )
                         .await;
                 }
+                assignment::Action::ConnectMore { expected } => {
+                    self.match_expected_conn_count(expected).await;
+                }
             };
         }
-
-        self.match_expected_conn_count().await;
     }
 
-    async fn match_expected_conn_count(&mut self) {
+    async fn match_expected_conn_count(&mut self, expectation: usize) {
         while (self.attempting_conn_count + self.assignment.conn_count())
-            < std::cmp::min(
-                self.config.max_server_conn,
-                self.assignment.max_conn_count_to_keep_for_session,
-            )
+            < std::cmp::min(self.config.max_server_conn, expectation)
         {
             self.conn_handle.create_connection().await;
             self.attempting_conn_count += 1;
