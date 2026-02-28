@@ -21,7 +21,7 @@ impl Default for Config {
         Self {
             io_write_timeout: std::time::Duration::from_secs(20),
             ping_interval: std::time::Duration::from_secs(5),
-            aliveness_timeout: std::time::Duration::from_secs(10),
+            aliveness_timeout: std::time::Duration::from_secs(15),
         }
     }
 }
