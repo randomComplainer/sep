@@ -225,7 +225,7 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
         if let Some((session_id, _)) =
             conn.assigned_sessions
                 .iter()
-                .fold(None, |r: Option<(SessionId, u64)>, session_id| {
+                .fold(None, |acc: Option<(SessionId, u64)>, session_id| {
                     let session_msg_seq = match self
                         .sessions
                         .get(session_id)
@@ -235,15 +235,15 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
                         .map(|x| x.0)
                     {
                         Some(x) => x,
-                        None => return r,
+                        None => return acc,
                     };
 
-                    match &r {
-                        Some((_, r_session_id)) => {
-                            if session_msg_seq.lt(r_session_id) {
+                    match &acc {
+                        Some((_, acc_session_id)) => {
+                            if session_msg_seq.lt(acc_session_id) {
                                 Some((*session_id, session_msg_seq))
                             } else {
-                                r
+                                acc
                             }
                         }
                         None => Some((*session_id, session_msg_seq)),
@@ -263,32 +263,34 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
         }
 
         // send any queued msg from any session
-        if let Some((session_id, _)) = self.sessions.iter().fold(
-            None,
-            |r: Option<(SessionId, u64)>, (session_id, session)| {
-                if session.assigned_conns.len() >= self.config.max_conn_per_session as usize
-                    || conn.assigned_sessions.contains(session_id)
-                {
-                    return r;
-                }
+        if let Some((session_id, _)) = self
+            .sessions
+            .iter()
+            .filter(|(session_id, session)| {
+                session.assigned_conns.len() < self.config.max_conn_per_session as usize
+                    && !conn.assigned_sessions.contains(session_id)
+            })
+            .fold(
+                None,
+                |acc: Option<(SessionId, u64)>, (session_id, session)| {
+                    let session_msg_seq = match session.outgoing_msg_queue.get(0).map(|x| x.0) {
+                        Some(x) => x,
+                        None => return acc,
+                    };
 
-                let session_msg_seq = match session.outgoing_msg_queue.get(0).map(|x| x.0) {
-                    Some(x) => x,
-                    None => return r,
-                };
-
-                match &r {
-                    Some((_, r_session_id)) => {
-                        if session_msg_seq.lt(r_session_id) {
-                            Some((*session_id, session_msg_seq))
-                        } else {
-                            r
+                    match &acc {
+                        Some((_, acc_session_id)) => {
+                            if session_msg_seq.lt(acc_session_id) {
+                                Some((*session_id, session_msg_seq))
+                            } else {
+                                acc
+                            }
                         }
+                        None => Some((*session_id, session_msg_seq)),
                     }
-                    None => Some((*session_id, session_msg_seq)),
-                }
-            },
-        ) {
+                },
+            )
+        {
             let session = self.sessions.get_mut(&session_id).unwrap();
 
             let (seq, msg) = session.outgoing_msg_queue.pop_front().unwrap();
