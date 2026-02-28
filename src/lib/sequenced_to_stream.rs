@@ -80,10 +80,6 @@ where
 
                 self.buffed_bytes += len;
                 tracing::trace!(bytes = self.buffed_bytes, "buffered");
-
-                if self.buffed_bytes > self.config.max_bytes_ahead {
-                    panic!("too many data buffered");
-                }
             }
             Command::Eof(eof) => {
                 self.buffed_entries
