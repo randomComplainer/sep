@@ -64,7 +64,7 @@ where
                 return Ok(());
             }
 
-            let mut timeout = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(3)));
+            let mut timeout = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(5)));
             let mut retry_count = 0;
 
             loop {
