@@ -113,7 +113,12 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
             };
         }
 
+        // if it reach conn limit, queue and exit
         if session.assigned_conns.len() >= self.config.max_conn_per_session as usize {
+            session
+                .outgoing_msg_queue
+                .push_back((self.session_msg_seq, msg));
+            self.session_msg_seq += 1;
             return Default::default();
         }
 
