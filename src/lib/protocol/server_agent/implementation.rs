@@ -258,9 +258,9 @@ where
                             msg::session::ServerMsg::Data(mut data) => {
                                 buf.put_u8(2u8);
                                 buf.put_u16(data.seq);
-                                buf.put_u16(data.data.len().try_into().unwrap());
+                                buf.put_u16(data.data.as_ref().len().try_into().unwrap());
                                 self.stream_write.write_all(&mut buf).await?;
-                                self.stream_write.write_all(&mut data.data).await?;
+                                self.stream_write.write_all(data.data.as_mut()).await?;
                             }
                             msg::session::ServerMsg::Ack(ack) => {
                                 buf.put_u8(3u8);

@@ -22,7 +22,7 @@ impl<TConnectTarget> Into<session_host::Config<TConnectTarget>> for Config<TConn
     fn into(self) -> session_host::Config<TConnectTarget> {
         session_host::Config {
             max_packet_size: self.max_packet_size,
-            max_bytes_ahead: self.max_bytes_ahead_per_conn * 2,
+            max_bytes_ahead_per_conn: self.max_bytes_ahead_per_conn,
             connect_target: self.connect_target,
         }
     }
@@ -177,17 +177,6 @@ where
     ) {
         for action in actions.into_iter() {
             match action {
-                // assignment::Action::UpgradeSession {
-                //     session_id,
-                //     conn_count_to_keep,
-                // } => {
-                //     self.global_cmd_handle
-                //         .queue(protocol::msg::global_cmd::ServerCmd::UpgradeSession {
-                //             session_id,
-                //             conn_count_to_keep: conn_count_to_keep.try_into().unwrap(),
-                //         })
-                //         .await
-                // }
                 assignment::Action::KillSession(session_id) => {
                     self.global_cmd_handle
                         .queue(protocol::msg::global_cmd::ServerCmd::KillSession(
@@ -202,9 +191,8 @@ where
                     self.assignment
                         .on_local_msg_to_session(
                             &session_id,
-                            target_io::Cmd::UpgradeMaxBytesAhead(
-                                self.config.max_bytes_ahead_per_conn as u64
-                                    * assigned_conn_count as u64,
+                            target_io::Cmd::UpdateConnCount(
+                                assigned_conn_count.try_into().unwrap(),
                             ),
                         )
                         .await;

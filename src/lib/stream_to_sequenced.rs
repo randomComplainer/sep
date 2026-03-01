@@ -8,12 +8,13 @@ use tokio::{
 use tracing::Instrument as _;
 
 use crate::protocol::msg::session as msg;
+use crate::recyle;
 
 #[derive(Debug, From)]
 pub enum Command {
     Ack(#[from] msg::Ack),
     EofAck(#[from] msg::EofAck),
-    UpgradeMaxBytesAhead(u64),
+    UpdateConnCount(u8),
 }
 
 #[derive(Debug, From)]
@@ -24,7 +25,7 @@ pub enum Event {
 
 pub struct Config {
     pub max_packet_size: u16,
-    pub max_bytes_ahead: u32,
+    pub max_bytes_ahead_per_conn: u32,
 }
 
 // return Ok(()) on broken channel
@@ -57,17 +58,26 @@ impl ExternalState {
 async fn stream_reading_loop(
     mut seq: u16,
     mut stream_to_read: impl AsyncRead + Unpin + Send + 'static,
+    mut buf_warehose: recyle::Warehose<BytesMut>,
     mut evt_tx: impl Sink<Event> + Unpin,
     mut external_state: watch::Receiver<ExternalState>,
     eof_acked_rx: oneshot::Receiver<()>,
     mut total_read: u64,
-    config: Config,
 ) -> Result<(), std::io::Error> {
     loop {
-        // TODO: reuse buf
-        let mut buf = bytes::BytesMut::with_capacity(config.max_packet_size as usize);
+        let mut buf = match buf_warehose.next().await {
+            Some(mut x) => {
+                x.as_mut().clear();
+                x
+            }
+            None => {
+                tracing::warn!("buf warehose is broken, exiting");
+                return Ok(());
+            }
+        };
+
         let n = match stream_to_read
-            .read_buf(&mut buf)
+            .read_buf(buf.as_mut()) // TODO: will thist read exceeds capacity?
             .instrument(tracing::trace_span!("read from stream"))
             .await
         {
@@ -114,7 +124,11 @@ async fn stream_reading_loop(
             }
         };
 
-        let evt = msg::Data { seq, data: buf }.into();
+        let evt = msg::Data {
+            seq,
+            data: buf.into(),
+        }
+        .into();
         try_emit_evt!(evt_tx, evt);
 
         seq += 1;
@@ -159,12 +173,16 @@ pub async fn run(
 ) -> Result<(), std::io::Error> {
     let mut seq = 0;
 
+    let (mut buf_supplier, mut buf_warehose) = recyle::pair();
+
     let first_pack_len = first_pack.as_ref().map(|p| p.len()).unwrap_or(0);
     if let Some(first_pack) = first_pack {
         if first_pack.len() > 0 {
+            let first_pack = buf_warehose.register(first_pack);
+
             let evt = msg::Data {
                 seq: 0,
-                data: first_pack,
+                data: first_pack.into(),
             }
             .into();
             try_emit_evt!(event_tx, evt);
@@ -172,9 +190,15 @@ pub async fn run(
         }
     }
 
+    while buf_supplier.get_count() < 2 {
+        buf_supplier
+            .supply(BytesMut::with_capacity(config.max_packet_size as usize))
+            .unwrap();
+    }
+
     let (external_state_tx, external_state_rx) = watch::channel(ExternalState {
         acked: 0,
-        max_bytes_ahead: config.max_bytes_ahead as u64,
+        max_bytes_ahead: (config.max_bytes_ahead_per_conn * 2) as u64,
     });
     let (eof_ack_tx, eof_ack_rx) = oneshot::channel::<()>();
 
@@ -193,10 +217,18 @@ pub async fn run(
                             return Ok::<_, std::io::Error>(());
                         }
                     }
-                    Command::UpgradeMaxBytesAhead(new_value) => {
+                    Command::UpdateConnCount(count) => {
                         external_state_tx.send_modify(|old| {
-                            old.max_bytes_ahead = std::cmp::max(old.max_bytes_ahead, new_value)
+                            old.max_bytes_ahead = std::cmp::max(
+                                old.max_bytes_ahead,
+                                config.max_bytes_ahead_per_conn as u64 * (count as u64 + 2),
+                            )
                         });
+
+                        while buf_supplier.get_count() < count + 2 {
+                            let _ = buf_supplier
+                                .supply(BytesMut::with_capacity(config.max_packet_size as usize));
+                        }
                     }
                 }
             }
@@ -210,11 +242,11 @@ pub async fn run(
     let stream_reading_task = stream_reading_loop(
         seq,
         stream_to_read,
+        buf_warehose,
         event_tx,
         external_state_rx,
         eof_ack_rx,
         first_pack_len as u64,
-        config,
     );
 
     // cmd_receiving_task doesn't end by itself,

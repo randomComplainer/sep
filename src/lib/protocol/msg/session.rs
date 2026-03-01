@@ -3,6 +3,7 @@ use derive_more::From;
 
 use crate::decode::*;
 use crate::prelude::*;
+use crate::recyle::Recyle;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Request {
@@ -59,10 +60,34 @@ pub fn reply_peeker() -> impl Peeker<Reply, Reader = ReplyReader> {
     })
 }
 
+#[derive(PartialEq, Eq, From)]
+pub enum Buf {
+    Raw(#[from] BytesMut),
+    Recyle(#[from] Recyle<BytesMut>),
+}
+
+impl AsRef<[u8]> for Buf {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Buf::Raw(inner) => inner.as_ref(),
+            Buf::Recyle(recyle) => recyle.as_ref(),
+        }
+    }
+}
+
+impl AsMut<[u8]> for Buf {
+    fn as_mut(&mut self) -> &mut [u8] {
+        match self {
+            Buf::Raw(inner) => inner.as_mut(),
+            Buf::Recyle(recyle) => recyle.as_mut(),
+        }
+    }
+}
+
 #[derive(PartialEq, Eq)]
 pub struct Data {
     pub seq: u16,
-    pub data: BytesMut,
+    pub data: Buf,
 }
 
 pub struct DataReader {
@@ -75,7 +100,7 @@ impl Reader for DataReader {
     fn read(&self, buf: &mut BytesMut) -> Data {
         Data {
             seq: self.seq.read(buf),
-            data: self.data.read(buf),
+            data: Buf::Raw(self.data.read(buf)),
         }
     }
 }
@@ -93,7 +118,7 @@ impl std::fmt::Debug for Data {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Data")
             .field("seq", &self.seq)
-            .field("data", &self.data.len())
+            .field("data", &self.data.as_ref().len())
             .finish()
     }
 }

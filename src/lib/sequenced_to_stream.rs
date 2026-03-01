@@ -21,7 +21,6 @@ pub enum Event {
 }
 
 pub struct Config {
-    pub max_bytes_ahead: u32,
     pub max_packet_size: u16,
 }
 
@@ -56,14 +55,11 @@ where
         ack_tx: mpsc::UnboundedSender<u32>,
         evt_tx: EvtTx,
     ) -> Self {
-        let estimated_buffered_packets =
-            (config.max_bytes_ahead as usize / config.max_packet_size as usize) + 1;
-
         Self {
             config,
             next_seq: 0,
             buffed_bytes: 0,
-            buffed_entries: std::collections::BinaryHeap::with_capacity(estimated_buffered_packets),
+            buffed_entries: std::collections::BinaryHeap::with_capacity(8),
             stream_to_write,
             ack_tx,
             evt_tx,
@@ -73,7 +69,7 @@ where
     pub async fn handle_command(mut self, cmd: Command) -> Result<Option<Self>, std::io::Error> {
         match cmd {
             Command::Data(data) => {
-                let len = data.data.len() as u32;
+                let len = data.data.as_ref().len() as u32;
 
                 self.buffed_entries
                     .push(std::cmp::Reverse(StreamEntry::data(data.seq, data.data)));
@@ -98,7 +94,7 @@ where
 
             match stream_entry.0.1 {
                 StreamEntryValue::Data(data) => {
-                    let len = data.len();
+                    let len = data.as_ref().len();
 
                     self.stream_to_write
                         .write_all(data.as_ref())

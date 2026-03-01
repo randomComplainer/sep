@@ -10,14 +10,13 @@ use protocol::msg::session as msg;
 #[derive(Debug, Clone, Copy)]
 pub struct Config<TConnectTarget> {
     pub max_packet_size: u16,
-    pub max_bytes_ahead: u32,
+    pub max_bytes_ahead_per_conn: u32,
     pub connect_target: TConnectTarget,
 }
 
 impl<TConnectTarget> Into<crate::sequenced_to_stream::Config> for Config<TConnectTarget> {
     fn into(self) -> crate::sequenced_to_stream::Config {
         crate::sequenced_to_stream::Config {
-            max_bytes_ahead: self.max_bytes_ahead,
             max_packet_size: self.max_packet_size,
         }
     }
@@ -27,7 +26,7 @@ impl<TConnectTarget> Into<crate::stream_to_sequenced::Config> for Config<TConnec
     fn into(self) -> crate::stream_to_sequenced::Config {
         crate::stream_to_sequenced::Config {
             max_packet_size: self.max_packet_size,
-            max_bytes_ahead: self.max_bytes_ahead,
+            max_bytes_ahead_per_conn: self.max_bytes_ahead_per_conn,
         }
     }
 }
@@ -35,7 +34,7 @@ impl<TConnectTarget> Into<crate::stream_to_sequenced::Config> for Config<TConnec
 #[derive(From, Debug)]
 pub enum Cmd {
     ClientMsg(#[from] msg::ClientMsg),
-    UpgradeMaxBytesAhead(u64),
+    UpdateConnCount(u8),
 }
 
 pub async fn run<TConnectTarget>(
@@ -171,9 +170,9 @@ where
                     }
                     _ => panic!("unexpected client msg: {:?}", msg),
                 },
-                Cmd::UpgradeMaxBytesAhead(v) => {
+                Cmd::UpdateConnCount(v) => {
                     if let Err(_) = target_to_client_cmd_tx
-                        .send(stream_to_sequenced::Command::UpgradeMaxBytesAhead(v))
+                        .send(stream_to_sequenced::Command::UpdateConnCount(v))
                         .await
                     {
                         tracing::debug!("target to client command channel is broken");

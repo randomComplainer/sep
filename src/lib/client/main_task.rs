@@ -29,7 +29,7 @@ impl Into<session_host::Config> for Config {
     fn into(self) -> session_host::Config {
         session_host::Config {
             max_packet_size: self.max_packet_size,
-            max_bytes_ahead: self.max_bytes_ahead_per_conn * 2,
+            max_bytes_ahead_per_conn: self.max_bytes_ahead_per_conn,
         }
     }
 }
@@ -195,9 +195,8 @@ where
                     self.assignment
                         .on_local_msg_to_session(
                             &session_id,
-                            proxyee_io::Cmd::UpgradeMaxBytesAhead(
-                                self.config.max_bytes_ahead_per_conn as u64
-                                    * assigned_conn_count as u64,
+                            proxyee_io::Cmd::UpdateConnCount(
+                                assigned_conn_count.try_into().unwrap(),
                             ),
                         )
                         .await;

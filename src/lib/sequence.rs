@@ -1,14 +1,14 @@
-use bytes::BytesMut;
+use crate::protocol::msg::session::Buf;
 
 pub enum StreamEntryValue {
-    Data(BytesMut),
+    Data(Buf),
     Eof,
 }
 
 pub struct StreamEntry(pub u16, pub StreamEntryValue);
 
 impl StreamEntry {
-    pub fn data(seq: u16, data: BytesMut) -> Self {
+    pub fn data(seq: u16, data: Buf) -> Self {
         Self(seq, StreamEntryValue::Data(data))
     }
 

@@ -15,6 +15,7 @@ mod sequenced_to_stream;
 pub mod sink_ext;
 mod stream_to_sequenced;
 pub mod task_scope;
+mod recyle;
 
 #[macro_use]
 pub mod decode;
