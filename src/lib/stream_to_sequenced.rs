@@ -1,4 +1,4 @@
-use bytes::BytesMut;
+use bytes::{BufMut, BytesMut};
 use derive_more::From;
 use futures::prelude::*;
 use tokio::{
@@ -55,6 +55,26 @@ impl ExternalState {
     }
 }
 
+// read that never exceeds BytesMut's capacity
+async fn read_buf<ReadStream: AsyncRead + Unpin>(
+    src: &mut ReadStream,
+    buf: &mut BytesMut,
+) -> std::io::Result<usize> {
+    let spare = buf.spare_capacity_mut();
+    assert!(!spare.is_empty());
+
+    let mut slice =
+        unsafe { std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, spare.len()) };
+
+    let n = src.read_buf(&mut slice).await?;
+
+    unsafe {
+        buf.advance_mut(n);
+    }
+
+    Ok(n)
+}
+
 async fn stream_reading_loop(
     mut seq: u16,
     mut stream_to_read: impl AsyncRead + Unpin + Send + 'static,
@@ -76,8 +96,7 @@ async fn stream_reading_loop(
             }
         };
 
-        let n = match stream_to_read
-            .read_buf(buf.as_mut()) // TODO: will thist read exceeds capacity?
+        let n = match read_buf(&mut stream_to_read, buf.as_mut())
             .instrument(tracing::trace_span!("read from stream"))
             .await
         {
