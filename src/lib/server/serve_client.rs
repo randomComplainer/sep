@@ -113,7 +113,8 @@ where
                 self.handle_assignment_actions(actions).await;
             }
             conn_host::Event::ConnectionEnded(conn_id) => {
-                self.assignment.on_conn_closed(&conn_id);
+                let actions = self.assignment.on_conn_closed(&conn_id);
+                self.handle_assignment_actions(actions).await;
             }
             conn_host::Event::ClientMsg(conn_id, client_msg) => {
                 match client_msg {

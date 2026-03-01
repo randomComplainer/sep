@@ -337,10 +337,10 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
         self.can_request_more_conn = true;
     }
 
-    pub fn on_conn_closed(&mut self, conn_id: &ConnId) {
+    pub fn on_conn_closed(&mut self, conn_id: &ConnId) -> Vec<Action> {
         let conn = match self.conns.remove(conn_id) {
             Some(x) => x,
-            None => return,
+            None => return Default::default(),
         };
 
         self.conns_by_num_of_assignment.remove(
@@ -359,6 +359,13 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
         }
 
         self.can_request_more_conn = true;
+
+        // keep at least 1 conn if any session still running
+        if !self.sessions.is_empty() && self.conns.is_empty() {
+            vec![Action::ConnectMore { expected: 1 }]
+        } else {
+            Default::default()
+        }
     }
 
     pub fn on_conn_errored(&mut self, conn_id: &ConnId) -> Vec<Action> {
@@ -369,7 +376,7 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
             }
         };
 
-        let actions = conn
+        let mut actions: Vec<Action> = conn
             .assigned_sessions
             .iter()
             .map(|session_id| Action::KillSession(*session_id))
@@ -398,6 +405,11 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
 
         self.sort_conns();
         self.can_request_more_conn = true;
+
+        // keep at least 1 conn if any session still running
+        if !self.sessions.is_empty() && self.conns.is_empty() {
+            actions.push(Action::ConnectMore { expected: 1 });
+        }
 
         actions
     }
