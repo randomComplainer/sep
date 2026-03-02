@@ -1,3 +1,4 @@
+#![feature(try_blocks)]
 #![feature(trait_alias)]
 #![feature(get_mut_unchecked)]
 #![feature(assert_matches)]
@@ -7,7 +8,6 @@ mod async_channel_ext;
 pub mod connect_target;
 pub mod future_ext;
 mod global_cmd_manager;
-pub mod handover;
 pub mod never;
 pub mod oneshot_with_ack;
 mod protocol_conn_lifetime;
@@ -33,7 +33,6 @@ pub mod prelude {
     pub use crate::decode::*;
     pub use crate::encrypt::{EncryptedRead, EncryptedWrite};
     pub use crate::future_ext::FutureExt as _;
-    pub use crate::handover::ChannelExt as _;
     pub use crate::never::{Never, UnwrapNever as _};
     pub use crate::oneshot_with_ack;
     pub use crate::sink_ext::SinkExt as _;

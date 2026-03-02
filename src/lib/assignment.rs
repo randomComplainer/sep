@@ -29,7 +29,7 @@ pub struct State<OutgoingMsg, IncomingMsg> {
     sessions: HashMap<SessionId, SessionEntry<OutgoingMsg, IncomingMsg>>,
     conns: HashMap<ConnId, ConnEntry<OutgoingMsg>>,
     conns_by_num_of_assignment: Vec<ConnId>, // keep sorted
-    global_outgoing_queue: VecDeque<OutgoingMsg>, // None session id for global msg
+    global_outgoing_queue: VecDeque<OutgoingMsg>,
     can_request_more_conn: bool,
 }
 

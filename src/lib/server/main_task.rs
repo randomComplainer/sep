@@ -5,7 +5,6 @@ use futures::prelude::*;
 use tracing::*;
 
 use super::serve_client;
-use crate::handover;
 use crate::prelude::*;
 use crate::protocol::ConnId;
 
@@ -60,76 +59,78 @@ where
     GreetedWrite:
         protocol::MessageWriter<Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>>,
 {
-    let mut conn_senders = HashMap::<
-        Box<protocol::ClientId>,
-        handover::Sender<(ConnId, GreetedRead, GreetedWrite)>,
+    let mut client_entries = HashMap::<
+        Box<ClientId>,
+        tokio::sync::mpsc::UnboundedSender<(ConnId, GreetedRead, GreetedWrite)>,
     >::new();
 
-    let (worker_ending_tx, mut worker_ending_rx) = mpsc::unbounded::<(
-        Box<protocol::ClientId>,
-        handover::ChannelRef<(ConnId, GreetedRead, GreetedWrite)>,
+    let (client_end_tx, mut client_end_rx) = mpsc::unbounded::<(
+        Box<ClientId>,
+        tokio::sync::mpsc::UnboundedSender<(ConnId, GreetedRead, GreetedWrite)>,
     )>();
 
+    let mut client_senders = HashMap::<
+        Box<ClientId>,
+        tokio::sync::mpsc::UnboundedSender<(ConnId, GreetedRead, GreetedWrite)>,
+    >::new();
+
     loop {
-        match futures::future::select(new_conn_rx.next(), worker_ending_rx.next()).await {
-            future::Either::Left((conn, _)) => {
-                // it should never end
-                let (client_id, conn_id, client_read, client_write) = conn.unwrap();
-                let conn = (conn_id, client_read, client_write);
+        tokio::select! {
+            new_conn_opt = new_conn_rx.next() => {
+                let (client_id, conn_id, client_read, client_write) = match new_conn_opt {
+                    Some(x) => x,
+                    None => {
+                        tracing::warn!("nex_conn_rx is broken, existing");
+                        return Ok(());
+                    },
+                };
 
                 if let Err(conn) = {
-                    // try to send to existing worker first
-                    match conn_senders.get_mut(&client_id) {
-                        Some(existing_sender) => match existing_sender.send(conn).await {
-                            Ok(_) => Ok(()),
-                            Err(conn_opt) => {
-                                conn_senders.remove(&client_id);
-                                match conn_opt {
-                                    Some(conn) => Err(conn),
-                                    None => Ok(()),
-                                }
-                            }
+                    let conn = (conn_id, client_read, client_write);
+                    match client_entries.get_mut(&client_id) {
+                        None => Err(conn),
+                        Some(sender) => {
+                            sender.send(conn).map_err(|err| err.0)
                         },
-                        None => Err::<(), (ConnId, GreetedRead, GreetedWrite)>(conn),
                     }
                 } {
-                    // create new worker
+                    // TODO: include ClientId in log
+                    let span = info_span!("client serving");
 
-                    let (mut worker_conn_tx, worker_conn_rx) =
-                        handover::channel::<(ConnId, GreetedRead, GreetedWrite)>();
+                    let (client_sender, client_reciver) = tokio::sync::mpsc::unbounded_channel();
+                    client_sender.send(conn).unwrap();
+                    let client_inner_fut = span.in_scope(||
+                        serve_client::run(client_reciver, config.clone().into())
+                    );
 
-                    let channel_ref = worker_conn_tx.create_channel_ref();
-                    let worker = serve_client::run(worker_conn_rx, config.clone().into());
-
-                    tokio::spawn({
+                    let client_worker_fut = {
                         let client_id = client_id.clone();
-                        let mut worker_ending_tx = worker_ending_tx.clone();
+                        let mut client_end_tx = client_end_tx.clone();
+                        let client_sender = client_sender.clone();
                         async move {
                             // don't care about result, it's a io error
-                            let _ = worker.await;
+                            let _ = client_inner_fut.await;
 
-                            let _ = worker_ending_tx.send((client_id, channel_ref)).await;
+                            let _ = client_end_tx.send((client_id,  client_sender)).await;
                         }
-                        // TODO: record worker identifier in the span
-                        .instrument(info_span!("worker task"))
-                    });
+                        .instrument(span)
+                    };
 
-                    if let Err(_) = worker_conn_tx.send(conn).await {
-                        // TODO: temporary, queue it back or something
-                        ()
-                    } else {
-                        conn_senders.insert(client_id, worker_conn_tx);
+                    client_entries.insert(client_id, client_sender);
+                    tokio::spawn(client_worker_fut);
+                }
+            },
+
+            client = client_end_rx.next() => {
+                use std::collections::hash_map::Entry::*;
+
+                let (client_id, client_sender) = client.unwrap();
+                if let Occupied(occupied) =  client_senders.entry(client_id) {
+                    if client_sender.same_channel(occupied.get()) {
+                        occupied.remove_entry();
                     }
                 };
-            }
-            future::Either::Right((ended, _)) => {
-                let (client_id, _receiver) = ended.unwrap();
-
-                // TODO: check if the sender&receiver are bind to the same channel
-                if let Some(_sender) = conn_senders.get(&client_id) {
-                    conn_senders.remove(&client_id);
-                }
-            }
+            },
         };
     }
 }

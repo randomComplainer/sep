@@ -167,7 +167,6 @@ where
 
 pub struct TcpListener {
     inner: tokio::net::TcpListener,
-    // TODO: use Arc<[u8; 32]>
     key: Arc<Key>,
 }
 

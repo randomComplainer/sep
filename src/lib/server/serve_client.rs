@@ -4,7 +4,6 @@ use tracing::Instrument as _;
 
 use super::target_io;
 use super::{conn_host, session_host};
-use crate::handover;
 use crate::prelude::*;
 use crate::protocol::msg::AtLeastOnce;
 use crate::protocol::msg::ClientMsg;
@@ -211,7 +210,7 @@ where
 }
 
 pub async fn run<GreetedRead, GreetedWrite, TConnectTarget>(
-    mut new_conn_rx: handover::Receiver<(ConnId, GreetedRead, GreetedWrite)>,
+    mut new_conn_rx: tokio::sync::mpsc::UnboundedReceiver<(ConnId, GreetedRead, GreetedWrite)>,
     config: Config<TConnectTarget>,
 ) -> Result<(), std::io::Error>
 where
