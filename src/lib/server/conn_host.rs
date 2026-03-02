@@ -3,6 +3,7 @@ use std::ops::Add as _;
 use futures::prelude::*;
 use rand::Rng as _;
 use tokio::sync::oneshot;
+use tracing::Instrument;
 
 use crate::prelude::*;
 use crate::protocol::ConnId;
@@ -105,6 +106,8 @@ where
             }
         });
 
-        self.scope_handle.run_async(managed_task).await;
+        self.scope_handle
+            .run_async(managed_task.instrument(span))
+            .await;
     }
 }
