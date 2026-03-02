@@ -99,8 +99,8 @@ where
                             tracing::warn!("event_tx is broken");
                         }
                     }
-                    Err(err) => {
-                        tracing::error!(?err, "connection error");
+                    Err(error) => {
+                        tracing::error!(?error, "conn ends in error");
                         if let Err(_) = evt_tx.send(Event::ConnectionErrored(conn_id)).await {
                             tracing::warn!("connected_tx is broken");
                         }

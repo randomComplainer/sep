@@ -112,6 +112,7 @@ where
             close_signal = close_rx.receive() => {
                 match close_signal {
                     Ok(_) => {
+                        tracing::debug!("close signal received");
                         // in case of both close_single and a message is sent
                         // and tokio::select happens to pick this branch
                         send_one_rx.close();

@@ -91,7 +91,10 @@ where
 
                 let evt = match result {
                     Ok(_) => Event::ConnectionEnded(conn_id),
-                    Err(_) => Event::ConnectionErrored(conn_id),
+                    Err(error) => {
+                        tracing::error!(?error, "conn ends in error");
+                        Event::ConnectionErrored(conn_id)
+                    }
                 };
 
                 if let Err(_) = evt_tx.send(evt).await {
