@@ -83,7 +83,7 @@ where
                                 return Ok(());
                             }
                             retry_count +=1;
-                            timeout = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(3)));
+                            timeout = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(5)));
                             continue;
                         }
                     },
