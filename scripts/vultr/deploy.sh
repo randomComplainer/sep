@@ -32,8 +32,10 @@ main(){
 		fi
 
 		# create new server
-		local REGION_ID=nrt; # Tokyo
-		local PLAN_ID=vc2-1c-1gb; # Vultr Cloud 2 - 1 CPU - 1 GB RAM
+		local REGION_ID=ewr; # New York
+		local PLAN_ID=vc2-1c-0.5gb; # Vultr Cloud 2 - 1 CPU - 1 GB RAM
+		# local REGION_ID=nrt; # Tokyo
+		# local PLAN_ID=vc2-1c-1gb; # Vultr Cloud 2 - 1 CPU - 1 GB RAM
 		local OS=2625; # Debian 13 x64 (trixie)
 		local SSH_KEY_ID="85470f80-9772-4127-88ca-ce645f260379";
 		local post_data="{

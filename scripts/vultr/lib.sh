@@ -86,3 +86,29 @@ instance_wait_for_ip() {
 		sleep 10;
 	done
 }
+
+instance_select_ip() (
+		local header=${1};
+
+		local -a fzf_params=();
+		if [[ -n "${header}" ]]; then
+				fzf_params+=(--header "${header}")
+		fi
+
+		local ip_list=$(instance_list label=sep-server \
+			| jq '.instances[]' \
+			| jq -r '.main_ip' \
+		);
+
+		if [[ -z ${ip_list} ]]; then
+			echo 'no active server' >&2;
+			exit 1;
+		fi
+
+		if [[ $ip_list != *$'\n'* ]]; then
+			echo ${ip_list};
+			exit 0;
+		fi
+
+		echo ${ip_list} | fzf "${fzf_params[@]}"
+)

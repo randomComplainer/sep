@@ -14,19 +14,7 @@ main() {
 	local server_ip=${1};
 
 	if [[ -z ${server_ip} ]]; then
-		local instances=$(instance_list label=sep-server \
-			| jq '.instances[]' \
-			| jq '{ id: .id, main_ip: .main_ip}' \
-		);
-
-		if [[ -z ${instances} ]]; then
-			echo 'no active server' >&2;
-			exit 1
-		fi
-
-		server_ip=$(echo ${instances} \
-		| jq -r '.main_ip' \
-		| fzf --header "select server to copy logs");
+		server_ip=$(instance_select_ip "select server")
 	fi
 
 	cp ${log_base_dir}/vultr.client.json ${log_dir}/client.json;
