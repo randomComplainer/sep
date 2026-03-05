@@ -138,11 +138,13 @@ where
                                 self.global_cmd_handle.ack(seq).await;
                             }
                             AtLeastOnce::Msg(seq, msg) => {
-                                self.assignment.new_outgoing_global_msg(
+                                let actions = self.assignment.new_outgoing_global_msg(
                                     protocol::msg::ServerMsg::GlobalCmd(
                                         protocol::msg::AtLeastOnce::Ack(seq),
                                     ),
                                 );
+
+                                self.handle_assignment_actions(actions).await;
 
                                 match msg {
                                     protocol::msg::global_cmd::ClientCmd::KillSession(

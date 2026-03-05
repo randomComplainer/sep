@@ -177,7 +177,7 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
         Default::default()
     }
 
-    pub fn new_outgoing_global_msg(&mut self, mut msg: OutgoingMsg) {
+    pub fn new_outgoing_global_msg(&mut self, mut msg: OutgoingMsg) -> Vec<Action> {
         for conn_id in self.conns_by_num_of_assignment.iter() {
             let conn = self.conns.get_mut(conn_id).unwrap();
             let sender = match conn.outgoing_msg_tx.take() {
@@ -194,6 +194,13 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
         }
 
         self.global_outgoing_queue.push_front(msg);
+
+        if self.can_request_more_conn {
+            self.can_request_more_conn = false;
+            return vec![Action::ConnectMore {
+                expected: self.conns.len() + 2,
+            }];
+        }
 
         return Default::default();
     }
