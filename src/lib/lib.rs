@@ -11,11 +11,11 @@ mod global_cmd_manager;
 pub mod never;
 pub mod oneshot_with_ack;
 mod protocol_conn_lifetime;
+mod recyle;
 mod sequenced_to_stream;
 pub mod sink_ext;
 mod stream_to_sequenced;
 pub mod task_scope;
-mod recyle;
 
 #[macro_use]
 pub mod decode;
@@ -54,16 +54,16 @@ pub mod cli_parameters {
     pub struct LogParameter {
         #[arg(long = "log-format", value_enum, default_value_t = LogFormat::Json)]
         pub format: LogFormat,
-        #[arg(long = "no-color", default_value_t = false)]
-        pub no_color: bool,
+        // #[arg(long = "no-color", default_value_t = false)]
+        // pub no_color: bool,
     }
 
     impl LogParameter {
         pub fn setup_subscriber(&self) {
             let layer = tracing_subscriber::fmt::layer()
-                // .with_writer(std::io::stderr)
+                .with_writer(std::io::stderr)
                 .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
-                .with_ansi(!self.no_color)
+                .with_ansi(false)
                 .with_format(self.format);
 
             let subscriber = tracing_subscriber::registry().with(layer);
