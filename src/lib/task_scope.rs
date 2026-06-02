@@ -5,8 +5,6 @@ use futures::channel::mpsc;
 use futures::prelude::*;
 use futures::stream::FuturesUnordered;
 
-use drop_guard::DropGuard;
-
 // TODO: revisit these (Sync + Send + 'static) bounds
 
 type Fut<E> = Pin<Box<dyn futures::Future<Output = Result<(), E>> + Send + 'static>>;
@@ -36,16 +34,6 @@ impl<E> ScopeHandle<E> {
         F: Future<Output = Result<(), E>> + Send + 'static,
     {
         self.task_tx.send(Box::pin(future)).map(|x| x.unwrap())
-    }
-
-    pub async fn spawn(&mut self, future: impl Future<Output = Result<(), E>> + Send + 'static)
-    where
-        E: Send + 'static,
-    {
-        self.task_tx
-            .send(Box::pin(DropGuard::new(future)))
-            .await
-            .unwrap()
     }
 }
 
@@ -94,66 +82,6 @@ pub fn new_scope<E: Sync + Send + 'static>()
 -> (ScopeHandle<E>, impl Future<Output = Result<(), E>> + Send) {
     let (task_tx, task_rx) = mpsc::unbounded();
     (ScopeHandle::new(task_tx), main_loop(task_rx))
-}
-
-mod drop_guard {
-    use std::future::Future;
-    use std::pin::Pin;
-
-    use tokio::task::{AbortHandle, JoinHandle};
-
-    // wrap around a Future
-    // original Future is run with tokio::spawn
-    // when DropGuard is dropped, the original Future is aborted
-    // DropGuard implements Future, polling behavior is forwarded to the original Future
-    pub struct DropGuard<E>(JoinHandle<Result<(), E>>, AbortHandle);
-
-    impl<E> Future for DropGuard<E>
-    where
-        E: Send + 'static,
-    {
-        type Output = Result<(), E>;
-
-        fn poll(
-            self: Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Self::Output> {
-            match unsafe { self.map_unchecked_mut(|s| &mut s.0).poll(cx) } {
-                std::task::Poll::Pending => std::task::Poll::Pending,
-                std::task::Poll::Ready(join_result) => match join_result {
-                    Ok(task_result) => std::task::Poll::Ready(task_result),
-                    Err(join_err) => {
-                        if join_err.is_cancelled() {
-                            std::task::Poll::Ready(Ok(()))
-                        } else {
-                            std::panic::resume_unwind(join_err.into_panic());
-                        }
-                    }
-                },
-            }
-        }
-    }
-
-    impl<E> DropGuard<E>
-    where
-        E: Send + 'static,
-    {
-        pub fn new<RawF>(future: RawF) -> Self
-        where
-            RawF: Future<Output = Result<(), E>> + Send + 'static,
-        {
-            // TODO: inject spawner here so it can be tested with tokio_test
-            let task = tokio::spawn(future);
-            let abort_handle = task.abort_handle();
-            Self(task, abort_handle)
-        }
-    }
-
-    impl<E> Drop for DropGuard<E> {
-        fn drop(&mut self) {
-            self.1.abort();
-        }
-    }
 }
 
 #[cfg(test)]
@@ -219,27 +147,8 @@ mod tests {
             }
         };
 
-        handle.spawn(std::future::ready(Err(1))).await;
+        handle.run_async(std::future::ready(Err(1))).await;
         assert_eq!(Err(1), task.await);
-    }
-
-    #[tokio::test]
-    async fn async_spawn() {
-        let (mut handle, scpoe_task) = new_scope::<usize>();
-
-        let lock = Arc::new(tokio::sync::Notify::new());
-        let task = {
-            let lock = lock.clone();
-            async move {
-                lock.notify_one();
-                Err::<(), usize>(3)
-            }
-        };
-
-        handle.spawn(task).await;
-
-        assert_eq!((), lock.notified().await);
-        assert_eq!(Err(3), scpoe_task.await);
     }
 
     #[tokio::test]
@@ -256,7 +165,7 @@ mod tests {
             }
         };
 
-        handle.spawn(task).await;
+        handle.run_async(task).await;
 
         let mut scpoe_task = tokio_test::task::spawn(scpoe_task);
         assert_eq!(std::task::Poll::Pending, scpoe_task.poll());
@@ -300,7 +209,7 @@ mod tests {
         };
 
         assert_eq!(2, Arc::strong_count(&counter));
-        handle.spawn(task).await;
+        handle.run_async(task).await;
         let scpoe_task = tokio::spawn(scpoe_task);
 
         task_end_rx.await.unwrap();

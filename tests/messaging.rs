@@ -1,4 +1,3 @@
-#![feature(assert_matches)]
 use std::net::SocketAddr;
 
 use protocol::msg;
@@ -211,7 +210,7 @@ async fn client_data() {
                 .send_msg(
                     msg::session::ClientMsg::Data(msg::session::Data {
                         seq: 1,
-                        data: bytes::BytesMut::from(data.as_ref()),
+                        data: bytes::BytesMut::from(data.as_ref()).into(),
                     })
                     .with_session_id(SessionId::new(0, 0))
                     .into(),
@@ -280,7 +279,7 @@ async fn server_data() {
             .send_msg(
                 msg::session::ServerMsg::Data(msg::session::Data {
                     seq: 1,
-                    data: bytes::BytesMut::from(data.as_ref()),
+                    data: bytes::BytesMut::from(data.as_ref()).into(),
                 })
                 .with_session_id(SessionId::new(0, 0))
                 .into(),
