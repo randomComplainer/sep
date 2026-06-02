@@ -78,20 +78,20 @@ async fn read_buf<ReadStream: AsyncRead + Unpin>(
 async fn stream_reading_loop(
     mut seq: u16,
     mut stream_to_read: impl AsyncRead + Unpin + Send + 'static,
-    mut buf_warehose: recyle::Warehose<BytesMut>,
+    mut buf_warehouse: recyle::Warehouse<BytesMut>,
     mut evt_tx: impl Sink<Event> + Unpin,
     mut external_state: watch::Receiver<ExternalState>,
     eof_acked_rx: oneshot::Receiver<()>,
     mut total_read: u64,
 ) -> Result<(), std::io::Error> {
     loop {
-        let mut buf = match buf_warehose.next().await {
+        let mut buf = match buf_warehouse.next().await {
             Some(mut x) => {
                 x.as_mut().clear();
                 x
             }
             None => {
-                tracing::warn!("buf warehose is broken, exiting");
+                tracing::warn!("buf warehouse is broken, exiting");
                 return Ok(());
             }
         };
@@ -192,12 +192,12 @@ pub async fn run(
 ) -> Result<(), std::io::Error> {
     let mut seq = 0;
 
-    let (mut buf_supplier, mut buf_warehose) = recyle::pair();
+    let (mut buf_supplier, mut buf_warehouse) = recyle::pair();
 
     let first_pack_len = first_pack.as_ref().map(|p| p.len()).unwrap_or(0);
     if let Some(first_pack) = first_pack {
         if first_pack.len() > 0 {
-            let first_pack = buf_warehose.register(first_pack);
+            let first_pack = buf_warehouse.register(first_pack);
 
             let evt = msg::Data {
                 seq: 0,
@@ -261,7 +261,7 @@ pub async fn run(
     let stream_reading_task = stream_reading_loop(
         seq,
         stream_to_read,
-        buf_warehose,
+        buf_warehouse,
         event_tx,
         external_state_rx,
         eof_ack_rx,

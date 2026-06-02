@@ -5,7 +5,7 @@ use std::sync::{
 
 use tokio::sync::mpsc;
 
-pub fn pair<T>() -> (Supplier<T>, Warehose<T>) {
+pub fn pair<T>() -> (Supplier<T>, Warehouse<T>) {
     let (sender, reciver) = mpsc::unbounded_channel();
     let count = Arc::new(AtomicU8::new(0));
 
@@ -14,7 +14,7 @@ pub fn pair<T>() -> (Supplier<T>, Warehose<T>) {
             sender: sender.clone(),
             count: Arc::clone(&count),
         },
-        Warehose {
+        Warehouse {
             sender,
             reciver,
             count,
@@ -22,13 +22,13 @@ pub fn pair<T>() -> (Supplier<T>, Warehose<T>) {
     )
 }
 
-pub struct Warehose<T> {
+pub struct Warehouse<T> {
     sender: mpsc::UnboundedSender<T>,
     reciver: mpsc::UnboundedReceiver<T>,
     count: Arc<AtomicU8>,
 }
 
-impl<T> Warehose<T> {
+impl<T> Warehouse<T> {
     pub async fn next(&mut self) -> Option<Recyle<T>> {
         let inner = match self.reciver.recv().await {
             Some(x) => x,
