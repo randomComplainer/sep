@@ -69,11 +69,6 @@ where
         tokio::sync::mpsc::UnboundedSender<(ConnId, GreetedRead, GreetedWrite)>,
     )>();
 
-    let mut client_senders = HashMap::<
-        Box<ClientId>,
-        tokio::sync::mpsc::UnboundedSender<(ConnId, GreetedRead, GreetedWrite)>,
-    >::new();
-
     loop {
         tokio::select! {
             new_conn_opt = new_conn_rx.next() => {
@@ -125,7 +120,7 @@ where
                 use std::collections::hash_map::Entry::*;
 
                 let (client_id, client_sender) = client.unwrap();
-                if let Occupied(occupied) =  client_senders.entry(client_id) {
+                if let Occupied(occupied) =  client_entries.entry(client_id) {
                     if client_sender.same_channel(occupied.get()) {
                         occupied.remove_entry();
                     }
