@@ -1,0 +1,18 @@
+[package]
+name = "sep"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "sep_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sep-client"
+path = "src/bin/client.rs"
+
+[[bin]]
+name = "sep-server"
+path = "src/bin/server.rs"
+
+[dependencies]
