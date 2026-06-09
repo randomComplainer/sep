@@ -1,0 +1,43 @@
+#! /bin/bash
+
+(
+  set -euo pipefail;
+
+	readonly script_dir=$(dirname ${BASH_SOURCE[0]});
+  readonly proj_dir=$(dirname ${script_dir});
+  readonly assets_dir=${proj_dir}/test_assets;
+
+  mkdir -p ${assets_dir};
+
+  openssl req \
+    -x509 \
+    -newkey ed25519 \
+    -noenc   \
+    -keyout ${assets_dir}/server.key.pem  \
+    -out ${assets_dir}/server.cert.pem \
+    --days 3650 \
+    -addext "basicConstraints=critical,CA:FALSE" \
+    -addext "keyUsage=critical,digitalSignature" \
+    -addext "extendedKeyUsage=serverAuth" \
+    -addext "subjectAltName=DNS:server" \
+    -subj "/CN=server"
+
+  openssl req \
+    -x509 \
+    -newkey ed25519 \
+    -noenc   \
+    -keyout ${assets_dir}/client.key.pem  \
+    -out ${assets_dir}/client.cert.pem \
+    --days 3650 \
+    -addext "basicConstraints=critical,CA:FALSE" \
+    -addext "keyUsage=critical,digitalSignature" \
+    -addext "extendedKeyUsage=clientAuth" \
+    -subj "/CN=client"
+
+  readonly server_trust_cert_dir=${assets_dir}/trusted;
+
+  mkdir -p ${server_trust_cert_dir};
+
+  ln -sf ../client.cert.pem ${server_trust_cert_dir}/client.cert.pem
+)
+
