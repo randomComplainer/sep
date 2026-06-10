@@ -2,9 +2,12 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
 
+use bytes::{BufMut, BytesMut};
 use quinn::{Endpoint, ServerConfig};
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
+use sep_lib::protocol;
+use tokio::io::AsyncWriteExt;
 
 #[tokio::main]
 async fn main() {
@@ -37,26 +40,22 @@ async fn main() {
     )
     .unwrap();
 
-    let incoming_conn = endpoint.accept().await.unwrap();
-    let conn = incoming_conn.await.unwrap();
+    println!("listening");
 
-    println!(
-        "[server] connection accepted: addr={}",
-        conn.remote_address()
-    );
+    loop {
+        let incoming_conn = endpoint.accept().await.unwrap();
 
-    let (mut send_stream, mut recv_stream) = conn.accept_bi().await.unwrap();
+        tokio::spawn(async move {
+            let conn = incoming_conn.await.unwrap();
 
-    let mut buf = [0u8; 4];
-    recv_stream.read_exact(buf.as_mut_slice()).await.unwrap();
-    println!("[server] read: {:?}", buf);
+            println!(
+                "[server] connection accepted: addr={}",
+                conn.remote_address()
+            );
 
-    send_stream.write(&[4, 3, 2, 1]).await.unwrap();
-    send_stream.finish().unwrap();
-
-    let _ = recv_stream.read_to_end(10).await.unwrap();
-
-    conn.closed().await;
+            handle_conn(conn).await.unwrap();
+        });
+    }
 
     println!("[server] start wait");
     endpoint.wait_idle().await;
@@ -95,4 +94,87 @@ fn config_server(
     ));
 
     quinn_config
+}
+
+async fn handle_conn(conn: quinn::Connection) -> Result<(), std::io::Error> {
+    let (mut client_write, client_read) = conn.accept_bi().await.unwrap();
+
+    let mut client_read = sep_lib::BufReader::new(client_read);
+
+    let req = client_read
+        .read_framed(sep_lib::protocol::msg::request_peeker())
+        .await
+        .unwrap();
+    dbg!(&req);
+
+    // let mut buf = [0u8; 4];
+    // client_read.read_exact(buf.as_mut_slice()).await.unwrap();
+    // println!("[server] read: {:?}", buf);
+
+    let target_port = req.port;
+
+    let target_ip = match req.addr {
+        sep_lib::protocol::msg::RequestAddr::Ipv4(ip) => IpAddr::V4(ip),
+        sep_lib::protocol::msg::RequestAddr::Ipv6(ip) => IpAddr::V6(ip),
+        sep_lib::protocol::msg::RequestAddr::Domain(buf) => {
+            let domain = str::from_utf8(&buf).unwrap();
+            let mut a = tokio::net::lookup_host((domain, target_port))
+                .await
+                .unwrap();
+            a.next().unwrap().ip()
+        }
+    };
+
+    let target_socket = tokio::net::TcpSocket::new_v4().unwrap();
+    target_socket.set_nodelay(true).unwrap();
+    target_socket.set_reuseaddr(true).unwrap();
+    let target_stream = target_socket
+        .connect(SocketAddr::new(target_ip, target_port))
+        .await
+        .unwrap();
+
+    let local_addr = target_stream.local_addr().unwrap();
+    let reply = protocol::msg::Reply {
+        bound_addr: local_addr,
+    };
+
+    let mut buf = BytesMut::with_capacity(64);
+    match &reply.bound_addr {
+        std::net::SocketAddr::V4(addr) => {
+            buf.put_u8(0x01);
+            buf.put_u32(addr.ip().to_bits());
+        }
+        std::net::SocketAddr::V6(addr) => {
+            buf.put_u8(0x04);
+            buf.put_slice(&addr.ip().octets());
+        }
+    };
+    buf.put_u16(reply.bound_addr.port());
+
+    client_write.write_all(&mut buf).await.unwrap();
+
+    let (mut target_read, mut target_write) = tokio::io::split(target_stream);
+    let (mut client_read, client_read_buffed) = client_read.unpack();
+
+    let target_to_client = async move {
+        tokio::io::copy(&mut target_read, &mut client_write).await?;
+
+        client_write.finish().unwrap();
+        client_write.stopped().await.unwrap();
+
+        Ok::<_, std::io::Error>(())
+    };
+
+    let client_to_target = async move {
+        target_write.write_all(&client_read_buffed).await?;
+        tokio::io::copy(&mut client_read, &mut target_write).await?;
+
+        Ok::<_, std::io::Error>(())
+    };
+
+    let _ = tokio::try_join!(client_to_target, target_to_client).unwrap();
+
+    conn.closed().await;
+
+    Ok(())
 }
