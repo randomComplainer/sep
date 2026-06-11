@@ -64,24 +64,25 @@ async fn main() -> Result<(), std::io::Error> {
 
     loop {
         let (source_stream, _source_addr) = listener.accept().await?;
-        let mut buf = [0u8];
-        source_stream.peek(buf.as_mut_slice()).await?;
-        let (source_read, source_write) = tokio::io::split(source_stream);
-        let source_read = BufReader::new(source_read);
 
-        match buf[0] {
-            b'C' => tokio::spawn({
-                let conn = connection.clone();
-                async move {
-                    serve_http(conn, source_read, source_write).await.unwrap();
-                }
-            }),
-            x => {
-                println!("unexpected byte: $[{x}]");
-                break;
-            }
-        };
+        let connection = connection.clone();
+        tokio::spawn(async move { handle_source(source_stream, connection).await.unwrap() });
     }
+}
+
+async fn handle_source(
+    source_stream: tokio::net::TcpStream,
+    server_conn: quinn::Connection,
+) -> Result<(), std::io::Error> {
+    let mut buf = [0u8];
+    source_stream.peek(buf.as_mut_slice()).await?;
+    let (source_read, source_write) = tokio::io::split(source_stream);
+    let source_read = BufReader::new(source_read);
+
+    match buf[0] {
+        b'C' => serve_http(server_conn, source_read, source_write).await?,
+        x => println!("unexpected byte: $[{x}]"),
+    };
 
     Ok(())
 }
@@ -130,14 +131,24 @@ async fn serve_http(
     let (target_domain, header_len) = loop {
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut req = httparse::Request::new(&mut headers);
-        match req.parse(source_read.get_buf()).unwrap() {
+
+        let parsed = match req.parse(source_read.get_buf()) {
+            Ok(x) => x,
+            Err(e) => {
+                dbg!(&e);
+                return Ok(());
+            }
+        };
+
+        match parsed {
             httparse::Status::Complete(header_len) => {
                 break (req.path.unwrap().to_owned(), header_len);
             }
             httparse::Status::Partial => {
                 let n = source_read.read_ahead().await?;
                 if n == 0 {
-                    panic!("unexpected end of stream")
+                    dbg!("unexpected end of stream");
+                    return Ok(());
                 };
                 continue;
             }
@@ -149,7 +160,13 @@ async fn serve_http(
 
     source_read.skip(header_len).await?;
 
-    let authority: Authority = target_domain.parse().unwrap();
+    let authority: Authority = match target_domain.parse() {
+        Ok(x) => x,
+        Err(e) => {
+            dbg!(&e);
+            return Ok(());
+        }
+    };
 
     let host = authority.host();
     let port = authority.port_u16().unwrap_or(443);

@@ -56,10 +56,6 @@ async fn main() {
             handle_conn(conn).await.unwrap();
         });
     }
-
-    println!("[server] start wait");
-    endpoint.wait_idle().await;
-    println!("[server] exit");
 }
 
 fn config_server(
@@ -99,7 +95,9 @@ fn config_server(
 async fn handle_conn(conn: quinn::Connection) -> Result<(), std::io::Error> {
     loop {
         let (client_write, client_read) = conn.accept_bi().await?;
-        tokio::spawn(handle_stream(client_write, client_read));
+        tokio::spawn(async move {
+            handle_stream(client_write, client_read).await.unwrap();
+        });
     }
 }
 
@@ -111,8 +109,7 @@ async fn handle_stream(
 
     let req = client_read
         .read_framed(sep_lib::protocol::msg::request_peeker())
-        .await
-        .unwrap();
+        .await?;
     dbg!(&req);
 
     // let mut buf = [0u8; 4];
@@ -125,23 +122,33 @@ async fn handle_stream(
         sep_lib::protocol::msg::RequestAddr::Ipv4(ip) => IpAddr::V4(ip),
         sep_lib::protocol::msg::RequestAddr::Ipv6(ip) => IpAddr::V6(ip),
         sep_lib::protocol::msg::RequestAddr::Domain(buf) => {
-            let domain = str::from_utf8(&buf).unwrap();
-            let mut a = tokio::net::lookup_host((domain, target_port))
-                .await
-                .unwrap();
-            a.next().unwrap().ip()
+            let domain = match str::from_utf8(&buf) {
+                Ok(x) => x,
+                Err(e) => {
+                    dbg!(e);
+                    return Ok(());
+                }
+            };
+            let mut a = tokio::net::lookup_host((domain, target_port)).await?;
+
+            match a.next() {
+                Some(addr) => addr.ip(),
+                None => {
+                    dbg!("cannot reslove domain name");
+                    return Ok(());
+                }
+            }
         }
     };
 
-    let target_socket = tokio::net::TcpSocket::new_v4().unwrap();
-    target_socket.set_nodelay(true).unwrap();
-    target_socket.set_reuseaddr(true).unwrap();
+    let target_socket = tokio::net::TcpSocket::new_v4()?;
+    target_socket.set_nodelay(true)?;
+    target_socket.set_reuseaddr(true)?;
     let target_stream = target_socket
         .connect(SocketAddr::new(target_ip, target_port))
-        .await
-        .unwrap();
+        .await?;
 
-    let local_addr = target_stream.local_addr().unwrap();
+    let local_addr = target_stream.local_addr()?;
     let reply = protocol::msg::Reply {
         bound_addr: local_addr,
     };
@@ -159,7 +166,7 @@ async fn handle_stream(
     };
     buf.put_u16(reply.bound_addr.port());
 
-    client_write.write_all(&mut buf).await.unwrap();
+    client_write.write_all(&mut buf).await?;
 
     let (mut target_read, mut target_write) = tokio::io::split(target_stream);
     let (mut client_read, client_read_buffed) = client_read.unpack();
@@ -167,8 +174,8 @@ async fn handle_stream(
     let target_to_client = async move {
         tokio::io::copy(&mut target_read, &mut client_write).await?;
 
-        client_write.finish().unwrap();
-        client_write.stopped().await.unwrap();
+        client_write.finish()?;
+        client_write.stopped().await?;
 
         Ok::<_, std::io::Error>(())
     };
@@ -180,7 +187,7 @@ async fn handle_stream(
         Ok::<_, std::io::Error>(())
     };
 
-    let _ = tokio::try_join!(client_to_target, target_to_client).unwrap();
+    let _ = tokio::try_join!(client_to_target, target_to_client)?;
 
     Ok(())
 }
