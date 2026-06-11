@@ -14,13 +14,76 @@ use sep_lib::{BufReader, protocol};
 use tokio::io::AsyncWriteExt;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), std::io::Error> {
     rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider())
         .unwrap();
 
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 9999);
 
-    listen(addr).await.unwrap();
+    let mut cwd = std::env::current_dir().unwrap();
+    cwd.push("test_assets");
+
+    let server_cert_path = {
+        let mut tmp = cwd.clone();
+        tmp.push("server.cert.pem");
+        tmp
+    };
+
+    let client_cert_path = {
+        let mut tmp = cwd.clone();
+        tmp.push("client.cert.pem");
+        tmp
+    };
+
+    let client_priv_key_path = {
+        let mut tmp = cwd.clone();
+        tmp.push("client.key.pem");
+        tmp
+    };
+
+    let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9998);
+    let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
+
+    let client_config = config_client(&client_cert_path, &client_priv_key_path, &server_cert_path);
+
+    endpoint.set_default_client_config(client_config);
+
+    let connection = endpoint
+        .connect(server_addr, "server")
+        .unwrap()
+        .await
+        .unwrap();
+
+    println!("[client] connected: addr={}", connection.remote_address());
+
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_nodelay(true)?;
+    socket.set_reuseaddr(true)?;
+    socket.bind(addr)?;
+    let listener = socket.listen(addr.port().into())?;
+
+    loop {
+        let (source_stream, _source_addr) = listener.accept().await?;
+        let mut buf = [0u8];
+        source_stream.peek(buf.as_mut_slice()).await?;
+        let (source_read, source_write) = tokio::io::split(source_stream);
+        let source_read = BufReader::new(source_read);
+
+        match buf[0] {
+            b'C' => tokio::spawn({
+                let conn = connection.clone();
+                async move {
+                    serve_http(conn, source_read, source_write).await.unwrap();
+                }
+            }),
+            x => {
+                println!("unexpected byte: $[{x}]");
+                break;
+            }
+        };
+    }
+
+    Ok(())
 }
 
 fn config_client(
@@ -58,34 +121,9 @@ fn config_client(
     quinn_config
 }
 
-async fn listen(addr: SocketAddr) -> std::io::Result<()> {
-    let socket = tokio::net::TcpSocket::new_v4().unwrap();
-    socket.set_nodelay(true)?;
-    socket.set_reuseaddr(true)?;
-    socket.bind(addr)?;
-    let listener = socket.listen(addr.port().into())?;
-
-    while let (source_stream, _source_addr) = listener.accept().await? {
-        let mut buf = [0u8];
-        source_stream.peek(buf.as_mut_slice()).await?;
-        let (source_read, source_write) = tokio::io::split(source_stream);
-        let source_read = BufReader::new(source_read);
-
-        match buf[0] {
-            b'C' => tokio::spawn(async move {
-                serve_http(source_read, source_write).await.unwrap();
-            }),
-            x => {
-                println!("unexpected byte: $[{x}]");
-                break;
-            }
-        };
-    }
-
-    Ok(())
-}
-
 async fn serve_http(
+    // TODO: accept the future that opens stream instead
+    connection: quinn::Connection,
     mut source_read: BufReader<impl tokio::io::AsyncRead + Send + Sync + Unpin + 'static>,
     mut source_write: impl tokio::io::AsyncWrite + Send + Sync + Unpin + 'static,
 ) -> std::io::Result<()> {
@@ -130,44 +168,7 @@ async fn serve_http(
         port,
     };
 
-    let mut cwd = std::env::current_dir().unwrap();
-    cwd.push("test_assets");
-
-    let server_cert_path = {
-        let mut tmp = cwd.clone();
-        tmp.push("server.cert.pem");
-        tmp
-    };
-
-    let client_cert_path = {
-        let mut tmp = cwd.clone();
-        tmp.push("client.cert.pem");
-        tmp
-    };
-
-    let client_priv_key_path = {
-        let mut tmp = cwd.clone();
-        tmp.push("client.key.pem");
-        tmp
-    };
-
-    let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9998);
-    let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
-
-    let client_config = config_client(&client_cert_path, &client_priv_key_path, &server_cert_path);
-
-    endpoint.set_default_client_config(client_config);
-
-    // TODO: stream per source instead of connection per source
-    let connection = endpoint
-        .connect(server_addr, "server")
-        .unwrap()
-        .await
-        .unwrap();
-
-    println!("[client] connected: addr={}", connection.remote_address());
-
-    let (mut server_write, server_read) = connection.open_bi().await.unwrap();
+    let (mut server_write, server_read) = connection.open_bi().await?;
     let mut server_read = BufReader::new(server_read);
 
     let mut buf = BytesMut::with_capacity(64);
@@ -216,19 +217,17 @@ async fn serve_http(
         source_write.write_all(&server_read_buffed).await?;
         tokio::io::copy(&mut server_read, &mut source_write).await?;
 
-        // server_read.read_to_end(0).await.unwrap();
-
         Ok::<_, std::io::Error>(())
     };
 
     let _ = tokio::try_join!(source_to_server, server_to_source,)?;
 
-    connection.close(quinn::VarInt::from_u64(0u64).unwrap(), &[]);
-    connection.closed().await;
+    // connection.close(quinn::VarInt::from_u64(0u64).unwrap(), &[]);
+    // connection.closed().await;
 
-    println!("[client] start wait");
-    endpoint.wait_idle().await;
-    println!("[client] exit");
+    // println!("[client] start wait");
+    // endpoint.wait_idle().await;
+    // println!("[client] exit");
 
     Ok(())
 }

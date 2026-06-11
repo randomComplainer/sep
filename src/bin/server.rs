@@ -97,8 +97,16 @@ fn config_server(
 }
 
 async fn handle_conn(conn: quinn::Connection) -> Result<(), std::io::Error> {
-    let (mut client_write, client_read) = conn.accept_bi().await.unwrap();
+    loop {
+        let (client_write, client_read) = conn.accept_bi().await?;
+        tokio::spawn(handle_stream(client_write, client_read));
+    }
+}
 
+async fn handle_stream(
+    mut client_write: quinn::SendStream,
+    client_read: quinn::RecvStream,
+) -> Result<(), std::io::Error> {
     let mut client_read = sep_lib::BufReader::new(client_read);
 
     let req = client_read
@@ -173,8 +181,6 @@ async fn handle_conn(conn: quinn::Connection) -> Result<(), std::io::Error> {
     };
 
     let _ = tokio::try_join!(client_to_target, target_to_client).unwrap();
-
-    conn.closed().await;
 
     Ok(())
 }
