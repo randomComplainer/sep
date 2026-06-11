@@ -49,7 +49,11 @@ fn config_client(
 
     let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls_config).unwrap();
 
-    let quinn_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
+    let mut quinn_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
+
+    let mut transport_config = quinn::TransportConfig::default();
+    transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(25)));
+    quinn_config.transport_config(Arc::new(transport_config));
 
     quinn_config
 }
