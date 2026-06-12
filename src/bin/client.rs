@@ -1,11 +1,12 @@
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    path::Path,
+    path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
 };
 
 use bytes::{BufMut as _, BytesMut};
+use clap::Parser;
 use http::uri::Authority;
 use quinn::Endpoint;
 use rustls::pki_types::{CertificateDer, pem::PemObject as _};
@@ -13,43 +14,41 @@ use rustls::pki_types::{CertificateDer, pem::PemObject as _};
 use sep_lib::{BufReader, protocol};
 use tokio::io::AsyncWriteExt;
 
+#[derive(Parser, Debug)]
+#[command(version)]
+struct Args {
+    #[arg(long = "bound-addr", default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 9999))]
+    bound_addr: SocketAddr,
+
+    #[arg(long = "server-addr")]
+    server_addr: SocketAddr,
+
+    #[arg(long = "server-cert")]
+    server_cert: PathBuf,
+
+    #[arg(long)]
+    cert: PathBuf,
+
+    #[arg(long)]
+    key: PathBuf,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
     rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider())
         .unwrap();
 
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 9999);
+    let args = Args::parse();
+    dbg!(&args);
 
-    let mut cwd = std::env::current_dir().unwrap();
-    cwd.push("test_assets");
-
-    let server_cert_path = {
-        let mut tmp = cwd.clone();
-        tmp.push("server.cert.pem");
-        tmp
-    };
-
-    let client_cert_path = {
-        let mut tmp = cwd.clone();
-        tmp.push("client.cert.pem");
-        tmp
-    };
-
-    let client_priv_key_path = {
-        let mut tmp = cwd.clone();
-        tmp.push("client.key.pem");
-        tmp
-    };
-
-    let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9998);
     let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
 
-    let client_config = config_client(&client_cert_path, &client_priv_key_path, &server_cert_path);
+    let client_config = config_client(&args.cert, &args.key, &args.server_cert);
 
     endpoint.set_default_client_config(client_config);
 
     let connection = endpoint
-        .connect(server_addr, "server")
+        .connect(args.server_addr, "server")
         .unwrap()
         .await
         .unwrap();
@@ -59,8 +58,8 @@ async fn main() -> Result<(), std::io::Error> {
     let socket = tokio::net::TcpSocket::new_v4().unwrap();
     socket.set_nodelay(true)?;
     socket.set_reuseaddr(true)?;
-    socket.bind(addr)?;
-    let listener = socket.listen(addr.port().into())?;
+    socket.bind(args.bound_addr)?;
+    let listener = socket.listen(args.bound_addr.port().into())?;
 
     loop {
         let (source_stream, _source_addr) = listener.accept().await?;

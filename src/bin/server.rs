@@ -1,44 +1,42 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bytes::{BufMut, BytesMut};
+use clap::Parser;
 use quinn::{Endpoint, ServerConfig};
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 use sep_lib::protocol;
 use tokio::io::AsyncWriteExt;
 
+#[derive(Parser, Debug)]
+#[command(version)]
+struct Args {
+    #[arg(long = "bound-addr", default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 9998))]
+    bound_addr: SocketAddr,
+
+    #[arg(long)]
+    key: PathBuf,
+
+    #[arg(long)]
+    cert: PathBuf,
+
+    #[arg(long = "trusted-dir")]
+    trusted_dir: PathBuf,
+}
+
 #[tokio::main]
 async fn main() {
     rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider())
         .unwrap();
 
-    let mut cwd = std::env::current_dir().unwrap();
-    cwd.push("test_assets");
+    let args = Args::parse();
+    dbg!(&args);
 
-    let server_priv_key_path = {
-        let mut tmp = cwd.clone();
-        tmp.push("server.key.pem");
-        tmp
-    };
+    let server_config = config_server(&args.key, &args.cert, &args.trusted_dir);
 
-    let server_cert_path = {
-        let mut tmp = cwd.clone();
-        tmp.push("server.cert.pem");
-        tmp
-    };
-
-    cwd.push("trusted");
-    let trusted_dir = cwd;
-
-    let server_config = config_server(&server_priv_key_path, &server_cert_path, &trusted_dir);
-
-    let endpoint = Endpoint::server(
-        server_config,
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 9998),
-    )
-    .unwrap();
+    let endpoint = Endpoint::server(server_config, args.bound_addr).unwrap();
 
     println!("listening");
 
@@ -65,6 +63,7 @@ fn config_server(
 ) -> ServerConfig {
     let server_priv_key =
         rustls::pki_types::PrivatePkcs8KeyDer::from_pem_file(server_priv_key_path).unwrap();
+
     let server_cert = rustls::pki_types::CertificateDer::from_pem_file(server_cert_path).unwrap();
 
     let mut trusted_certs = rustls::RootCertStore::empty();
