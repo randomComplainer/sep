@@ -1,0 +1,11 @@
+[Unit]
+Description=Sep Server
+After=network.target
+
+[Service]
+ExecStart=/bin/bash -c "/usr/local/bin/sep-server --bound-addr {bound_addr} --cert {cert} --key {key} --trusted-dir {trusted_dir}"
+Restart=on-failure
+User=root
+
+[Install]
+WantedBy=multi-user.target

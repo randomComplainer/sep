@@ -140,7 +140,12 @@ async fn handle_stream(
         }
     };
 
-    let target_socket = tokio::net::TcpSocket::new_v4()?;
+    dbg!(&target_ip);
+
+    let target_socket = match &target_ip {
+        IpAddr::V4(_) => tokio::net::TcpSocket::new_v4()?,
+        IpAddr::V6(_) => tokio::net::TcpSocket::new_v6()?,
+    };
     target_socket.set_nodelay(true)?;
     target_socket.set_reuseaddr(true)?;
     let target_stream = target_socket
