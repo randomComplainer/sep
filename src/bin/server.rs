@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use bytes::{BufMut, BytesMut};
 use clap::Parser;
+use futures::{FutureExt, TryFutureExt};
 use quinn::{Endpoint, ServerConfig};
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
-use sep_lib::protocol;
 use tokio::io::AsyncWriteExt;
 
 #[derive(Parser, Debug)]
@@ -111,66 +111,85 @@ async fn handle_stream(
         .await?;
     dbg!(&req);
 
-    // let mut buf = [0u8; 4];
-    // client_read.read_exact(buf.as_mut_slice()).await.unwrap();
-    // println!("[server] read: {:?}", buf);
-
     let target_port = req.port;
 
-    let target_ip = match req.addr {
-        sep_lib::protocol::msg::RequestAddr::Ipv4(ip) => IpAddr::V4(ip),
-        sep_lib::protocol::msg::RequestAddr::Ipv6(ip) => IpAddr::V6(ip),
-        sep_lib::protocol::msg::RequestAddr::Domain(buf) => {
-            let domain = match str::from_utf8(&buf) {
-                Ok(x) => x,
-                Err(e) => {
-                    dbg!(e);
-                    return Ok(());
-                }
-            };
-            let mut a = tokio::net::lookup_host((domain, target_port)).await?;
+    let target_stream = match async move {
+        let target_ip = match req.addr {
+            sep_lib::protocol::msg::RequestAddr::Ipv4(ip) => IpAddr::V4(ip),
+            sep_lib::protocol::msg::RequestAddr::Ipv6(ip) => IpAddr::V6(ip),
+            sep_lib::protocol::msg::RequestAddr::Domain(buf) => {
+                let domain = match str::from_utf8(&buf) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        dbg!(e);
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "invalid utf8 in domain",
+                        ));
+                    }
+                };
+                let mut a = tokio::net::lookup_host((domain, target_port)).await?;
 
-            match a.next() {
-                Some(addr) => addr.ip(),
-                None => {
-                    dbg!("cannot reslove domain name");
-                    return Ok(());
+                match a.next() {
+                    Some(addr) => addr.ip(),
+                    None => {
+                        dbg!("cannot reslove domain name");
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "cannot resolve domain",
+                        ));
+                    }
                 }
             }
+        };
+
+        dbg!(&target_ip);
+
+        let target_socket = match &target_ip {
+            IpAddr::V4(_) => tokio::net::TcpSocket::new_v4()?,
+            IpAddr::V6(_) => tokio::net::TcpSocket::new_v6()?,
+        };
+        target_socket.set_nodelay(true)?;
+        target_socket.set_reuseaddr(true)?;
+        let target_stream = target_socket
+            .connect(SocketAddr::new(target_ip, target_port))
+            .await?;
+
+        Ok(target_stream)
+    }
+    .await
+    {
+        Ok(target_stream) => {
+            let local_addr = target_stream.local_addr()?;
+
+            let mut buf = BytesMut::with_capacity(64);
+            buf.put_u8(0u8);
+
+            match local_addr {
+                std::net::SocketAddr::V4(addr) => {
+                    buf.put_u8(0x01);
+                    buf.put_u32(addr.ip().to_bits());
+                }
+                std::net::SocketAddr::V6(addr) => {
+                    buf.put_u8(0x04);
+                    buf.put_slice(&addr.ip().octets());
+                }
+            };
+            buf.put_u16(local_addr.port());
+
+            client_write.write_all(&mut buf).await?;
+            target_stream
+        }
+        Err(e) => {
+            dbg!("failed to connect to target");
+            dbg!(e);
+
+            let mut buf = BytesMut::with_capacity(64);
+            buf.put_u8(1u8);
+            client_write.write_all(&mut buf).await?;
+            return Ok(());
         }
     };
-
-    dbg!(&target_ip);
-
-    let target_socket = match &target_ip {
-        IpAddr::V4(_) => tokio::net::TcpSocket::new_v4()?,
-        IpAddr::V6(_) => tokio::net::TcpSocket::new_v6()?,
-    };
-    target_socket.set_nodelay(true)?;
-    target_socket.set_reuseaddr(true)?;
-    let target_stream = target_socket
-        .connect(SocketAddr::new(target_ip, target_port))
-        .await?;
-
-    let local_addr = target_stream.local_addr()?;
-    let reply = protocol::msg::Reply {
-        bound_addr: local_addr,
-    };
-
-    let mut buf = BytesMut::with_capacity(64);
-    match &reply.bound_addr {
-        std::net::SocketAddr::V4(addr) => {
-            buf.put_u8(0x01);
-            buf.put_u32(addr.ip().to_bits());
-        }
-        std::net::SocketAddr::V6(addr) => {
-            buf.put_u8(0x04);
-            buf.put_slice(&addr.ip().octets());
-        }
-    };
-    buf.put_u16(reply.bound_addr.port());
-
-    client_write.write_all(&mut buf).await?;
 
     let (mut target_read, mut target_write) = tokio::io::split(target_stream);
     let (mut client_read, client_read_buffed) = client_read.unpack();
@@ -182,14 +201,22 @@ async fn handle_stream(
         client_write.stopped().await?;
 
         Ok::<_, std::io::Error>(())
-    };
+    }
+    .inspect_err(|e| {
+        dbg!("error in forwarding from target to client");
+        dbg!(e);
+    });
 
     let client_to_target = async move {
         target_write.write_all(&client_read_buffed).await?;
         tokio::io::copy(&mut client_read, &mut target_write).await?;
 
         Ok::<_, std::io::Error>(())
-    };
+    }
+    .inspect_err(|e| {
+        dbg!("error in forwarding from client to target");
+        dbg!(e);
+    });
 
     let _ = tokio::try_join!(client_to_target, target_to_client)?;
 

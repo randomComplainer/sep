@@ -36,27 +36,51 @@ pub fn request_peeker() -> impl Peeker<Request, Reader = RequestReader> {
     })
 }
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(PartialEq, Eq))]
-pub struct Reply {
-    pub bound_addr: std::net::SocketAddr,
-}
+pub type Reply = Result<Connected, ()>;
+pub type ReplyReader = Result<ConnectedReader, ()>;
 
-pub struct ReplyReader {
-    pub bound_addr: SockerAddrReader,
-}
 impl Reader for ReplyReader {
     type Value = Reply;
     fn read(&self, buf: &mut BytesMut) -> Reply {
-        Reply {
-            bound_addr: self.bound_addr.read(buf),
+        let _ = buf.split_to(1);
+        match self {
+            Ok(connected_reader) => Ok(connected_reader.read(buf)),
+            Err(_) => Err(()),
         }
     }
 }
 
 pub fn reply_peeker() -> impl Peeker<Reply, Reader = ReplyReader> {
+    peek::peek_enum(|cursor, enum_code| {
+        Ok(Some(match enum_code {
+            0 => ReplyReader::Ok(crate::peek!(connected_peeker().peek(cursor))),
+            1 => ReplyReader::Err(()),
+            x => return Err(unknown_enum_code("reply", x)),
+        }))
+    })
+}
+
+#[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+pub struct Connected {
+    pub bound_addr: std::net::SocketAddr,
+}
+
+pub struct ConnectedReader {
+    pub bound_addr: SockerAddrReader,
+}
+impl Reader for ConnectedReader {
+    type Value = Connected;
+    fn read(&self, buf: &mut BytesMut) -> Connected {
+        Connected {
+            bound_addr: self.bound_addr.read(buf),
+        }
+    }
+}
+
+pub fn connected_peeker() -> impl Peeker<Connected, Reader = ConnectedReader> {
     peek::wrap(|cursor| {
-        Ok(Some(ReplyReader {
+        Ok(Some(ConnectedReader {
             bound_addr: crate::peek!(socket_addr_peeker().peek(cursor)),
         }))
     })

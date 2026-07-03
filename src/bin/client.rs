@@ -7,6 +7,7 @@ use std::{
 
 use bytes::{BufMut as _, BytesMut};
 use clap::Parser;
+use futures::{FutureExt, TryFutureExt};
 use http::uri::Authority;
 use quinn::Endpoint;
 use rustls::pki_types::{CertificateDer, pem::PemObject as _};
@@ -207,10 +208,17 @@ async fn serve_http(
     buf.put_u16(req.port);
     server_write.write_all(&mut buf).await?;
 
-    let reply = server_read
+    let connected = match server_read
         .read_framed(protocol::msg::reply_peeker())
-        .await?;
-    dbg!(&reply);
+        .await?
+    {
+        Ok(x) => x,
+        Err(()) => {
+            dbg!("cannot connect to target");
+            return Ok(());
+        }
+    };
+    dbg!(&connected);
 
     let http_response = b"HTTP/1.1 200 Connection Established\r\n\r\n";
 
@@ -227,23 +235,24 @@ async fn serve_http(
         server_write.stopped().await?;
 
         Ok::<_, std::io::Error>(())
-    };
+    }
+    .inspect_err(|e| {
+        dbg!("error in forwarding from source to server");
+        dbg!(e);
+    });
 
     let server_to_source = async move {
         source_write.write_all(&server_read_buffed).await?;
         tokio::io::copy(&mut server_read, &mut source_write).await?;
 
         Ok::<_, std::io::Error>(())
-    };
+    }
+    .inspect_err(|e| {
+        dbg!("error in forwarding from server to source");
+        dbg!(e);
+    });
 
     let _ = tokio::try_join!(source_to_server, server_to_source,)?;
-
-    // connection.close(quinn::VarInt::from_u64(0u64).unwrap(), &[]);
-    // connection.closed().await;
-
-    // println!("[client] start wait");
-    // endpoint.wait_idle().await;
-    // println!("[client] exit");
 
     Ok(())
 }
