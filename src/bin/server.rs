@@ -5,7 +5,7 @@ use std::sync::Arc;
 use bytes::{BufMut, BytesMut};
 use clap::Parser;
 use futures::{FutureExt, TryFutureExt};
-use quinn::{Endpoint, ServerConfig};
+use quinn::{Endpoint, ServerConfig, VarInt};
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 use tokio::io::AsyncWriteExt;
@@ -84,9 +84,15 @@ fn config_server(
         .with_single_cert(vec![server_cert], server_priv_key.into())
         .unwrap();
 
-    let quinn_config = quinn::ServerConfig::with_crypto(Arc::new(
+    let mut quinn_config = quinn::ServerConfig::with_crypto(Arc::new(
         quinn::crypto::rustls::QuicServerConfig::try_from(tls_config).unwrap(),
     ));
+
+    let mut transport_config = quinn::TransportConfig::default();
+    transport_config.send_window(1024 * 1024 * 6);
+    transport_config.receive_window(VarInt::from_u64(1024 * 1024 * 6).unwrap());
+    transport_config.stream_receive_window(VarInt::from_u64(1024 * 1024 * 4).unwrap());
+    quinn_config.transport_config(Arc::new(transport_config));
 
     quinn_config
 }

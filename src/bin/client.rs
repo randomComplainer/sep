@@ -9,7 +9,7 @@ use bytes::{BufMut as _, BytesMut};
 use clap::Parser;
 use futures::{FutureExt, TryFutureExt};
 use http::uri::Authority;
-use quinn::Endpoint;
+use quinn::{Endpoint, VarInt};
 use rustls::pki_types::{CertificateDer, pem::PemObject as _};
 
 use sep_lib::{BufReader, protocol};
@@ -117,6 +117,9 @@ fn config_client(
 
     let mut transport_config = quinn::TransportConfig::default();
     transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(25)));
+    transport_config.send_window(1024 * 1024 * 6);
+    transport_config.receive_window(VarInt::from_u64(1024 * 1024 * 6).unwrap());
+    transport_config.stream_receive_window(VarInt::from_u64(1024 * 1024 * 4).unwrap());
     quinn_config.transport_config(Arc::new(transport_config));
 
     quinn_config
