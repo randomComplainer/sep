@@ -89,9 +89,9 @@ fn config_server(
     ));
 
     let mut transport_config = quinn::TransportConfig::default();
-    transport_config.send_window(1024 * 1024 * 6);
-    transport_config.receive_window(VarInt::from_u64(1024 * 1024 * 6).unwrap());
-    transport_config.stream_receive_window(VarInt::from_u64(1024 * 1024 * 4).unwrap());
+    transport_config.send_window(1024 * 1024 * 64);
+    transport_config.receive_window(VarInt::from_u64(1024 * 1024 * 64).unwrap());
+    transport_config.stream_receive_window(VarInt::from_u64(1024 * 1024 * 16).unwrap());
     quinn_config.transport_config(Arc::new(transport_config));
 
     quinn_config

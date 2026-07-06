@@ -49,6 +49,10 @@ EOF
 				setup_http "${server_ip}";
 				all_proxy=socks5://127.0.0.1:1082 curl "http://${server_ip}:80/test_file" > /dev/null;
 				;;
+			proxy-http)
+				setup_http "${server_ip}";
+				all_proxy=http://127.0.0.1:1082 curl -vv "http://${server_ip}:80/test_file";
+				;;
 			*)
 				echo "unknown command: ${cmd}";
 				;;

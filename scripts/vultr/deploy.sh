@@ -37,10 +37,10 @@ main(){
 		local OS=2625; # Debian 13 x64 (trixie)
 
     # home
-		# local SSH_KEY_ID="85470f80-9772-4127-88ca-ce645f260379";
+		local SSH_KEY_ID="85470f80-9772-4127-88ca-ce645f260379";
 
     # jdream
-		local SSH_KEY_ID="2de5b8e1-7c4e-4546-bb9b-854cc584f12a";
+		# local SSH_KEY_ID="2de5b8e1-7c4e-4546-bb9b-854cc584f12a";
 
 		local post_data="{
 				\"region\" : \"${REGION_ID}\",
