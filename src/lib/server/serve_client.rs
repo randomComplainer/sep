@@ -4,6 +4,7 @@ use tracing::Instrument as _;
 
 use super::target_io;
 use super::{conn_host, session_host};
+use crate::buffer_pool;
 use crate::prelude::*;
 use crate::protocol::msg::AtLeastOnce;
 use crate::protocol::msg::ClientMsg;
@@ -12,16 +13,17 @@ use crate::{assignment, global_cmd_manager};
 #[derive(Debug, Clone, Copy)]
 pub struct Config<TConnectTarget> {
     pub max_packet_size: u16,
-    pub max_bytes_ahead_per_conn: u32,
+    pub max_bytes_ahead: u64,
     pub connect_target: TConnectTarget,
     pub max_conn_per_session: u8,
+    pub buf_pool_size: usize,
 }
 
 impl<TConnectTarget> Into<session_host::Config<TConnectTarget>> for Config<TConnectTarget> {
     fn into(self) -> session_host::Config<TConnectTarget> {
         session_host::Config {
             max_packet_size: self.max_packet_size,
-            max_bytes_ahead_per_conn: self.max_bytes_ahead_per_conn,
+            max_bytes_ahead: self.max_bytes_ahead,
             connect_target: self.connect_target,
         }
     }
@@ -186,19 +188,7 @@ where
                         ))
                         .await;
                 }
-                assignment::Action::Assigned {
-                    session_id,
-                    assigned_conn_count,
-                } => {
-                    self.assignment
-                        .on_local_msg_to_session(
-                            &session_id,
-                            target_io::Cmd::UpdateConnCount(
-                                assigned_conn_count.try_into().unwrap(),
-                            ),
-                        )
-                        .await;
-                }
+                assignment::Action::Assigned { .. } => {}
                 assignment::Action::ConnectMore { expected } => {
                     self.global_cmd_handle
                         .queue(protocol::msg::global_cmd::ServerCmd::ConnectMore {
@@ -222,9 +212,14 @@ where
         protocol::MessageWriter<Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>>,
     TConnectTarget: ConnectTarget,
 {
+    let (buffer_pool_fut, buffer_pool) = buffer_pool::BufferPool::create(buffer_pool::Config {
+        buf_size: config.max_packet_size,
+        pool_size: config.buf_pool_size,
+    });
+
     let (session_evt_tx, mut session_evt_rx) = mpsc::unbounded::<session_host::Event>();
     let (session_host_fut, session_handle) =
-        session_host::create(config.clone().into(), session_evt_tx);
+        session_host::create(config.clone().into(), session_evt_tx, buffer_pool);
 
     let (conn_evt_tx, mut conn_evt_rx) = mpsc::unbounded::<conn_host::Event>();
     let (conn_host_fut, conn_handle) = conn_host::create(conn_evt_tx);
@@ -299,6 +294,7 @@ where
             .instrument(tracing::trace_span!("global cmd")),
         main_loop.map(|_| Ok(()))
             .instrument(tracing::trace_span!("main loop")),
+        buffer_pool_fut.map(|_| Ok(())),
     }
     .map(|_| ())
 }

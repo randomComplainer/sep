@@ -5,13 +5,13 @@
 
 mod assignment;
 mod async_channel_ext;
+mod buffer_pool;
 pub mod connect_target;
 pub mod future_ext;
 mod global_cmd_manager;
 pub mod never;
 pub mod oneshot_with_ack;
 mod protocol_conn_lifetime;
-mod recyle;
 mod sequenced_to_stream;
 pub mod sink_ext;
 mod stream_to_sequenced;

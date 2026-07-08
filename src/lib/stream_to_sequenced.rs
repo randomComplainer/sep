@@ -3,18 +3,16 @@ use derive_more::From;
 use futures::prelude::*;
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _},
-    sync::{oneshot, watch},
+    sync::watch,
 };
 use tracing::Instrument as _;
 
 use crate::protocol::msg::session as msg;
-use crate::recyle;
 
 #[derive(Debug, From)]
 pub enum Command {
     Ack(#[from] msg::Ack),
     EofAck(#[from] msg::EofAck),
-    UpdateConnCount(u8),
 }
 
 #[derive(Debug, From)]
@@ -24,8 +22,7 @@ pub enum Event {
 }
 
 pub struct Config {
-    pub max_packet_size: u16,
-    pub max_bytes_ahead_per_conn: u32,
+    pub max_bytes_ahead: u64,
 }
 
 // return Ok(()) on broken channel
@@ -42,12 +39,12 @@ macro_rules! try_emit_evt {
 #[derive(Clone, Copy)]
 struct ExternalState {
     acked: u64,
-    max_bytes_ahead: u64,
+    eof_acked: bool,
 }
 
 impl ExternalState {
-    pub fn has_capacity_for(&self, total_read: u64) -> bool {
-        total_read - self.acked <= self.max_bytes_ahead
+    pub fn has_capacity_for(&self, total_read: u64, config: &Config) -> bool {
+        total_read - self.acked <= config.max_bytes_ahead
     }
 
     pub fn all_acked(&self, total_sent: u64) -> bool {
@@ -61,6 +58,7 @@ async fn read_buf<ReadStream: AsyncRead + Unpin>(
     buf: &mut BytesMut,
 ) -> std::io::Result<usize> {
     let spare = buf.spare_capacity_mut();
+
     assert!(!spare.is_empty());
 
     let mut slice =
@@ -78,20 +76,23 @@ async fn read_buf<ReadStream: AsyncRead + Unpin>(
 async fn stream_reading_loop(
     mut seq: u16,
     mut stream_to_read: impl AsyncRead + Unpin + Send + 'static,
-    mut buf_warehouse: recyle::Warehouse<BytesMut>,
+    mut buf_pool: crate::buffer_pool::BufferPool,
     mut evt_tx: impl Sink<Event> + Unpin,
     mut external_state: watch::Receiver<ExternalState>,
-    eof_acked_rx: oneshot::Receiver<()>,
     mut total_read: u64,
+    config: Config,
 ) -> Result<(), std::io::Error> {
+    let mut readyness_checker = [];
     loop {
-        let mut buf = match buf_warehouse.next().await {
-            Some(mut x) => {
-                x.as_mut().clear();
-                x
-            }
+        stream_to_read
+            .read(&mut readyness_checker)
+            .await
+            .inspect_err(|err| tracing::error!(?err, "stream read error"))?;
+
+        let mut buf = match buf_pool.request_one().await {
+            Some(x) => x,
             None => {
-                tracing::warn!("buf warehouse is broken, exiting");
+                tracing::warn!("buf pool is broken, exiting");
                 return Ok(());
             }
         };
@@ -116,17 +117,14 @@ async fn stream_reading_loop(
             break;
         }
 
-        let ExternalState {
-            acked,
-            max_bytes_ahead,
-        } = {
+        let ExternalState { acked, .. } = {
             let lock = external_state.borrow();
             lock.clone()
         };
         let unacked = total_sent - acked;
-        let cur_avail_win = max_bytes_ahead - unacked;
+        let cur_avail_win = config.max_bytes_ahead - unacked;
         match external_state
-            .wait_for(|state| state.has_capacity_for(total_read))
+            .wait_for(|state| state.has_capacity_for(total_read, &config))
             .instrument(tracing::trace_span!(
                 "wait for available window",
                 seq,
@@ -170,11 +168,12 @@ async fn stream_reading_loop(
 
     assert_eq!(total_read, external_state.borrow().acked);
 
-    if let Err(_) = eof_acked_rx
+    if let Err(_) = external_state
+        .wait_for(|s| s.eof_acked)
         .instrument(tracing::trace_span!("wait for eof acked"))
         .await
     {
-        tracing::warn!("eof_acked_rx is broken, exiting");
+        tracing::warn!("external_state is broken, exiting");
         return Ok(());
     };
 
@@ -186,19 +185,16 @@ async fn stream_reading_loop(
 pub async fn run(
     mut cmd_rx: impl Stream<Item = Command> + Unpin,
     mut event_tx: impl Sink<Event> + Unpin,
+    buf_pool: crate::buffer_pool::BufferPool,
     stream_to_read: impl AsyncRead + Unpin + Send + 'static,
     first_pack: Option<BytesMut>,
     config: Config,
 ) -> Result<(), std::io::Error> {
     let mut seq = 0;
 
-    let (mut buf_supplier, mut buf_warehouse) = recyle::pair();
-
     let first_pack_len = first_pack.as_ref().map(|p| p.len()).unwrap_or(0);
     if let Some(first_pack) = first_pack {
         if first_pack.len() > 0 {
-            let first_pack = buf_warehouse.register(first_pack);
-
             let evt = msg::Data {
                 seq: 0,
                 data: first_pack.into(),
@@ -209,20 +205,12 @@ pub async fn run(
         }
     }
 
-    while buf_supplier.get_count() < 2 {
-        buf_supplier
-            .supply(BytesMut::with_capacity(config.max_packet_size as usize))
-            .unwrap();
-    }
-
     let (external_state_tx, external_state_rx) = watch::channel(ExternalState {
         acked: 0,
-        max_bytes_ahead: (config.max_bytes_ahead_per_conn * 2) as u64,
+        eof_acked: false,
     });
-    let (eof_ack_tx, eof_ack_rx) = oneshot::channel::<()>();
 
     let cmd_receiving_task = {
-        let mut eof_acked_tx = Option::Some(eof_ack_tx);
         async move {
             while let Some(cmd) = cmd_rx.next().await {
                 tracing::debug!(cmd = ?cmd, "command");
@@ -231,29 +219,12 @@ pub async fn run(
                         external_state_tx.send_modify(|old| old.acked += ack.bytes as u64);
                     }
                     Command::EofAck(_) => {
-                        if let Err(_) = eof_acked_tx.take().expect("eof acked twice").send(()) {
-                            tracing::warn!("eof acked tx is broken, exiting");
-                            return Ok::<_, std::io::Error>(());
-                        }
-                    }
-                    Command::UpdateConnCount(count) => {
-                        external_state_tx.send_modify(|old| {
-                            old.max_bytes_ahead = std::cmp::max(
-                                old.max_bytes_ahead,
-                                config.max_bytes_ahead_per_conn as u64 * (count as u64 + 2),
-                            )
-                        });
-
-                        while buf_supplier.get_count() < count + 2 {
-                            let _ = buf_supplier
-                                .supply(BytesMut::with_capacity(config.max_packet_size as usize));
-                        }
+                        external_state_tx.send_modify(|old| old.eof_acked = true);
                     }
                 }
             }
 
-            tracing::warn!("command channel is broken, exiting");
-
+            tracing::debug!("end of commands");
             return Ok::<_, std::io::Error>(());
         }
     };
@@ -261,11 +232,11 @@ pub async fn run(
     let stream_reading_task = stream_reading_loop(
         seq,
         stream_to_read,
-        buf_warehouse,
+        buf_pool,
         event_tx,
         external_state_rx,
-        eof_ack_rx,
         first_pack_len as u64,
+        config,
     );
 
     // cmd_receiving_task doesn't end by itself,

@@ -7,14 +7,14 @@ use crate::prelude::*;
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub max_packet_size: u16,
-    pub max_bytes_ahead_per_conn: u32,
+    pub max_bytes_ahead: u64,
 }
 
 impl Into<proxyee_io::Config> for Config {
     fn into(self) -> proxyee_io::Config {
         proxyee_io::Config {
             max_packet_size: self.max_packet_size,
-            max_bytes_ahead_per_conn: self.max_bytes_ahead_per_conn,
+            max_bytes_ahead: self.max_bytes_ahead,
         }
     }
 }
@@ -57,6 +57,7 @@ where
         &mut self,
         session_id: SessionId,
         agent: impl socks5::server_agent::Init,
+        buf_pool: crate::buffer_pool::BufferPool,
     ) -> mpsc::UnboundedSender<proxyee_io::Cmd> {
         let (session_server_msg_tx, session_server_msg_rx) = mpsc::unbounded();
         let mut evt_tx = self.evt_tx.clone();
@@ -69,6 +70,7 @@ where
                 .with_sync(move |msg: protocol::msg::session::ClientMsg| {
                     Event::ClientMsg(session_id, msg)
                 }),
+            buf_pool,
             self.config.into(),
         );
 

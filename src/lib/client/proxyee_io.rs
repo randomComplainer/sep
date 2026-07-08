@@ -8,7 +8,7 @@ use protocol::msg::session as msg;
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub max_packet_size: u16,
-    pub max_bytes_ahead_per_conn: u32,
+    pub max_bytes_ahead: u64,
 }
 
 impl Into<crate::sequenced_to_stream::Config> for Config {
@@ -19,11 +19,10 @@ impl Into<crate::sequenced_to_stream::Config> for Config {
     }
 }
 
-impl Into<crate::stream_to_sequenced::Config> for Config {
-    fn into(self) -> crate::stream_to_sequenced::Config {
-        crate::stream_to_sequenced::Config {
-            max_packet_size: self.max_packet_size,
-            max_bytes_ahead_per_conn: self.max_bytes_ahead_per_conn,
+impl Into<stream_to_sequenced::Config> for Config {
+    fn into(self) -> stream_to_sequenced::Config {
+        stream_to_sequenced::Config {
+            max_bytes_ahead: self.max_bytes_ahead,
         }
     }
 }
@@ -31,7 +30,6 @@ impl Into<crate::stream_to_sequenced::Config> for Config {
 #[derive(From, Debug)]
 pub enum Cmd {
     ServerMsg(#[from] msg::ServerMsg),
-    UpdateConnCount(u8),
 }
 
 // panic on protocol error (cache overflow/unexpected message)
@@ -42,6 +40,7 @@ pub async fn run(
     proxyee: impl socks5::server_agent::Init,
     cmd_read: impl Stream<Item = Cmd> + Send + Unpin + 'static,
     server_write: impl Sink<msg::ClientMsg> + Unpin + Send + Clone + 'static,
+    buf_pool: crate::buffer_pool::BufferPool,
     config: Config,
 ) -> Result<(), std::io::Error> {
     let mut cmd_read = cmd_read.inspect(|cmd| tracing::debug!(cmd = ?cmd, "cmd"));
@@ -96,14 +95,12 @@ pub async fn run(
         }
     };
 
-    let (reply, conn_count, early_target_cmds) = {
+    let (reply, early_target_cmds) = {
         // target might start send data as soon as server connected to it.
         // so we need to buffer it until client receives server reply.
         // TODO: Magic btw
         let mut early_target_packages: Vec<crate::sequenced_to_stream::Command> =
             Vec::with_capacity(8);
-
-        let mut conn_count = 0;
 
         loop {
             match cmd_read
@@ -114,7 +111,7 @@ pub async fn run(
                 Some(cmd) => match cmd {
                     Cmd::ServerMsg(msg) => match msg {
                         msg::ServerMsg::Reply(msg) => {
-                            break (msg, conn_count, early_target_packages);
+                            break (msg, early_target_packages);
                         }
                         msg::ServerMsg::ReplyError(err) => {
                             use protocol::msg::session::ConnectionError::*;
@@ -140,9 +137,6 @@ pub async fn run(
                             panic!("unexpected server msg while receiving reply: [{:?}]", msg);
                         }
                     },
-                    Cmd::UpdateConnCount(x) => {
-                        conn_count = std::cmp::max(conn_count, x);
-                    }
                 },
                 None => {
                     tracing::warn!("unexpected end of server message, exiting");
@@ -174,28 +168,18 @@ pub async fn run(
         futures::channel::mpsc::unbounded();
 
     let (buf, proxyee_read) = proxyee_read.into_parts();
-    let proxyee_to_server = crate::stream_to_sequenced::run(
+    let proxyee_to_server = stream_to_sequenced::run(
         proxyee_to_server_cmd_rx,
         server_write.clone().with_sync(|evt| match evt {
-            crate::stream_to_sequenced::Event::Data(data) => data.into(),
-            crate::stream_to_sequenced::Event::Eof(eof) => eof.into(),
+            stream_to_sequenced::Event::Data(data) => data.into(),
+            stream_to_sequenced::Event::Eof(eof) => eof.into(),
         }),
+        buf_pool,
         proxyee_read,
         Some(buf),
         config.into(),
     )
     .instrument(tracing::trace_span!("proxyee to server"));
-
-    let proxyee_to_server = {
-        let mut proxyee_to_server_cmd_tx = proxyee_to_server_cmd_tx.clone();
-        async move {
-            let _ = proxyee_to_server_cmd_tx
-                .send(stream_to_sequenced::Command::UpdateConnCount(conn_count))
-                .await;
-
-            proxyee_to_server.await
-        }
-    };
 
     let (mut server_to_proxyee_cmd_tx, server_to_proxyee_cmd_rx) =
         futures::channel::mpsc::unbounded();
@@ -260,15 +244,6 @@ pub async fn run(
                     }
                     _ => panic!("unexpected server msg: {:?}", msg),
                 },
-                Cmd::UpdateConnCount(x) => {
-                    if let Err(_) = proxyee_to_server_cmd_tx
-                        .send(stream_to_sequenced::Command::UpdateConnCount(x))
-                        .await
-                    {
-                        tracing::warn!("proxyee to server cmd channel is broken");
-                        return;
-                    }
-                }
             }
         }
 

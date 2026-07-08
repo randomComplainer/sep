@@ -7,7 +7,7 @@ use crate::prelude::*;
 #[derive(Debug, Clone, Copy)]
 pub struct Config<TConnectTarget> {
     pub max_packet_size: u16,
-    pub max_bytes_ahead_per_conn: u32,
+    pub max_bytes_ahead: u64,
     pub connect_target: TConnectTarget,
 }
 
@@ -15,7 +15,7 @@ impl<TConnectTarget> Into<target_io::Config<TConnectTarget>> for Config<TConnect
     fn into(self) -> target_io::Config<TConnectTarget> {
         target_io::Config {
             max_packet_size: self.max_packet_size,
-            max_bytes_ahead_per_conn: self.max_bytes_ahead_per_conn,
+            max_bytes_ahead: self.max_bytes_ahead,
             connect_target: self.connect_target,
         }
     }
@@ -29,6 +29,7 @@ pub enum Event {
 pub fn create<EvtTx, TConnectTarget>(
     config: Config<TConnectTarget>,
     evt_tx: EvtTx,
+    buf_pool: crate::buffer_pool::BufferPool,
 ) -> (
     impl Future<Output = Result<(), Never>> + Send + 'static,
     Handle<EvtTx, TConnectTarget>,
@@ -41,6 +42,7 @@ pub fn create<EvtTx, TConnectTarget>(
             config,
             evt_tx,
             scope_handle,
+            buf_pool,
         },
     )
 }
@@ -49,6 +51,7 @@ pub struct Handle<EvtTx, TConnectTarget> {
     config: Config<TConnectTarget>,
     evt_tx: EvtTx,
     scope_handle: task_scope::ScopeHandle<Never>,
+    buf_pool: crate::buffer_pool::BufferPool,
 }
 
 impl<EvtTx, TConnectTarget> Handle<EvtTx, TConnectTarget>
@@ -68,6 +71,7 @@ where
             evt_tx
                 .clone()
                 .with_sync(move |msg| Event::ServerMsg(session_id, msg)),
+            self.buf_pool.clone(),
             self.config.clone().into(),
         );
 

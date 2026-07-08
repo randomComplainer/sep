@@ -3,7 +3,7 @@ use derive_more::From;
 
 use crate::decode::*;
 use crate::prelude::*;
-use crate::recyle::Recyle;
+use crate::buffer_pool::Recycle;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Request {
@@ -63,7 +63,7 @@ pub fn reply_peeker() -> impl Peeker<Reply, Reader = ReplyReader> {
 #[derive(PartialEq, Eq, From)]
 pub enum Buf {
     Raw(#[from] BytesMut),
-    Recyle(#[from] Recyle<BytesMut>),
+    Recyle(#[from] Recycle<BytesMut>),
 }
 
 impl AsRef<[u8]> for Buf {

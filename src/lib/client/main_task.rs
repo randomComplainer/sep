@@ -4,6 +4,7 @@ use thiserror::Error;
 use tracing::Instrument as _;
 
 use super::{conn_host, proxyee_io, session_host};
+use crate::buffer_pool;
 use crate::prelude::*;
 use crate::protocol::msg::AtLeastOnce;
 use crate::protocol::msg::ServerMsg;
@@ -21,7 +22,7 @@ pub enum ClientError {
 pub struct Config {
     pub max_packet_size: u16,
     pub max_server_conn: usize,
-    pub max_bytes_ahead_per_conn: u32,
+    pub max_bytes_ahead: u64,
     pub max_conn_per_session: u8,
 }
 
@@ -29,7 +30,7 @@ impl Into<session_host::Config> for Config {
     fn into(self) -> session_host::Config {
         session_host::Config {
             max_packet_size: self.max_packet_size,
-            max_bytes_ahead_per_conn: self.max_bytes_ahead_per_conn,
+            max_bytes_ahead: self.max_bytes_ahead,
         }
     }
 }
@@ -49,6 +50,7 @@ struct State<ServerConnector, SessionEvtTx, ConnEvtTx> {
     global_cmd_handle: global_cmd_manager::Handle<protocol::msg::global_cmd::ClientCmd>,
     assignment: assignment::State<protocol::msg::ClientMsg, proxyee_io::Cmd>,
     attempting_conn_count: usize,
+    buf_pool: buffer_pool::BufferPool,
 }
 
 impl<ServerConnector, SessionEvtTx, ConnEvtTx, ConnEvtTxErr>
@@ -64,6 +66,7 @@ where
         session_handle: session_host::Handle<SessionEvtTx>,
         conn_handle: conn_host::Handle<ConnEvtTx, ServerConnector>,
         global_cmd_handle: global_cmd_manager::Handle<protocol::msg::global_cmd::ClientCmd>,
+        buf_pool: buffer_pool::BufferPool,
     ) -> Self {
         Self {
             config,
@@ -72,6 +75,7 @@ where
             global_cmd_handle,
             assignment: assignment::State::new(config.into()),
             attempting_conn_count: 0,
+            buf_pool,
         }
     }
 
@@ -80,7 +84,10 @@ where
         session_id: SessionId,
         proxyee: impl socks5::server_agent::Init,
     ) {
-        let session_msg_tx = self.session_handle.new_session(session_id, proxyee).await;
+        let session_msg_tx = self
+            .session_handle
+            .new_session(session_id, proxyee, self.buf_pool.clone())
+            .await;
         self.assignment.on_new_session(session_id, session_msg_tx);
     }
 
@@ -191,19 +198,7 @@ where
                         ))
                         .await;
                 }
-                assignment::Action::Assigned {
-                    session_id,
-                    assigned_conn_count,
-                } => {
-                    self.assignment
-                        .on_local_msg_to_session(
-                            &session_id,
-                            proxyee_io::Cmd::UpdateConnCount(
-                                assigned_conn_count.try_into().unwrap(),
-                            ),
-                        )
-                        .await;
-                }
+                assignment::Action::Assigned { .. } => {}
                 assignment::Action::ConnectMore { expected } => {
                     self.match_expected_conn_count(expected).await;
                 }
@@ -241,7 +236,18 @@ where
     let (global_cmd_evt_tx, mut global_cmd_evt_rx) = mpsc::unbounded();
     let (global_cmd_fut, global_cmd_handle) = global_cmd_manager::run(global_cmd_evt_tx);
 
-    let mut state = State::new(config, session_handle, conn_handle, global_cmd_handle);
+    let (buffer_pool_fut, buffer_pool) = buffer_pool::BufferPool::create(buffer_pool::Config {
+        buf_size: config.max_packet_size,
+        pool_size: config.max_server_conn * 2 + 4,
+    });
+
+    let mut state = State::new(
+        config,
+        session_handle,
+        conn_handle,
+        global_cmd_handle,
+        buffer_pool,
+    );
 
     let main_loop = async move {
         loop {
@@ -308,6 +314,7 @@ where
             .instrument(tracing::trace_span!("global cmd")),
         main_loop.map(|_| Ok(()))
             .instrument(tracing::trace_span!("main loop")),
+        buffer_pool_fut.map(|_| Ok(())),
     }
     .map(|_| ())
 }
