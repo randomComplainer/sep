@@ -1,13 +1,11 @@
 use futures::prelude::*;
 use tokio::sync::oneshot;
-use tracing::Instrument as _;
 
 use crate::prelude::*;
 use crate::protocol::ConnId;
 
 pub enum Event {
     ServerConnected(ConnId),
-    ConnectionAttemptFailed,
     ConnectionErrored(ConnId),
     ConnectionEnded(ConnId),
     ServerMsg(ConnId, protocol::msg::ServerMsg),
@@ -15,102 +13,205 @@ pub enum Event {
 }
 
 pub fn create<EvtTx, EvtTxErr, ServerConnector>(
-    evt_tx: EvtTx,
+    mut evt_tx: EvtTx,
     server_connector: ServerConnector,
-) -> (
-    impl Future<Output = Result<(), Never>> + Send,
-    Handle<EvtTx, ServerConnector>,
-)
+) -> (impl Future<Output = Result<(), Never>>, Handle)
 where
     ServerConnector: super::ServerConnector,
     EvtTx: Sink<Event, Error = EvtTxErr> + Unpin + Send + Clone + 'static,
-    EvtTxErr: std::fmt::Debug + Send,
+    EvtTxErr: std::fmt::Debug + Send + 'static,
 {
-    let (scope_handle, scope_task) = task_scope::new_scope();
+    let (conn_creation_cmd_tx, conn_creation_cmd_rx) =
+        tokio::sync::mpsc::unbounded_channel::<conn_creation::Cmd>();
+
+    let mut new_conn_stream = conn_creation::run(server_connector, conn_creation_cmd_rx);
+
+    let main_task = {
+        let conn_creation_cmd_tx = conn_creation_cmd_tx.clone();
+        async move {
+            loop {
+                let (conn_id, conn_read, conn_write) = match new_conn_stream.next().await {
+                    Some(x) => x,
+                    None => return Ok(()),
+                };
+
+                if let Err(_) = evt_tx.send(Event::ServerConnected(conn_id)).await {
+                    return Ok(());
+                }
+
+                let span = tracing::trace_span!("conn lifetime", ?conn_id);
+
+                let task = span.in_scope(|| {
+                    let (lifetime_task, _gentle_close_sender) = crate::protocol_conn_lifetime::run(
+                        Default::default(),
+                        conn_read,
+                        conn_write,
+                        evt_tx
+                            .clone()
+                            .with_sync(move |server_msg| Event::ServerMsg(conn_id, server_msg)),
+                        evt_tx
+                            .clone()
+                            .with_sync(move |sender| Event::ClientMsgSenderReady(conn_id, sender)),
+                    );
+
+                    let mut evt_tx = evt_tx.clone();
+                    let conn_creation_cmd_tx = conn_creation_cmd_tx.clone();
+                    async move {
+                        match lifetime_task.await {
+                            Ok(_) => {
+                                let _ = evt_tx.send(Event::ConnectionEnded(conn_id)).await;
+                            }
+                            Err(error) => {
+                                tracing::error!(?error, "conn ends in error");
+                                let _ = evt_tx.send(Event::ConnectionErrored(conn_id)).await;
+                            }
+                        };
+
+                        let _ = conn_creation_cmd_tx.send(conn_creation::Cmd::Disconnected);
+                    }
+                });
+
+                tokio::spawn(task);
+            }
+        }
+    };
 
     (
-        scope_task,
+        main_task,
         Handle {
-            evt_tx,
-            scope_handle,
-            server_connector,
+            conn_creation_cmd_tx,
         },
     )
 }
 
-pub struct Handle<EvtTx, ServerConnector> {
-    evt_tx: EvtTx,
-    scope_handle: task_scope::ScopeHandle<Never>,
-    server_connector: ServerConnector,
+#[derive(Clone)]
+pub struct Handle {
+    conn_creation_cmd_tx: tokio::sync::mpsc::UnboundedSender<conn_creation::Cmd>,
 }
 
-impl<EvtTx, EvtTxErr, ServerConnector> Handle<EvtTx, ServerConnector>
-where
-    ServerConnector: super::ServerConnector,
-    EvtTx: Sink<Event, Error = EvtTxErr> + Unpin + Send + Clone + 'static,
-    EvtTxErr: std::fmt::Debug + Send,
-{
-    pub async fn create_connection(&mut self) {
+impl Handle {
+    pub fn expect_conn(&mut self, expected: u8) {
         tracing::debug!("create new connection");
 
-        let connector = self.server_connector.clone();
-        let mut evt_tx = self.evt_tx.clone();
+        let _ = self
+            .conn_creation_cmd_tx
+            .send(conn_creation::Cmd::Expected(expected));
+    }
+}
 
-        let task = async move {
-            let (conn_id, conn_read, conn_write) = match connector
-                .connect()
-                .instrument(tracing::trace_span!("connecte to server"))
-                .await
-            {
-                Ok(result) => result,
+mod conn_creation {
+    use tracing::Instrument as _;
 
-                Err(err) => {
-                    tracing::error!(?err, "failed to connect to server");
+    use crate::prelude::*;
 
-                    if let Err(_) = evt_tx.send(Event::ConnectionAttemptFailed).await {
-                        tracing::warn!("connected_tx is broken");
-                    }
+    pub enum Cmd {
+        Expected(u8),
+        Disconnected,
+    }
 
-                    return;
-                }
-            };
+    #[derive(Debug)]
+    struct State {
+        expected: u8,
+        current: u8,
+    }
 
-            async move {
-                if let Err(_) = evt_tx.send(Event::ServerConnected(conn_id)).await {
-                    tracing::warn!("event_tx is broken, exiting");
-                    return;
-                }
+    impl State {
+        pub fn new() -> Self {
+            Self {
+                expected: 0,
+                current: 0,
+            }
+        }
 
-                let (lifetime_task, _gentle_close_sender) = crate::protocol_conn_lifetime::run(
-                    Default::default(),
-                    conn_read,
-                    conn_write,
-                    evt_tx
-                        .clone()
-                        .with_sync(move |server_msg| Event::ServerMsg(conn_id, server_msg)),
-                    evt_tx
-                        .clone()
-                        .with_sync(move |sender| Event::ClientMsgSenderReady(conn_id, sender)),
-                );
+        pub fn satisfied(&self) -> bool {
+            self.expected <= self.current
+        }
+    }
 
-                match lifetime_task.await {
-                    Ok(_) => {
-                        if let Err(_) = evt_tx.send(Event::ConnectionEnded(conn_id)).await {
-                            tracing::warn!("event_tx is broken");
+    pub fn run<ServerConnector>(
+        connector: ServerConnector,
+        cmd_rx: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
+    ) -> impl futures::Stream<
+        Item = (
+            ConnId,
+            ServerConnector::GreetedRead,
+            ServerConnector::GreetedWrite,
+        ),
+    >
+    + 'static
+    + Unpin
+    where
+        ServerConnector: crate::client::server_connector::ServerConnector,
+    {
+        let (state_tx, state_rx) = tokio::sync::watch::channel(State::new());
+
+        let stream = futures::stream::unfold(
+            (connector, cmd_rx, state_tx, state_rx),
+            async move |(connector, mut cmd_rx, state_tx, mut state_rx)| {
+                let new_conn = loop {
+                    tokio::select! {
+                        cmd = cmd_rx.recv() => {
+                            let cmd = match cmd {
+                                Some(x) => x,
+                                None => return None,
+                            };
+
+                            match cmd {
+                                Cmd::Expected(x) => {
+                                    let _ = state_tx.send_if_modified(|old| {
+                                        if old.expected < x {
+                                            old.expected = x;
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    });
+                                }
+                                Cmd::Disconnected => state_tx.send_modify(|old| old.current -= 1),
+                            };
+                        },
+                        lock = state_rx.wait_for(|s| !s.satisfied()) => {
+                            let lock = match lock {
+                                Ok(x) => x,
+                                Err(_) => return None,
+                            };
+                            tracing::debug!(state=?*lock, "unsatisified conn count");
+                            drop(lock);
+
+                            let new_conn = loop {
+                                match connector
+                                    .connect()
+                                    .instrument(tracing::trace_span!("connect to server"))
+                                    .await
+                                {
+                                    Ok(result) => break result,
+
+                                    Err(err) => {
+                                        tracing::error!(?err, "failed to connect to server");
+
+                                        // TODO: delay? retry limitation?
+                                        continue;
+                                    }
+                                }
+                            };
+
+                            state_tx.send_modify(|old| {
+                                old.current += 1;
+                                if old.satisfied() {
+                                    old.expected = 0;
+                                }
+                            });
+
+                            break new_conn;
                         }
-                    }
-                    Err(error) => {
-                        tracing::error!(?error, "conn ends in error");
-                        if let Err(_) = evt_tx.send(Event::ConnectionErrored(conn_id)).await {
-                            tracing::warn!("connected_tx is broken");
-                        }
+
                     }
                 };
-            }
-            .instrument(tracing::trace_span!("conn lifetime", ?conn_id))
-            .await
-        };
 
-        self.scope_handle.run_async(task.map(|_| Ok(()))).await;
+                return Some((new_conn, (connector, cmd_rx, state_tx, state_rx)));
+            },
+        );
+
+        return Box::pin(stream);
     }
 }

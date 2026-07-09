@@ -405,10 +405,6 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
         actions
     }
 
-    pub fn conn_count(&self) -> usize {
-        self.conns.len()
-    }
-
     pub fn on_new_session(
         &mut self,
         session_id: SessionId,

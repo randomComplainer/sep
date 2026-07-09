@@ -13,6 +13,7 @@ where
                 std::io::Error,
             >,
         > + Send
+        + Sync
         + Unpin
         + 'static;
 
@@ -29,6 +30,7 @@ where
     TFuture: std::future::Future<
             Output = Result<(protocol::ConnId, TGreetedRead, TGreetedWrite), std::io::Error>,
         > + Send
+        + Sync
         + Unpin
         + 'static,
 {

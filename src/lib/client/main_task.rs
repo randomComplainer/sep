@@ -43,28 +43,23 @@ impl Into<assignment::Config> for Config {
     }
 }
 
-struct State<ServerConnector, SessionEvtTx, ConnEvtTx> {
+struct State<SessionEvtTx> {
     config: Config,
     session_handle: session_host::Handle<SessionEvtTx>,
-    conn_handle: conn_host::Handle<ConnEvtTx, ServerConnector>,
+    conn_handle: conn_host::Handle,
     global_cmd_handle: global_cmd_manager::Handle<protocol::msg::global_cmd::ClientCmd>,
     assignment: assignment::State<protocol::msg::ClientMsg, proxyee_io::Cmd>,
-    attempting_conn_count: usize,
     buf_pool: buffer_pool::BufferPool,
 }
 
-impl<ServerConnector, SessionEvtTx, ConnEvtTx, ConnEvtTxErr>
-    State<ServerConnector, SessionEvtTx, ConnEvtTx>
+impl<SessionEvtTx> State<SessionEvtTx>
 where
-    ServerConnector: super::ServerConnector,
-    SessionEvtTx: Sink<session_host::Event> + Unpin + Send + Clone + 'static,
-    ConnEvtTx: Sink<conn_host::Event, Error = ConnEvtTxErr> + Unpin + Send + Clone + 'static,
-    ConnEvtTxErr: std::fmt::Debug + Send,
+    SessionEvtTx: Sink<session_host::Event> + Unpin + Send + Sync + Clone + 'static,
 {
     pub fn new(
         config: Config,
         session_handle: session_host::Handle<SessionEvtTx>,
-        conn_handle: conn_host::Handle<ConnEvtTx, ServerConnector>,
+        conn_handle: conn_host::Handle,
         global_cmd_handle: global_cmd_manager::Handle<protocol::msg::global_cmd::ClientCmd>,
         buf_pool: buffer_pool::BufferPool,
     ) -> Self {
@@ -74,7 +69,6 @@ where
             conn_handle,
             global_cmd_handle,
             assignment: assignment::State::new(config.into()),
-            attempting_conn_count: 0,
             buf_pool,
         }
     }
@@ -110,16 +104,11 @@ where
     pub async fn handle_conn_evt(&mut self, evt: conn_host::Event) {
         match evt {
             conn_host::Event::ServerConnected(conn_id) => {
-                self.attempting_conn_count -= 1;
                 self.assignment.on_conn_created(conn_id);
             }
             conn_host::Event::ClientMsgSenderReady(conn_id, sender) => {
                 let actions = self.assignment.conn_ready_to_send(&conn_id, sender);
                 self.handle_assignment_actions(actions).await;
-            }
-            conn_host::Event::ConnectionAttemptFailed => {
-                // TODO: delay? retry limitation?
-                self.conn_handle.create_connection().await;
             }
             conn_host::Event::ConnectionErrored(conn_id) => {
                 let actions = self.assignment.on_conn_errored(&conn_id);
@@ -206,12 +195,12 @@ where
     }
 
     async fn match_expected_conn_count(&mut self, expectation: usize) {
-        while (self.attempting_conn_count + self.assignment.conn_count())
-            < std::cmp::min(self.config.max_server_conn, expectation)
-        {
-            self.conn_handle.create_connection().await;
-            self.attempting_conn_count += 1;
-        }
+        // TODO: use u8 everywhere instead of usize
+        self.conn_handle.expect_conn(
+            std::cmp::min(self.config.max_server_conn, expectation)
+                .try_into()
+                .unwrap(),
+        );
     }
 }
 
