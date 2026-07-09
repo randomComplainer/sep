@@ -76,7 +76,7 @@ async fn read_buf<ReadStream: AsyncRead + Unpin>(
 async fn stream_reading_loop(
     mut seq: u16,
     mut stream_to_read: impl AsyncRead + Unpin + Send + 'static,
-    mut buf_pool: crate::buffer_pool::BufferPool,
+    buf_pool: crate::buffer_pool::BufferPool,
     mut evt_tx: impl Sink<Event> + Unpin,
     mut external_state: watch::Receiver<ExternalState>,
     mut total_read: u64,

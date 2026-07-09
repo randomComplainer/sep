@@ -4,7 +4,6 @@
 #![feature(assert_matches)]
 
 mod assignment;
-mod async_channel_ext;
 mod buffer_pool;
 pub mod connect_target;
 pub mod future_ext;

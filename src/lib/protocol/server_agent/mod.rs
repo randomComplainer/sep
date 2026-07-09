@@ -29,11 +29,13 @@ pub trait Init {
     type GreetedRead;
     type GreetedWrite;
 
-    async fn recv_greeting(
+    fn recv_greeting(
         self,
         server_timestamp: u64,
-    ) -> Result<
-        (Box<ClientId>, ConnId, Self::GreetedRead, Self::GreetedWrite),
-        InitError<Self::Stream>,
-    >;
+    ) -> impl Future<
+        Output = Result<
+            (Box<ClientId>, ConnId, Self::GreetedRead, Self::GreetedWrite),
+            InitError<Self::Stream>,
+        >,
+    > + Send;
 }

@@ -36,13 +36,7 @@ pub struct State<OutgoingMsg, IncomingMsg> {
 #[derive(Debug)]
 pub enum Action {
     KillSession(SessionId),
-    Assigned {
-        session_id: SessionId,
-        assigned_conn_count: usize,
-    },
-    ConnectMore {
-        expected: usize,
-    },
+    ConnectMore { expected: usize },
 }
 
 impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
@@ -142,14 +136,9 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
                         assert!(conn.assigned_sessions.insert(*session_id));
                         assert!(session.assigned_conns.insert(*conn_id));
 
-                        let assigned_conn_count = session.assigned_conns.len();
-
                         self.sort_conns();
 
-                        return vec![Action::Assigned {
-                            session_id: *session_id,
-                            assigned_conn_count,
-                        }];
+                        return Default::default();
                     }
                     Err(rejected) => {
                         msg = rejected;
@@ -312,14 +301,9 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
             assert!(session.assigned_conns.insert(*conn_id));
             assert!(conn.assigned_sessions.insert(session_id));
 
-            let assigned_conn_count = session.assigned_conns.len();
-
             self.sort_conns();
 
-            return vec![Action::Assigned {
-                session_id,
-                assigned_conn_count,
-            }];
+            return Default::default();
         }
 
         // no message to send at the moment, store the msg sender
@@ -462,33 +446,10 @@ impl<OutgoingMsg, IncomingMsg> State<OutgoingMsg, IncomingMsg> {
             assert!(conn.assigned_sessions.insert(*session_id));
             assert!(session.assigned_conns.insert(*conn_id));
 
-            let assigned_conn_count = session.assigned_conns.len();
-
             self.sort_conns();
 
-            return vec![Action::Assigned {
-                session_id: *session_id,
-                assigned_conn_count,
-            }];
+            return Default::default();
         }
-
-        Default::default()
-    }
-
-    pub async fn on_local_msg_to_session(
-        &mut self,
-        session_id: &SessionId,
-        msg: IncomingMsg,
-    ) -> Vec<Action> {
-        let session = match self.sessions.get_mut(session_id) {
-            Some(x) => x,
-            None => {
-                tracing::warn!(?session_id, "seesion does not exist, dropping message");
-                return Default::default();
-            }
-        };
-
-        let _ = session.incomming_msg_tx.send(msg).await;
 
         Default::default()
     }

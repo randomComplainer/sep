@@ -198,7 +198,6 @@ where
                         ))
                         .await;
                 }
-                assignment::Action::Assigned { .. } => {}
                 assignment::Action::ConnectMore { expected } => {
                     self.match_expected_conn_count(expected).await;
                 }

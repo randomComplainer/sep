@@ -188,7 +188,6 @@ where
                         ))
                         .await;
                 }
-                assignment::Action::Assigned { .. } => {}
                 assignment::Action::ConnectMore { expected } => {
                     self.global_cmd_handle
                         .queue(protocol::msg::global_cmd::ServerCmd::ConnectMore {
