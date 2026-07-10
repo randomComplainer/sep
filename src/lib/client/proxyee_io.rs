@@ -2,21 +2,13 @@ use derive_more::From;
 use futures::prelude::*;
 use tracing::Instrument as _;
 
-use crate::{prelude::*, stream_to_sequenced};
+use crate::{ok_or_return, ok_or_return_ok, prelude::*, stream_to_sequenced};
 use protocol::msg::session as msg;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub max_packet_size: u16,
     pub max_bytes_ahead: u64,
-}
-
-impl Into<crate::sequenced_to_stream::Config> for Config {
-    fn into(self) -> crate::sequenced_to_stream::Config {
-        crate::sequenced_to_stream::Config {
-            max_packet_size: self.max_packet_size,
-        }
-    }
 }
 
 impl Into<stream_to_sequenced::Config> for Config {
@@ -47,33 +39,23 @@ pub async fn run(
     let mut server_write = server_write.inspect(|msg| tracing::debug!(msg = ?msg, "client msg"));
 
     // TODO: duplicated code
-    let (_, proxyee) = match proxyee
+    let (_, proxyee) = proxyee
         .receive_greeting_message()
         .instrument(tracing::trace_span!(
             "receive greeting message from proxyee"
         ))
-        .await
-    {
-        Ok(x) => x,
-        Err(err) => {
-            tracing::error!("socks5 error: {:?}", err);
-            return Err(err.into());
-        }
-    };
+        .inspect_err(|err| tracing::error!("socks5 error: {:?}", err))
+        .map_err(|err| Into::<std::io::Error>::into(err))
+        .await?;
 
-    let (proxyee_req, proxyee) = match proxyee
+    let (proxyee_req, proxyee) = proxyee
         .send_method_selection_message(0)
         .instrument(tracing::trace_span!(
             "send method selection message to proxyee"
         ))
-        .await
-    {
-        Ok(x) => x,
-        Err(err) => {
-            tracing::error!("socks5 error: {:?}", err);
-            return Err(err.into());
-        }
-    };
+        .inspect_err(|err| tracing::error!("socks5 error: {:?}", err))
+        .map_err(|err| Into::<std::io::Error>::into(err))
+        .await?;
 
     tracing::info!(addr = ?proxyee_req.addr, port = proxyee_req.port, "request");
 
@@ -83,17 +65,12 @@ pub async fn run(
     }
     .into();
 
-    match server_write
-        .send(client_msg)
-        .instrument(tracing::trace_span!("send request to server"))
-        .await
-    {
-        Ok(_) => (),
-        Err(_) => {
-            tracing::warn!("server write is broken, exiting");
-            return Ok(());
-        }
-    };
+    ok_or_return_ok!(
+        server_write
+            .send(client_msg)
+            .instrument(tracing::trace_span!("send request to server"))
+            .await
+    );
 
     let (reply, early_target_cmds) = {
         // target might start send data as soon as server connected to it.
@@ -151,18 +128,12 @@ pub async fn run(
         }
     };
 
-    let (proxyee_read, proxyee_write) = match proxyee
-        .reply(reply.bound_addr)
-        .instrument(tracing::trace_span!("reply to proxyee"))
-        .await
-    {
-        Ok(x) => x,
-        Err(err) => {
-            // TODO: notify server
-            tracing::error!(?err, "proxyee io error");
-            return Ok(());
-        }
-    };
+    let (proxyee_read, proxyee_write) = ok_or_return_ok!(
+        proxyee
+            .reply(reply.bound_addr)
+            .instrument(tracing::trace_span!("reply to proxyee"))
+            .await
+    );
 
     let (mut proxyee_to_server_cmd_tx, proxyee_to_server_cmd_rx) =
         futures::channel::mpsc::unbounded();
@@ -202,7 +173,6 @@ pub async fn run(
             crate::sequenced_to_stream::Event::EofAck(eof_ack) => eof_ack.into(),
         }),
         proxyee_write,
-        config.into(),
     )
     .instrument(tracing::trace_span!("server to proxyee"));
 
@@ -219,28 +189,16 @@ pub async fn run(
             match cmd {
                 Cmd::ServerMsg(msg) => match msg {
                     msg::ServerMsg::Data(data) => {
-                        if let Err(_) = server_to_proxyee_cmd_tx.send(data.into()).await {
-                            tracing::warn!("server to proxyee cmd channel is broken, exiting");
-                            return;
-                        }
+                        ok_or_return!(server_to_proxyee_cmd_tx.send(data.into()).await);
                     }
                     msg::ServerMsg::Eof(eof) => {
-                        if let Err(_) = server_to_proxyee_cmd_tx.send(eof.into()).await {
-                            tracing::warn!("server to proxyee cmd channel is broken, exiting");
-                            return;
-                        }
+                        ok_or_return!(server_to_proxyee_cmd_tx.send(eof.into()).await);
                     }
                     msg::ServerMsg::Ack(ack) => {
-                        if let Err(_) = proxyee_to_server_cmd_tx.send(ack.into()).await {
-                            tracing::warn!("proxyee to server cmd channel is broken, exiting");
-                            return;
-                        }
+                        ok_or_return!(proxyee_to_server_cmd_tx.send(ack.into()).await);
                     }
                     msg::ServerMsg::EofAck(eof_ack) => {
-                        if let Err(_) = proxyee_to_server_cmd_tx.send(eof_ack.into()).await {
-                            tracing::warn!("proxyee to server cmd channel is broken");
-                            return;
-                        }
+                        ok_or_return!(proxyee_to_server_cmd_tx.send(eof_ack.into()).await);
                     }
                     _ => panic!("unexpected server msg: {:?}", msg),
                 },

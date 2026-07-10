@@ -98,9 +98,7 @@ where
                     }
                 };
 
-                if let Err(_) = evt_tx.send(evt).await {
-                    tracing::warn!("evt_tx is broken");
-                }
+                let _ = evt_tx.send(evt).await;
 
                 return Ok(());
             }

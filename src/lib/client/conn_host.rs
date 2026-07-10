@@ -1,8 +1,10 @@
 use futures::prelude::*;
 use tokio::sync::oneshot;
 
+use crate::ok_or_return_ok;
 use crate::prelude::*;
 use crate::protocol::ConnId;
+use crate::some_or_return_ok;
 
 pub enum Event {
     ServerConnected(ConnId),
@@ -30,14 +32,10 @@ where
         let conn_creation_cmd_tx = conn_creation_cmd_tx.clone();
         async move {
             loop {
-                let (conn_id, conn_read, conn_write) = match new_conn_stream.next().await {
-                    Some(x) => x,
-                    None => return Ok(()),
-                };
+                let (conn_id, conn_read, conn_write) =
+                    some_or_return_ok!(new_conn_stream.next().await);
 
-                if let Err(_) = evt_tx.send(Event::ServerConnected(conn_id)).await {
-                    return Ok(());
-                }
+                ok_or_return_ok!(evt_tx.send(Event::ServerConnected(conn_id)).await);
 
                 let span = tracing::trace_span!("conn lifetime", ?conn_id);
 
@@ -151,10 +149,7 @@ mod conn_creation {
                 let new_conn = loop {
                     tokio::select! {
                         cmd = cmd_rx.recv() => {
-                            let cmd = match cmd {
-                                Some(x) => x,
-                                None => return None,
-                            };
+                            let cmd = cmd?;
 
                             match cmd {
                                 Cmd::Expected(x) => {
@@ -171,10 +166,7 @@ mod conn_creation {
                             };
                         },
                         lock = state_rx.wait_for(|s| !s.satisfied()) => {
-                            let lock = match lock {
-                                Ok(x) => x,
-                                Err(_) => return None,
-                            };
+                            let lock =  lock.ok()?;
                             tracing::debug!(state=?*lock, "unsatisified conn count");
                             drop(lock);
 

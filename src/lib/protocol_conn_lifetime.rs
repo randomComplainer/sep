@@ -4,6 +4,7 @@ use futures::prelude::*;
 use tokio::sync::oneshot;
 use tracing::Instrument as _;
 
+use crate::ok_or_return_ok;
 use crate::prelude::*;
 use crate::protocol::MessageReader;
 use crate::protocol::MessageWriter;
@@ -72,10 +73,7 @@ where
         };
     }
 
-    if let Err(_) = msg_sender_tx.send(send_one_tx).await {
-        tracing::error!("all writehandle dropped, exiting");
-        return Ok(());
-    }
+    ok_or_return_ok!(msg_sender_tx.send(send_one_tx).await);
 
     loop {
         tokio::select! {
@@ -85,10 +83,7 @@ where
                     Err(_) => {
                         let (send_one_tx, new_send_one_rx) = tokio::sync::oneshot::channel();
                         send_one_rx = Box::pin(new_send_one_rx);
-                        if let Err(_) = msg_sender_tx.send(send_one_tx).await {
-                            tracing::error!("all writehandle dropped");
-                            return Ok(());
-                        }
+                        ok_or_return_ok!(msg_sender_tx.send(send_one_tx).await);
                         continue;
                     }
                 };
@@ -97,10 +92,7 @@ where
 
                 let (new_wirte_one_tx, new_write_one_rx) = tokio::sync::oneshot::channel();
 
-                if let Err(_) = msg_sender_tx.send(new_wirte_one_tx).await {
-                    tracing::error!("sender_tx is broken, exiting");
-                    return Ok(());
-                }
+                ok_or_return_ok!(msg_sender_tx.send(new_wirte_one_tx).await);
 
                 send_one_rx = Box::pin(new_write_one_rx);
             },
@@ -110,26 +102,18 @@ where
                 ping_counter += 1;
             },
             close_signal = close_rx.receive() => {
-                match close_signal {
-                    Ok(_) => {
-                        tracing::debug!("close signal received");
-                        // in case of both close_single and a message is sent
-                        // and tokio::select happens to pick this branch
-                        send_one_rx.close();
-                        if let Ok(msg) = send_one_rx.try_recv() {
-                            write_msg!(msg.into());
-                            drop(ping_timer);
-                        }
-                        shutdown!();
-                    },
-                    Err(_) => {
-                        tracing::error!("gentle close sender dropped, exiting");
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "gentle close sender dropped"
-                        ));
-                    },
-                };
+                ok_or_return_ok!(close_signal);
+
+                tracing::debug!("close signal received");
+                // in case of both close_single and a message is sent
+                // and tokio::select happens to pick this branch.
+                // we shall make sure no message is left unsent
+                send_one_rx.close();
+                if let Ok(msg) = send_one_rx.try_recv() {
+                    write_msg!(msg.into());
+                    drop(ping_timer);
+                }
+                shutdown!();
             }
         }
     }

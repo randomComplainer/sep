@@ -26,6 +26,46 @@ pub mod socks5;
 pub mod client;
 pub mod server;
 
+#[macro_export]
+macro_rules! ok_or_return_ok {
+    ($value:expr) => {
+        match $value {
+            Ok(x) => x,
+            Err(_) => return Ok(()),
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! ok_or_return {
+    ($value:expr) => {
+        match $value {
+            Ok(x) => x,
+            Err(_) => return,
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! some_or_return_ok {
+    ($value:expr) => {
+        match $value {
+            Some(x) => x,
+            None => return Ok(()),
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! some_or_return {
+    ($value:expr) => {
+        match $value {
+            Some(x) => x,
+            None => return,
+        }
+    };
+}
+
 pub mod prelude {
     pub use crate::connect_target::ConnectTarget;
     pub use crate::decode::*;

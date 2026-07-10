@@ -43,17 +43,14 @@ impl BufferPool {
         (fut, BufferPool { req_tx })
     }
 
-    pub async fn request_one(&self) -> Option<Recycle<BytesMut>> {
+    pub async fn request_one(&self) -> Result<Recycle<BytesMut>, ()> {
         let (buf_tx, buf_rx) = oneshot::channel();
 
         if let Err(_) = self.req_tx.send(buf_tx) {
-            return None;
+            return Err(());
         }
 
-        match buf_rx.await {
-            Ok(x) => Some(x),
-            Err(_) => None,
-        }
+        buf_rx.await.map_err(|_| ())
     }
 }
 

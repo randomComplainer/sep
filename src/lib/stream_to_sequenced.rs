@@ -7,6 +7,7 @@ use tokio::{
 };
 use tracing::Instrument as _;
 
+use crate::ok_or_return_ok;
 use crate::protocol::msg::session as msg;
 
 #[derive(Debug, From)]
@@ -23,17 +24,6 @@ pub enum Event {
 
 pub struct Config {
     pub max_bytes_ahead: u64,
-}
-
-// return Ok(()) on broken channel
-macro_rules! try_emit_evt {
-    ($evt_tx:ident, $evt:ident) => {
-        tracing::debug!(?$evt, "event");
-        if let Err(_) = $evt_tx.send($evt).await {
-            tracing::warn!("event channel is broken, exiting");
-            return Ok(());
-        }
-    };
 }
 
 #[derive(Clone, Copy)]
@@ -103,24 +93,11 @@ async fn stream_reading_loop(
             .await
             .inspect_err(|err| tracing::error!(?err, "stream read error"))?;
 
-        let mut buf = match buf_pool.request_one().await {
-            Some(x) => x,
-            None => {
-                tracing::warn!("buf pool is broken, exiting");
-                return Ok(());
-            }
-        };
+        let mut buf = ok_or_return_ok!(buf_pool.request_one().await);
 
-        let n = match read_buf(&mut stream_to_read, buf.as_mut())
-            .instrument(tracing::trace_span!("read from stream"))
+        let n = read_buf(&mut stream_to_read, buf.as_mut())
             .await
-        {
-            Ok(n) => n,
-            Err(err) => {
-                tracing::error!(?err, "stream read error");
-                return Err(err);
-            }
-        };
+            .inspect_err(|err| tracing::error!(?err, "stream read error"))?;
 
         tracing::trace!(bytes = n, "read");
 
@@ -137,60 +114,51 @@ async fn stream_reading_loop(
         };
         let unacked = total_sent - acked;
         let cur_avail_win = config.max_bytes_ahead - unacked;
-        match external_state
-            .wait_for(|state| state.has_capacity_for(internal_state.total_read, &config))
-            .instrument(tracing::trace_span!(
-                "wait for available window",
-                seq,
-                data_len = n,
-                unacked,
-                cur_avail_win,
-            ))
-            .await
-        {
-            Ok(lock) => drop(lock),
-            Err(_) => {
-                tracing::warn!("acked_rx is broken, exiting");
-                return Ok(());
-            }
-        };
+
+        let lock = ok_or_return_ok!(
+            external_state
+                .wait_for(|state| state.has_capacity_for(internal_state.total_read, &config))
+                .instrument(tracing::trace_span!(
+                    "wait for available window",
+                    seq,
+                    data_len = n,
+                    unacked,
+                    cur_avail_win,
+                ))
+                .await
+        );
+        drop(lock);
 
         let evt = msg::Data {
             seq,
             data: buf.into(),
         }
         .into();
-        try_emit_evt!(evt_tx, evt);
+        ok_or_return_ok!(evt_tx.send(evt).await);
     }
 
     let evt = msg::Eof {
         seq: internal_state.next_seq,
     }
     .into();
-    try_emit_evt!(evt_tx, evt);
+    ok_or_return_ok!(evt_tx.send(evt).await);
 
-    match external_state
-        .wait_for(|state| state.all_acked(internal_state.total_read))
-        .instrument(tracing::trace_span!("wait for all remaining ack"))
-        .await
-    {
-        Ok(lock) => drop(lock),
-        Err(_) => {
-            tracing::warn!("acked_rx is broken, exiting");
-            return Ok(());
-        }
-    };
+    let lock = ok_or_return_ok!(
+        external_state
+            .wait_for(|state| state.all_acked(internal_state.total_read))
+            .instrument(tracing::trace_span!("wait for all remaining ack"))
+            .await
+    );
+    drop(lock);
 
     assert_eq!(internal_state.total_read, external_state.borrow().acked);
 
-    if let Err(_) = external_state
-        .wait_for(|s| s.eof_acked)
-        .instrument(tracing::trace_span!("wait for eof acked"))
-        .await
-    {
-        tracing::warn!("external_state is broken, exiting");
-        return Ok(());
-    };
+    ok_or_return_ok!(
+        external_state
+            .wait_for(|s| s.eof_acked)
+            .instrument(tracing::trace_span!("wait for eof acked"))
+            .await
+    );
 
     return Ok(());
 }
@@ -199,7 +167,7 @@ async fn stream_reading_loop(
 // Ok(()) otherwise, including when cmd/evt channels are broken
 pub async fn run(
     mut cmd_rx: impl Stream<Item = Command> + Unpin,
-    mut event_tx: impl Sink<Event> + Unpin,
+    mut evt_tx: impl Sink<Event> + Unpin,
     buf_pool: crate::buffer_pool::BufferPool,
     stream_to_read: impl AsyncRead + Unpin + Send + 'static,
     first_pack: Option<BytesMut>,
@@ -213,7 +181,7 @@ pub async fn run(
                 data: first_pack.into(),
             }
             .into();
-            try_emit_evt!(event_tx, evt);
+            ok_or_return_ok!(evt_tx.send(evt).await);
             InternalState {
                 next_seq: 1,
                 total_read: len,
@@ -249,7 +217,7 @@ pub async fn run(
     let stream_reading_task = stream_reading_loop(
         stream_to_read,
         buf_pool,
-        event_tx,
+        evt_tx,
         internal_state,
         external_state_rx,
         config,

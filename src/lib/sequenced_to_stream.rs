@@ -6,7 +6,9 @@ use tracing::Instrument as _;
 
 use crate::sequence::{StreamEntry, StreamEntryValue};
 
+use crate::ok_or_return_ok;
 use crate::protocol::msg::session as msg;
+use crate::some_or_return_ok;
 
 #[derive(Debug, From)]
 pub enum Command {
@@ -20,107 +22,75 @@ pub enum Event {
     EofAck(#[from] msg::EofAck),
 }
 
-pub struct Config {
-    pub max_packet_size: u16,
-}
+async fn cmd_loop(
+    mut cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
+    mut stream_to_write: impl AsyncWrite + Unpin + Send + 'static,
+    mut ack_tx: mpsc::UnboundedSender<u32>,
+    mut evt_tx: impl Sink<Event> + Unpin + Send + 'static,
+) -> std::io::Result<()> {
+    let mut next_seq: u16 = 0;
+    let mut buffed_bytes: u32 = 0;
+    let mut buffed_entries: std::collections::BinaryHeap<std::cmp::Reverse<StreamEntry>> =
+        Default::default();
 
-struct State<Stream, EvtTx> {
-    config: Config,
-    next_seq: u16,
-    buffed_bytes: u32,
-    buffed_entries: std::collections::BinaryHeap<std::cmp::Reverse<StreamEntry>>,
-    stream_to_write: Stream,
-    ack_tx: mpsc::UnboundedSender<u32>,
-    evt_tx: EvtTx,
-}
+    while let Some(cmd) = cmd_rx
+        .next()
+        .instrument(tracing::trace_span!("recv cmd"))
+        .await
+    {
+        tracing::debug!(cmd = ?cmd, "cmd");
 
-macro_rules! try_emit_evt {
-    ($evt_tx:expr, $evt:ident) => {
-        tracing::debug!(?$evt, "event");
-        if let Err(_) = $evt_tx.send($evt).await {
-            tracing::warn!("event channel is broken, exiting");
-            return Ok(Default::default());
-        }
-    };
-}
-
-impl<Stream, EvtTx> State<Stream, EvtTx>
-where
-    Stream: AsyncWrite + Unpin + Send + 'static,
-    EvtTx: Sink<Event> + Unpin + Send + 'static,
-{
-    pub fn new(
-        config: Config,
-        stream_to_write: Stream,
-        ack_tx: mpsc::UnboundedSender<u32>,
-        evt_tx: EvtTx,
-    ) -> Self {
-        Self {
-            config,
-            next_seq: 0,
-            buffed_bytes: 0,
-            buffed_entries: std::collections::BinaryHeap::with_capacity(8),
-            stream_to_write,
-            ack_tx,
-            evt_tx,
-        }
-    }
-
-    pub async fn handle_command(mut self, cmd: Command) -> Result<Option<Self>, std::io::Error> {
         match cmd {
             Command::Data(data) => {
                 let len = data.data.as_ref().len() as u32;
 
-                self.buffed_entries
-                    .push(std::cmp::Reverse(StreamEntry::data(data.seq, data.data)));
+                buffed_entries.push(std::cmp::Reverse(StreamEntry::data(data.seq, data.data)));
 
-                self.buffed_bytes += len;
-                tracing::trace!(bytes = self.buffed_bytes, "buffered");
+                buffed_bytes += len;
+                tracing::trace!(bytes = buffed_bytes, "buffered");
             }
             Command::Eof(eof) => {
-                self.buffed_entries
-                    .push(std::cmp::Reverse(StreamEntry::eof(eof.seq)));
+                buffed_entries.push(std::cmp::Reverse(StreamEntry::eof(eof.seq)));
             }
         };
 
-        while self
-            .buffed_entries
+        while buffed_entries
             .peek()
-            .map(|e| e.0.0 == self.next_seq)
+            .map(|e| e.0.0 == next_seq)
             .unwrap_or(false)
         {
-            let stream_entry = self.buffed_entries.pop().unwrap();
+            let stream_entry = buffed_entries.pop().unwrap();
             let seq = stream_entry.0.0;
 
             match stream_entry.0.1 {
                 StreamEntryValue::Data(data) => {
                     let len = data.as_ref().len();
 
-                    self.stream_to_write
+                    stream_to_write
                         .write_all(data.as_ref())
                         .instrument(tracing::trace_span!("write to stream", seq, ?len))
                         .await
                         .inspect_err(|err| tracing::error!(?err, "stream write error"))?;
 
-                    self.buffed_bytes -= len as u32;
-                    let _ = self.ack_tx.send(len as u32).await;
+                    buffed_bytes -= len as u32;
+                    let _ = ack_tx.send(len as u32).await;
                 }
                 StreamEntryValue::Eof => {
-                    assert_eq!(0, self.buffed_bytes);
-                    assert_eq!(0, self.buffed_entries.len());
-                    drop(self.ack_tx);
+                    assert_eq!(0, buffed_bytes);
+                    assert_eq!(0, buffed_entries.len());
+                    drop(ack_tx);
 
                     let evt = msg::EofAck.into();
-                    try_emit_evt!(self.evt_tx, evt);
+                    ok_or_return_ok!(evt_tx.send(evt).await);
 
-                    return Ok(None);
+                    return Ok(());
                 }
             };
-            self.next_seq += 1;
+            next_seq += 1;
         }
-
-        Ok(Some(self))
     }
+
+    Ok(())
 }
 
 async fn ack_loop(
@@ -132,11 +102,7 @@ async fn ack_loop(
     loop {
         let mut acc: u32 = 0;
 
-        let ack = match ack_rx.next().await {
-            Some(x) => x,
-            None => return Ok(()),
-        };
-
+        let ack = some_or_return_ok!(ack_rx.next().await);
         acc += ack;
 
         let mut timer = std::pin::pin!(tokio::time::sleep(MAX_DELAY));
@@ -154,7 +120,7 @@ async fn ack_loop(
                                 bytes: acc,
                             }.into();
 
-                            try_emit_evt!(evt_tx, evt);
+                            ok_or_return_ok!(evt_tx.send(evt).await);
                             return Ok(());
                         },
                     }
@@ -165,7 +131,7 @@ async fn ack_loop(
                         bytes: acc,
                     }.into();
 
-                    try_emit_evt!(evt_tx, evt);
+                    ok_or_return_ok!(evt_tx.send(evt).await);
                     break;
                 }
             };
@@ -174,30 +140,14 @@ async fn ack_loop(
 }
 
 pub async fn run(
-    mut cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
+    cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
     evt_tx: impl Sink<Event> + Unpin + Send + Clone + 'static,
     stream_to_write: impl AsyncWrite + Unpin + Send + 'static,
-    config: Config,
 ) -> Result<(), std::io::Error> {
     let (ack_tx, ack_rx) = mpsc::unbounded();
     let ack_fut = ack_loop(ack_rx, evt_tx.clone());
-    let mut state = State::new(config, stream_to_write, ack_tx, evt_tx);
 
-    let cmd_fut = async move {
-        while let Some(cmd) = cmd_rx
-            .next()
-            .instrument(tracing::trace_span!("recv cmd"))
-            .await
-        {
-            tracing::debug!(cmd = ?cmd, "cmd");
-            state = match state.handle_command(cmd).await? {
-                Some(new_state) => new_state,
-                None => break,
-            }
-        }
-
-        Ok::<(), std::io::Error>(())
-    };
+    let cmd_fut = cmd_loop(cmd_rx, stream_to_write, ack_tx, evt_tx);
 
     tokio::try_join! {
         ack_fut,
