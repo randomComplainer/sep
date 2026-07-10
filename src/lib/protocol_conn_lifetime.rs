@@ -4,7 +4,7 @@ use futures::prelude::*;
 use tokio::sync::oneshot;
 use tracing::Instrument as _;
 
-use crate::ok_or_return_ok;
+use crate::ok_or;
 use crate::prelude::*;
 use crate::protocol::MessageReader;
 use crate::protocol::MessageWriter;
@@ -73,7 +73,7 @@ where
         };
     }
 
-    ok_or_return_ok!(msg_sender_tx.send(send_one_tx).await);
+    ok_or!(msg_sender_tx.send(send_one_tx).await, return Ok(()));
 
     loop {
         tokio::select! {
@@ -83,7 +83,7 @@ where
                     Err(_) => {
                         let (send_one_tx, new_send_one_rx) = tokio::sync::oneshot::channel();
                         send_one_rx = Box::pin(new_send_one_rx);
-                        ok_or_return_ok!(msg_sender_tx.send(send_one_tx).await);
+                        ok_or!(msg_sender_tx.send(send_one_tx).await, return Ok(()));
                         continue;
                     }
                 };
@@ -92,7 +92,7 @@ where
 
                 let (new_wirte_one_tx, new_write_one_rx) = tokio::sync::oneshot::channel();
 
-                ok_or_return_ok!(msg_sender_tx.send(new_wirte_one_tx).await);
+                ok_or!(msg_sender_tx.send(new_wirte_one_tx).await, return Ok(()));
 
                 send_one_rx = Box::pin(new_write_one_rx);
             },
@@ -102,7 +102,7 @@ where
                 ping_counter += 1;
             },
             close_signal = close_rx.receive() => {
-                ok_or_return_ok!(close_signal);
+                ok_or!(close_signal, return Ok(()));
 
                 tracing::debug!("close signal received");
                 // in case of both close_single and a message is sent

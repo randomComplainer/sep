@@ -3,10 +3,9 @@ use futures::StreamExt;
 use futures::prelude::*;
 use tracing::Instrument as _;
 
-use crate::ok_or_return;
-use crate::ok_or_return_ok;
+use crate::ok_or;
 use crate::prelude::*;
-use crate::some_or_return_ok;
+use crate::some_or;
 use crate::stream_to_sequenced;
 use protocol::msg::session as msg;
 
@@ -44,11 +43,12 @@ where
     let mut server_msg_write =
         server_msg_write.inspect(|msg| tracing::debug!(msg = ?msg, "server msg"));
 
-    let req = match some_or_return_ok!(
+    let req = match some_or!(
         cmd_read
             .next()
             .instrument(tracing::trace_span!("receive request from client"))
-            .await
+            .await,
+        return Ok(())
     ) {
         Cmd::ClientMsg(msg::ClientMsg::Request(msg)) => msg,
         cmd => {
@@ -82,11 +82,12 @@ where
     }
     .into();
 
-    ok_or_return_ok!(
+    ok_or!(
         server_msg_write
             .send(server_msg)
             .instrument(tracing::trace_span!("send reply to client"))
-            .await
+            .await,
+        return Ok(())
     );
 
     let (target_read, target_write) = tokio::io::split(target_stream);
@@ -124,16 +125,16 @@ where
             match cmd {
                 Cmd::ClientMsg(msg) => match msg {
                     msg::ClientMsg::Data(data) => {
-                        ok_or_return!(client_to_target_cmd_tx.send(data.into()).await);
+                        ok_or!(client_to_target_cmd_tx.send(data.into()).await, return);
                     }
                     msg::ClientMsg::Ack(ack) => {
-                        ok_or_return!(target_to_client_cmd_tx.send(ack.into()).await);
+                        ok_or!(target_to_client_cmd_tx.send(ack.into()).await, return);
                     }
                     msg::ClientMsg::Eof(eof) => {
-                        ok_or_return!(client_to_target_cmd_tx.send(eof.into()).await);
+                        ok_or!(client_to_target_cmd_tx.send(eof.into()).await, return);
                     }
                     msg::ClientMsg::EofAck(eof_ack) => {
-                        ok_or_return!(target_to_client_cmd_tx.send(eof_ack.into()).await);
+                        ok_or!(target_to_client_cmd_tx.send(eof_ack.into()).await, return);
                     }
                     _ => panic!("unexpected client msg: {:?}", msg),
                 },

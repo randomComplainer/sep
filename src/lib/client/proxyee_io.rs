@@ -2,7 +2,7 @@ use derive_more::From;
 use futures::prelude::*;
 use tracing::Instrument as _;
 
-use crate::{ok_or_return, ok_or_return_ok, prelude::*, stream_to_sequenced};
+use crate::{ok_or, prelude::*, stream_to_sequenced};
 use protocol::msg::session as msg;
 
 #[derive(Debug, Clone, Copy)]
@@ -65,11 +65,12 @@ pub async fn run(
     }
     .into();
 
-    ok_or_return_ok!(
+    ok_or!(
         server_write
             .send(client_msg)
             .instrument(tracing::trace_span!("send request to server"))
-            .await
+            .await,
+        return Ok(())
     );
 
     let (reply, early_target_cmds) = {
@@ -128,11 +129,12 @@ pub async fn run(
         }
     };
 
-    let (proxyee_read, proxyee_write) = ok_or_return_ok!(
+    let (proxyee_read, proxyee_write) = ok_or!(
         proxyee
             .reply(reply.bound_addr)
             .instrument(tracing::trace_span!("reply to proxyee"))
-            .await
+            .await,
+        return Ok(())
     );
 
     let (mut proxyee_to_server_cmd_tx, proxyee_to_server_cmd_rx) =
@@ -189,16 +191,16 @@ pub async fn run(
             match cmd {
                 Cmd::ServerMsg(msg) => match msg {
                     msg::ServerMsg::Data(data) => {
-                        ok_or_return!(server_to_proxyee_cmd_tx.send(data.into()).await);
+                        ok_or!(server_to_proxyee_cmd_tx.send(data.into()).await, return);
                     }
                     msg::ServerMsg::Eof(eof) => {
-                        ok_or_return!(server_to_proxyee_cmd_tx.send(eof.into()).await);
+                        ok_or!(server_to_proxyee_cmd_tx.send(eof.into()).await, return);
                     }
                     msg::ServerMsg::Ack(ack) => {
-                        ok_or_return!(proxyee_to_server_cmd_tx.send(ack.into()).await);
+                        ok_or!(proxyee_to_server_cmd_tx.send(ack.into()).await, return);
                     }
                     msg::ServerMsg::EofAck(eof_ack) => {
-                        ok_or_return!(proxyee_to_server_cmd_tx.send(eof_ack.into()).await);
+                        ok_or!(proxyee_to_server_cmd_tx.send(eof_ack.into()).await, return);
                     }
                     _ => panic!("unexpected server msg: {:?}", msg),
                 },

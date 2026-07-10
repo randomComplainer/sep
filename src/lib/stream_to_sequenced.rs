@@ -7,7 +7,7 @@ use tokio::{
 };
 use tracing::Instrument as _;
 
-use crate::ok_or_return_ok;
+use crate::ok_or;
 use crate::protocol::msg::session as msg;
 
 #[derive(Debug, From)]
@@ -93,7 +93,7 @@ async fn stream_reading_loop(
             .await
             .inspect_err(|err| tracing::error!(?err, "stream read error"))?;
 
-        let mut buf = ok_or_return_ok!(buf_pool.request_one().await);
+        let mut buf = ok_or!(buf_pool.request_one().await, return Ok(()));
 
         let n = read_buf(&mut stream_to_read, buf.as_mut())
             .await
@@ -115,7 +115,7 @@ async fn stream_reading_loop(
         let unacked = total_sent - acked;
         let cur_avail_win = config.max_bytes_ahead - unacked;
 
-        let lock = ok_or_return_ok!(
+        let lock = ok_or!(
             external_state
                 .wait_for(|state| state.has_capacity_for(internal_state.total_read, &config))
                 .instrument(tracing::trace_span!(
@@ -125,7 +125,8 @@ async fn stream_reading_loop(
                     unacked,
                     cur_avail_win,
                 ))
-                .await
+                .await,
+            return Ok(())
         );
         drop(lock);
 
@@ -134,30 +135,32 @@ async fn stream_reading_loop(
             data: buf.into(),
         }
         .into();
-        ok_or_return_ok!(evt_tx.send(evt).await);
+        ok_or!(evt_tx.send(evt).await, return Ok(()));
     }
 
     let evt = msg::Eof {
         seq: internal_state.next_seq,
     }
     .into();
-    ok_or_return_ok!(evt_tx.send(evt).await);
+    ok_or!(evt_tx.send(evt).await, return Ok(()));
 
-    let lock = ok_or_return_ok!(
+    let lock = ok_or!(
         external_state
             .wait_for(|state| state.all_acked(internal_state.total_read))
             .instrument(tracing::trace_span!("wait for all remaining ack"))
-            .await
+            .await,
+        return Ok(())
     );
     drop(lock);
 
     assert_eq!(internal_state.total_read, external_state.borrow().acked);
 
-    ok_or_return_ok!(
+    ok_or!(
         external_state
             .wait_for(|s| s.eof_acked)
             .instrument(tracing::trace_span!("wait for eof acked"))
-            .await
+            .await,
+        return Ok(())
     );
 
     return Ok(());
@@ -181,7 +184,7 @@ pub async fn run(
                 data: first_pack.into(),
             }
             .into();
-            ok_or_return_ok!(evt_tx.send(evt).await);
+            ok_or!(evt_tx.send(evt).await, return Ok(()));
             InternalState {
                 next_seq: 1,
                 total_read: len,

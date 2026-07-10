@@ -1,10 +1,10 @@
 use futures::prelude::*;
 use tokio::sync::oneshot;
 
-use crate::ok_or_return_ok;
+use crate::ok_or;
 use crate::prelude::*;
 use crate::protocol::ConnId;
-use crate::some_or_return_ok;
+use crate::some_or;
 
 pub enum Event {
     ServerConnected(ConnId),
@@ -33,9 +33,12 @@ where
         async move {
             loop {
                 let (conn_id, conn_read, conn_write) =
-                    some_or_return_ok!(new_conn_stream.next().await);
+                    some_or!(new_conn_stream.next().await, return Ok(()));
 
-                ok_or_return_ok!(evt_tx.send(Event::ServerConnected(conn_id)).await);
+                ok_or!(
+                    evt_tx.send(Event::ServerConnected(conn_id)).await,
+                    return Ok(())
+                );
 
                 let span = tracing::trace_span!("conn lifetime", ?conn_id);
 

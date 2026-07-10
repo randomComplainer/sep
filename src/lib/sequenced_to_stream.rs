@@ -6,9 +6,8 @@ use tracing::Instrument as _;
 
 use crate::sequence::{StreamEntry, StreamEntryValue};
 
-use crate::ok_or_return_ok;
 use crate::protocol::msg::session as msg;
-use crate::some_or_return_ok;
+use crate::{ok_or, some_or};
 
 #[derive(Debug, From)]
 pub enum Command {
@@ -81,7 +80,7 @@ async fn cmd_loop(
                     drop(ack_tx);
 
                     let evt = msg::EofAck.into();
-                    ok_or_return_ok!(evt_tx.send(evt).await);
+                    ok_or!(evt_tx.send(evt).await, return Ok(()));
 
                     return Ok(());
                 }
@@ -102,7 +101,7 @@ async fn ack_loop(
     loop {
         let mut acc: u32 = 0;
 
-        let ack = some_or_return_ok!(ack_rx.next().await);
+        let ack = some_or!(ack_rx.next().await, return Ok(()));
         acc += ack;
 
         let mut timer = std::pin::pin!(tokio::time::sleep(MAX_DELAY));
@@ -120,7 +119,7 @@ async fn ack_loop(
                                 bytes: acc,
                             }.into();
 
-                            ok_or_return_ok!(evt_tx.send(evt).await);
+                            ok_or!(evt_tx.send(evt).await, return Ok(()));
                             return Ok(());
                         },
                     }
@@ -131,7 +130,7 @@ async fn ack_loop(
                         bytes: acc,
                     }.into();
 
-                    ok_or_return_ok!(evt_tx.send(evt).await);
+                    ok_or!(evt_tx.send(evt).await, return Ok(()));
                     break;
                 }
             };

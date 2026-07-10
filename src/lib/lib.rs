@@ -27,41 +27,27 @@ pub mod client;
 pub mod server;
 
 #[macro_export]
-macro_rules! ok_or_return_ok {
-    ($value:expr) => {
+macro_rules! ok_or {
+    ($value:expr, $err:ident => $on_err:expr) => {
         match $value {
             Ok(x) => x,
-            Err(_) => return Ok(()),
+            Err($err) => $on_err,
         }
     };
-}
-
-#[macro_export]
-macro_rules! ok_or_return {
-    ($value:expr) => {
+    ($value:expr, $on_err:expr) => {
         match $value {
             Ok(x) => x,
-            Err(_) => return,
+            Err(_) => $on_err,
         }
     };
 }
 
 #[macro_export]
-macro_rules! some_or_return_ok {
-    ($value:expr) => {
+macro_rules! some_or {
+    ($value:expr, $on_none:expr) => {
         match $value {
             Some(x) => x,
-            None => return Ok(()),
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! some_or_return {
-    ($value:expr) => {
-        match $value {
-            Some(x) => x,
-            None => return,
+            None => $on_none,
         }
     };
 }

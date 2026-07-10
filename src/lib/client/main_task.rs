@@ -8,7 +8,7 @@ use crate::buffer_pool;
 use crate::prelude::*;
 use crate::protocol::msg::AtLeastOnce;
 use crate::protocol::msg::ServerMsg;
-use crate::some_or_return;
+use crate::some_or;
 use crate::{assignment, global_cmd_manager};
 
 #[derive(Error, Debug)]
@@ -242,25 +242,25 @@ where
         loop {
             tokio::select! {
                 proxyee = new_proxyee_rx.next() => {
-                    let (session_id, proxyee ) = some_or_return!(proxyee) ;
+                    let (session_id, proxyee ) = some_or!(proxyee, return) ;
 
                     state.handle_new_proxyee(session_id, proxyee).await;
                 },
 
                 session_evt = session_evt_rx.next() => {
-                    let session_evt = some_or_return!(session_evt) ;
+                    let session_evt = some_or!(session_evt, return) ;
 
                     state.handle_session_evt(session_evt).await;
                 },
 
                 conn_evt = conn_evt_rx.next() => {
-                    let conn_evt = some_or_return!(conn_evt) ;
+                    let conn_evt = some_or!(conn_evt, return) ;
 
                     state.handle_conn_evt(conn_evt).await;
                 },
 
                 global_cmd_evt = global_cmd_evt_rx.next() => {
-                    let global_cmd_evt = some_or_return!(global_cmd_evt) ;
+                    let global_cmd_evt = some_or!(global_cmd_evt, return) ;
 
                     state.handle_global_cmd_event(global_cmd_evt);
                 },
