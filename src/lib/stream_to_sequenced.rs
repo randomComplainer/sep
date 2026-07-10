@@ -52,6 +52,21 @@ impl ExternalState {
     }
 }
 
+#[derive(Default)]
+struct InternalState {
+    total_read: u64,
+    next_seq: u16,
+}
+
+impl InternalState {
+    pub fn assign_seq(&mut self, packet_size: u64) -> u16 {
+        self.total_read += packet_size;
+        let result = self.next_seq;
+        self.next_seq += 1;
+        result
+    }
+}
+
 // read that never exceeds BytesMut's capacity
 async fn read_buf<ReadStream: AsyncRead + Unpin>(
     src: &mut ReadStream,
@@ -74,12 +89,11 @@ async fn read_buf<ReadStream: AsyncRead + Unpin>(
 }
 
 async fn stream_reading_loop(
-    mut seq: u16,
     mut stream_to_read: impl AsyncRead + Unpin + Send + 'static,
     buf_pool: crate::buffer_pool::BufferPool,
     mut evt_tx: impl Sink<Event> + Unpin,
+    mut internal_state: InternalState,
     mut external_state: watch::Receiver<ExternalState>,
-    mut total_read: u64,
     config: Config,
 ) -> Result<(), std::io::Error> {
     let mut readyness_checker = [];
@@ -110,21 +124,21 @@ async fn stream_reading_loop(
 
         tracing::trace!(bytes = n, "read");
 
-        let total_sent = total_read;
-        total_read += n as u64;
+        let total_sent = internal_state.total_read;
+        let seq = internal_state.assign_seq(n as u64);
 
         if n == 0 {
             break;
         }
 
-        let ExternalState { acked, .. } = {
+        let acked = {
             let lock = external_state.borrow();
-            lock.clone()
+            lock.acked
         };
         let unacked = total_sent - acked;
         let cur_avail_win = config.max_bytes_ahead - unacked;
         match external_state
-            .wait_for(|state| state.has_capacity_for(total_read, &config))
+            .wait_for(|state| state.has_capacity_for(internal_state.total_read, &config))
             .instrument(tracing::trace_span!(
                 "wait for available window",
                 seq,
@@ -147,15 +161,16 @@ async fn stream_reading_loop(
         }
         .into();
         try_emit_evt!(evt_tx, evt);
-
-        seq += 1;
     }
 
-    let evt = msg::Eof { seq }.into();
+    let evt = msg::Eof {
+        seq: internal_state.next_seq,
+    }
+    .into();
     try_emit_evt!(evt_tx, evt);
 
     match external_state
-        .wait_for(|state| state.all_acked(total_read))
+        .wait_for(|state| state.all_acked(internal_state.total_read))
         .instrument(tracing::trace_span!("wait for all remaining ack"))
         .await
     {
@@ -166,7 +181,7 @@ async fn stream_reading_loop(
         }
     };
 
-    assert_eq!(total_read, external_state.borrow().acked);
+    assert_eq!(internal_state.total_read, external_state.borrow().acked);
 
     if let Err(_) = external_state
         .wait_for(|s| s.eof_acked)
@@ -190,20 +205,22 @@ pub async fn run(
     first_pack: Option<BytesMut>,
     config: Config,
 ) -> Result<(), std::io::Error> {
-    let mut seq = 0;
-
-    let first_pack_len = first_pack.as_ref().map(|p| p.len()).unwrap_or(0);
-    if let Some(first_pack) = first_pack {
-        if first_pack.len() > 0 {
+    let internal_state = match first_pack {
+        Some(first_pack) if first_pack.len() > 0 => {
+            let len = first_pack.len() as u64;
             let evt = msg::Data {
                 seq: 0,
                 data: first_pack.into(),
             }
             .into();
             try_emit_evt!(event_tx, evt);
-            seq += 1;
+            InternalState {
+                next_seq: 1,
+                total_read: len,
+            }
         }
-    }
+        _ => Default::default(),
+    };
 
     let (external_state_tx, external_state_rx) = watch::channel(ExternalState {
         acked: 0,
@@ -230,12 +247,11 @@ pub async fn run(
     };
 
     let stream_reading_task = stream_reading_loop(
-        seq,
         stream_to_read,
         buf_pool,
         event_tx,
+        internal_state,
         external_state_rx,
-        first_pack_len as u64,
         config,
     );
 
