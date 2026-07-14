@@ -63,20 +63,19 @@ pub mod conn {
     }
 }
 
-pub struct SessionIdReader(U64Reader, U16Reader);
+pub struct SessionIdReader(U64Reader);
 impl Reader for SessionIdReader {
     type Value = SessionId;
     fn read(&self, buf: &mut BytesMut) -> SessionId {
-        SessionId::new(self.0.read(buf), self.1.read(buf))
+        self.0.read(buf)
     }
 }
 
 pub fn session_id_peeker() -> impl Peeker<SessionId, Reader = SessionIdReader> {
     peek::wrap(|cursor| {
-        Ok(Some(SessionIdReader(
-            crate::peek!(u64_peeker().peek(cursor)),
-            crate::peek!(u16_peeker().peek(cursor)),
-        )))
+        Ok(Some(SessionIdReader(crate::peek!(
+            u64_peeker().peek(cursor)
+        ))))
     })
 }
 

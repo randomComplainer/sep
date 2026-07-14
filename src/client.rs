@@ -63,12 +63,11 @@ async fn async_main(args: Args) {
 
         let (mut new_proxee_tx, new_proxee_rx) = futures::channel::mpsc::channel(4);
         let channeling_new_proxee: impl Future<Output = Result<(), std::io::Error>> = async move {
+            let mut session_id = 0u64;
             loop {
-                let (agent, remote_addr) = listener.accept().await.unwrap();
-                new_proxee_tx
-                    .send((SessionId::from_port(remote_addr.port()), agent))
-                    .await
-                    .unwrap();
+                let (agent, _remote_addr) = listener.accept().await.unwrap();
+                new_proxee_tx.send((session_id, agent)).await.unwrap();
+                session_id += 1;
             }
         };
 

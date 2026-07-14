@@ -183,8 +183,7 @@ where
                 match msg {
                     protocol::msg::ClientMsg::SessionMsg(session_id, session_msg) => {
                         buf.put_u8(0u8);
-                        buf.put_u64(session_id.timestamp);
-                        buf.put_u16(session_id.proxyee_port);
+                        buf.put_u64(session_id);
                         match session_msg {
                             msg::session::ClientMsg::Request(req) => {
                                 buf.put_u8(0u8);
@@ -243,8 +242,7 @@ where
                                 match msg {
                                     msg::global_cmd::ClientCmd::KillSession(session_id) => {
                                         buf.put_u8(0u8);
-                                        buf.put_u64(session_id.timestamp);
-                                        buf.put_u16(session_id.proxyee_port);
+                                        buf.put_u64(session_id);
                                     }
                                 };
                             }
