@@ -46,6 +46,7 @@ impl From<String> for ProtocolError {
 pub fn key_from_string(s: &str) -> Box<protocol::Key> {
     let mut hasher = Sha256::new();
     hasher.update(s.as_bytes());
+
     let result = hasher.finalize();
     Box::new(result.into())
 }
@@ -146,29 +147,8 @@ impl SessionId {
         }
     }
 }
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ConnId {
-    pub timestamp: u64,
-    pub client_port: u16,
-}
 
-impl std::fmt::Debug for ConnId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("")
-            .field(&self.timestamp)
-            .field(&self.client_port)
-            .finish()
-    }
-}
-
-impl ConnId {
-    pub fn new(timestamp: u64, client_port: u16) -> Self {
-        Self {
-            timestamp,
-            client_port,
-        }
-    }
-}
+pub type ConnId = u64;
 
 type ReadEncrypted<S, C> = EncryptedRead<ReadHalf<S>, C>;
 type WriteEncrypted<S, C> = EncryptedWrite<WriteHalf<S>, C>;
@@ -201,7 +181,6 @@ pub mod test_utils {
 
         let client_agent = protocol::client_agent::implementation::Init::new(
             client_id,
-            0,
             key.clone(),
             nonce,
             client_steam,
@@ -223,11 +202,11 @@ pub mod test_utils {
         ),
     ) {
         let (client_agent, server_agent) = create_init_pair();
-        let client_agent = client_agent.send_greeting(12).await.unwrap();
+        let client_agent = client_agent.send_greeting(0, 12).await.unwrap();
         let server_agent = server_agent.recv_greeting(12).await.unwrap();
 
         (
-            (client_agent.1, client_agent.2),
+            (client_agent.0, client_agent.1),
             (server_agent.0, server_agent.2, server_agent.3),
         )
     }

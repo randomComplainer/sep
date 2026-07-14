@@ -123,15 +123,13 @@ where
                 .try_into()
                 .unwrap();
 
-            let client_port = stream_read
-                .read_next(decode::u16_peeker())
+            let conn_id = stream_read
+                .read_next(decode::u64_peeker())
                 .await
                 .map_err(InitError::from_decode_error)
                 .and_then(|opt| {
                     opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
                 })?;
-
-            let conn_id = protocol::ConnId::new(client_timestamp, client_port);
 
             Ok((
                 client_id,

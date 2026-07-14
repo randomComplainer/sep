@@ -74,7 +74,7 @@ async fn async_main(args: Args) {
 
         let main_task = sep_lib::client::main_task::run(
             new_proxee_rx,
-            move || {
+            move |conn_id| {
                 let key = key.clone();
                 let server_addr = server_addr.clone();
 
@@ -91,13 +91,14 @@ async fn async_main(args: Args) {
 
                         let server = protocol::client_agent::implementation::Init::new(
                             client_id,
-                            stream.local_addr()?.port(),
                             key,
                             protocol::rand_nonce(),
                             stream,
                         );
 
-                        let conn = server.send_greeting(protocol::get_timestamp()).await?;
+                        let conn = server
+                            .send_greeting(conn_id, protocol::get_timestamp())
+                            .await?;
 
                         Ok::<_, std::io::Error>(conn)
                     }

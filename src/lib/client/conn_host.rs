@@ -144,11 +144,12 @@ mod conn_creation {
     where
         ServerConnector: crate::client::server_connector::ServerConnector,
     {
+        // TODO: you don't need an async state here, no?
         let (state_tx, state_rx) = tokio::sync::watch::channel(State::new());
 
         let stream = futures::stream::unfold(
-            (connector, cmd_rx, state_tx, state_rx),
-            async move |(connector, mut cmd_rx, state_tx, mut state_rx)| {
+            (connector, cmd_rx, state_tx, state_rx, 0u64),
+            async move |(connector, mut cmd_rx, state_tx, mut state_rx, next_conn_id)| {
                 let new_conn = loop {
                     tokio::select! {
                         cmd = cmd_rx.recv() => {
@@ -175,11 +176,11 @@ mod conn_creation {
 
                             let new_conn = loop {
                                 match connector
-                                    .connect()
+                                    .connect(next_conn_id)
                                     .instrument(tracing::trace_span!("connect to server"))
                                     .await
                                 {
-                                    Ok(result) => break result,
+                                    Ok(result) => break (next_conn_id, result.0, result.1),
 
                                     Err(err) => {
                                         tracing::error!(?err, "failed to connect to server");
@@ -203,7 +204,10 @@ mod conn_creation {
                     }
                 };
 
-                return Some((new_conn, (connector, cmd_rx, state_tx, state_rx)));
+                return Some((
+                    new_conn,
+                    (connector, cmd_rx, state_tx, state_rx, next_conn_id + 1),
+                ));
             },
         );
 

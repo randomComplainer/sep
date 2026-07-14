@@ -16,35 +16,27 @@ where
     key: Arc<Key>,
     nonce: Box<Nonce>,
     stream: Stream,
-    local_port: u16,
 }
 
 impl<Stream> Init<Stream>
 where
     Stream: StaticStream,
 {
-    pub fn new(
-        client_id: Arc<ClientId>,
-        local_port: u16,
-        key: Arc<Key>,
-        nonce: Box<Nonce>,
-        stream: Stream,
-    ) -> Self {
+    pub fn new(client_id: Arc<ClientId>, key: Arc<Key>, nonce: Box<Nonce>, stream: Stream) -> Self {
         Self {
             client_id,
             key,
             nonce,
             stream,
-            local_port,
         }
     }
 
     pub async fn send_greeting(
         self,
+        conn_id: ConnId,
         timestamp: u64,
     ) -> Result<
         (
-            ConnId,
             GreetedRead<Stream, ChaCha20>,
             GreetedWrite<Stream, ChaCha20>,
         ),
@@ -67,18 +59,17 @@ where
         let buf_size = 8 // timestamp
         + rand_byte_len
         + 16 // client_id
-        + 2; // client_port as part of conn_id
+        + 8; // conn_id
 
         let mut buf = BytesMut::with_capacity(buf_size);
         buf.put_u64(timestamp);
         buf.put_slice(&rand_bytes);
         buf.put_slice(self.client_id.as_ref());
-        buf.put_u16(self.local_port);
+        buf.put_u64(conn_id);
 
         stream_write.write_all(buf.as_mut()).await?;
 
         Ok((
-            ConnId::new(timestamp, self.local_port),
             GreetedRead::new(BufDecoder::new(EncryptedRead::new(
                 stream_read,
                 ChaCha20::new(self.key.as_slice().into(), self.nonce.as_slice().into()),
@@ -94,10 +85,10 @@ where
 {
     async fn send_greeting(
         self,
+        conn_id: ConnId,
         timestamp: u64,
     ) -> Result<
         (
-            ConnId,
             impl protocol::MessageReader<
                 Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>,
             >,
@@ -107,7 +98,7 @@ where
         ),
         std::io::Error,
     > {
-        self.send_greeting(timestamp).await
+        self.send_greeting(conn_id, timestamp).await
     }
 }
 
