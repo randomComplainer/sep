@@ -19,6 +19,17 @@ pub enum DecodeError {
     Io(#[from] std::io::Error),
 }
 
+impl DecodeError {
+    pub fn into_io_err(self) -> std::io::Error {
+        match self {
+            DecodeError::InvalidStream(str) => {
+                std::io::Error::new(std::io::ErrorKind::Other, format!("io error: {}", str))
+            }
+            DecodeError::Io(error) => error,
+        }
+    }
+}
+
 pub fn unknown_enum_code(enum_name: &'static str, code: u8) -> DecodeError {
     DecodeError::InvalidStream(format!("unkown enum code: {code}, enum name: {enum_name}"))
 }

@@ -2,9 +2,9 @@ use std::net::SocketAddr;
 
 use bytes::{BufMut as _, BytesMut};
 
-use super::*;
 use crate::decode::*;
 
+#[allow(unused)]
 #[derive(Debug)]
 pub struct ClientGreeting {
     pub ver: u8,
@@ -40,13 +40,14 @@ pub struct MethodSelection {
     pub method: u8,
 }
 
-pub fn encode_method_selection(item: MethodSelection) -> Result<BytesMut, Socks5Error> {
+pub fn encode_method_selection(item: MethodSelection) -> BytesMut {
     let mut buf = BytesMut::with_capacity(2);
     buf.put_u8(item.ver);
     buf.put_u8(item.method);
-    return Ok(buf);
+    return buf;
 }
 
+#[allow(unused)]
 #[derive(Debug)]
 pub struct ClientRequest {
     pub ver: u8,

@@ -56,14 +56,16 @@ where
     pub async fn new_session(
         &mut self,
         session_id: SessionId,
-        agent: impl socks5::server_agent::Init,
+        proxyee: proxy_interface::Init<
+            impl tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static + Unpin + Send + Sync,
+        >,
         buf_pool: crate::buffer_pool::BufferPool,
     ) -> mpsc::UnboundedSender<proxyee_io::Cmd> {
         let (session_server_msg_tx, session_server_msg_rx) = mpsc::unbounded();
         let mut evt_tx = self.evt_tx.clone();
 
         let proxyee_io_task = proxyee_io::run(
-            agent,
+            proxyee,
             session_server_msg_rx,
             evt_tx
                 .clone()

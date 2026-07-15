@@ -77,7 +77,9 @@ where
     pub async fn handle_new_proxyee(
         &mut self,
         session_id: SessionId,
-        proxyee: impl socks5::server_agent::Init,
+        proxyee: proxy_interface::Init<
+            impl tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static + Unpin + Send + Sync,
+        >,
     ) {
         let session_msg_tx = self
             .session_handle
@@ -206,8 +208,14 @@ where
 }
 
 pub async fn run<TServerConnector>(
-    mut new_proxyee_rx: impl Stream<Item = (SessionId, impl socks5::server_agent::Init)>
-    + Unpin
+    mut new_proxyee_rx: impl Stream<
+        Item = (
+            SessionId,
+            proxy_interface::Init<
+                impl tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static + Unpin + Send + Sync,
+            >,
+        ),
+    > + Unpin
     + Send
     + 'static,
     connect_to_server: TServerConnector,

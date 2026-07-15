@@ -8,7 +8,6 @@ use std::sync::Arc;
 use clap::Parser;
 use futures::prelude::*;
 use rand::RngCore as _;
-use sep_lib::protocol::SessionId;
 use tracing::*;
 
 use sep_lib::prelude::*;
@@ -55,7 +54,7 @@ async fn async_main(args: Args) {
         rand::rng().fill_bytes(client_id.as_mut());
         let client_id: Arc<[u8; 16]> = client_id.into();
 
-        let listener = socks5::server_agent::stream::Socks5Listener::bind(args.bound_addr)
+        let listener = proxy_interface::Listener::bind(args.bound_addr)
             .await
             .unwrap();
 

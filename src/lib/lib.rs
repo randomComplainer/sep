@@ -10,6 +10,7 @@ pub mod future_ext;
 mod global_cmd_manager;
 pub mod never;
 mod protocol_conn_lifetime;
+pub mod proxy_interface;
 mod sequenced_to_stream;
 pub mod sink_ext;
 mod stream_to_sequenced;
@@ -21,7 +22,6 @@ pub mod encrypt;
 
 pub mod protocol;
 mod sequence;
-pub mod socks5;
 
 pub mod client;
 pub mod server;
@@ -58,10 +58,11 @@ pub mod prelude {
     pub use crate::encrypt::{EncryptedRead, EncryptedWrite};
     pub use crate::future_ext::FutureExt as _;
     pub use crate::never::{Never, UnwrapNever as _};
+    pub use crate::proxy_interface;
     pub use crate::sink_ext::SinkExt as _;
-    pub use crate::socks5::server_agent::{Greeted as _, Init as _, Requested as _};
     pub use crate::task_scope;
-    pub use crate::{decode, protocol, socks5};
+    pub use crate::{decode, protocol};
+    pub use crate::{ok_or, some_or};
     pub use protocol::{ClientId, ConnId, Key, Nonce, SessionId};
 }
 
