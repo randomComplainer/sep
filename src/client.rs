@@ -64,7 +64,13 @@ async fn async_main(args: Args) {
         let channeling_new_proxee: impl Future<Output = Result<(), std::io::Error>> = async move {
             let mut session_id = 0u64;
             loop {
-                let (agent, _remote_addr) = listener.accept().await.unwrap();
+                let (agent, _remote_addr) = match listener.accept().await {
+                    Ok(x) => x,
+                    Err(err) => {
+                        warn!(?err, "failed to accept connection");
+                        continue;
+                    }
+                };
                 new_proxee_tx.send((session_id, agent)).await.unwrap();
                 session_id += 1;
             }
