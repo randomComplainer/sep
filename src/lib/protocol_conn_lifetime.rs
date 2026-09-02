@@ -31,7 +31,7 @@ async fn write_loop<MessageToWrite>(
     config: Config,
     mut stream_write: impl MessageWriter<Message = ConnMsg<MessageToWrite>> + Send,
     mut msg_sender_tx: impl Sink<oneshot::Sender<MessageToWrite>> + Unpin,
-    mut close_rx: gentle_close::Receiver,
+    close_rx: gentle_close::Receiver,
 ) -> std::io::Result<()>
 where
     MessageToWrite: Send + Debug + Unpin + 'static,
@@ -237,7 +237,7 @@ mod gentle_close {
     }
 
     impl Receiver {
-        pub async fn receive(&mut self) -> Result<(), ()> {
+        pub async fn receive(&self) -> Result<(), ()> {
             self.close_rx.wait().await.clone()
         }
     }
@@ -265,9 +265,22 @@ mod gentle_close {
 
     impl Drop for Sender {
         fn drop(&mut self) {
-            if self.sender_count.fetch_sub(1, Ordering::AcqRel) == 0 {
+            if self.sender_count.fetch_sub(1, Ordering::AcqRel) == 1 {
                 let _ = self.close_tx.set(Err(()));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn gentle_close_drop() {
+        let (tx, rx) = gentle_close::channel();
+        drop(tx);
+
+        assert_eq!(Err(()), rx.receive().await);
     }
 }

@@ -66,6 +66,10 @@ impl<T> Recycle<T> {
             sender,
         }
     }
+
+    pub fn ref_inner(&self) -> &T {
+        self.inner.as_ref().unwrap()
+    }
 }
 
 impl<T> Drop for Recycle<T> {

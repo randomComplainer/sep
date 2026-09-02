@@ -1,9 +1,9 @@
 use bytes::BytesMut;
 use derive_more::From;
 
+use crate::buffer_pool::Recycle;
 use crate::decode::*;
 use crate::prelude::*;
-use crate::buffer_pool::Recycle;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Request {
@@ -64,6 +64,15 @@ pub fn reply_peeker() -> impl Peeker<Reply, Reader = ReplyReader> {
 pub enum Buf {
     Raw(#[from] BytesMut),
     Recyle(#[from] Recycle<BytesMut>),
+}
+
+impl Buf {
+    pub fn len(&self) -> usize {
+        match self {
+            Buf::Raw(bytes_mut) => bytes_mut.len(),
+            Buf::Recyle(recycle) => recycle.ref_inner().len(),
+        }
+    }
 }
 
 impl AsRef<[u8]> for Buf {
