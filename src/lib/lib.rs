@@ -34,6 +34,12 @@ macro_rules! ok_or {
             Err($err) => $on_err,
         }
     };
+    ($value:expr, $err:ident => $on_err:expr) => {
+        match $value {
+            Ok(x) => x,
+            Err($err) => $on_err,
+        }
+    };
     ($value:expr, $on_err:expr) => {
         match $value {
             Ok(x) => x,

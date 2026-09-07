@@ -60,17 +60,21 @@ pub fn reply_peeker() -> impl Peeker<Reply, Reader = ReplyReader> {
     })
 }
 
-#[derive(PartialEq, Eq, From)]
+#[derive(From)]
+#[cfg_attr(test, derive(PartialEq, Eq, Clone))]
 pub enum Buf {
     Raw(#[from] BytesMut),
     Recyle(#[from] Recycle<BytesMut>),
 }
 
-impl Buf {
-    pub fn len(&self) -> usize {
+impl std::fmt::Debug for Buf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Buf::Raw(bytes_mut) => bytes_mut.len(),
-            Buf::Recyle(recycle) => recycle.ref_inner().len(),
+            Self::Raw(buf) => f.debug_tuple("Raw").field(&buf.len()).finish(),
+            Self::Recyle(recyle) => f
+                .debug_tuple("Recyle")
+                .field(&recyle.ref_inner().len())
+                .finish(),
         }
     }
 }
@@ -93,7 +97,7 @@ impl AsMut<[u8]> for Buf {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub struct Data {
     pub seq: u16,
     pub data: Buf,
@@ -216,7 +220,8 @@ pub fn error_peeker() -> impl Peeker<IoError, Reader = IoErrorReader> {
     peek::wrap(|_cursor| Ok(Some(IoErrorReader)))
 }
 
-#[derive(Debug, From, PartialEq, Eq)]
+#[derive(Debug, From)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub enum ClientMsg {
     Request(#[from] Request),
     Data(#[from] Data),
@@ -322,7 +327,8 @@ pub fn connection_error_peeker() -> impl Peeker<ConnectionError, Reader = Connec
     })
 }
 
-#[derive(Debug, From, Eq, PartialEq)]
+#[derive(Debug, From)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub enum ServerMsg {
     Reply(#[from] Reply),
     ReplyError(#[from] ConnectionError),

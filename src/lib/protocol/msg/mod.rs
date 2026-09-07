@@ -79,7 +79,8 @@ pub fn session_id_peeker() -> impl Peeker<SessionId, Reader = SessionIdReader> {
     })
 }
 
-#[derive(Debug, From, PartialEq, Eq)]
+#[derive(Debug, From)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub enum ServerMsg {
     SessionMsg(SessionId, session::ServerMsg),
     GlobalCmd(AtLeastOnce<global_cmd::ServerCmd>),
@@ -127,7 +128,8 @@ pub fn server_msg_peeker() -> impl Peeker<ServerMsg, Reader = ServerMsgReader> {
     })
 }
 
-#[derive(Debug, From, PartialEq, Eq)]
+#[derive(Debug, From)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub enum ClientMsg {
     SessionMsg(SessionId, session::ClientMsg),
     GlobalCmd(AtLeastOnce<global_cmd::ClientCmd>),

@@ -54,6 +54,7 @@ impl BufferPool {
     }
 }
 
+#[cfg_attr(test, derive(Clone))]
 pub struct Recycle<T> {
     inner: Option<T>,
     sender: mpsc::UnboundedSender<T>,
@@ -80,6 +81,7 @@ impl<T> Drop for Recycle<T> {
     }
 }
 
+#[cfg(test)]
 impl<T> PartialEq for Recycle<T>
 where
     T: PartialEq,
@@ -89,6 +91,7 @@ where
     }
 }
 
+#[cfg(test)]
 impl<T> Eq for Recycle<T> where T: Eq {}
 
 impl<T> AsRef<T> for Recycle<T> {
