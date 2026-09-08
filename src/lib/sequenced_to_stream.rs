@@ -1,13 +1,11 @@
 use derive_more::From;
-use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt, prelude::*};
 use tokio::io::{AsyncWrite, AsyncWriteExt as _};
-use tracing::Instrument as _;
 
 use crate::sequence::{StreamEntry, StreamEntryValue};
 
+use crate::ok_or;
 use crate::protocol::msg::session as msg;
-use crate::{ok_or, some_or};
 
 #[derive(Debug, From)]
 pub enum Command {
@@ -21,341 +19,201 @@ pub enum Event {
     EofAck(#[from] msg::EofAck),
 }
 
-async fn cmd_loop(
-    mut cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
-    mut stream_to_write: impl AsyncWrite + Unpin + Send + 'static,
-    mut ack_tx: mpsc::UnboundedSender<u32>,
-    mut evt_tx: impl Sink<Event> + Unpin + Send + 'static,
-) -> std::io::Result<()> {
-    let mut next_seq: u16 = 0;
-    let mut buffed_bytes: u32 = 0;
-    let mut buffed_entries: std::collections::BinaryHeap<std::cmp::Reverse<StreamEntry>> =
-        Default::default();
+mod state {
+    use std::collections::BinaryHeap;
 
-    while let Some(cmd) = cmd_rx
-        .next()
-        .instrument(tracing::trace_span!("recv cmd"))
-        .await
-    {
-        tracing::debug!(cmd = ?cmd, "cmd");
+    use super::*;
 
-        match cmd {
-            Command::Data(data) => {
-                let len = data.data.as_ref().len() as u32;
+    #[derive(Debug, From)]
+    pub enum Cmd {
+        Data(#[from] msg::Data),
+        Eof(#[from] msg::Eof),
+        Wrote(#[from] u32),
+        AllWrote,
+    }
 
-                buffed_entries.push(std::cmp::Reverse(StreamEntry::data(data.seq, data.data)));
+    #[derive(Debug, From)]
+    pub enum Action {
+        Data(#[from] msg::Data),
+        Ack(#[from] msg::Ack),
+        Eof,
+        Done,
+    }
 
-                buffed_bytes += len;
-                tracing::trace!(bytes = buffed_bytes, "buffered");
+    pub struct State {
+        next_seq: u16,
+        buffed_bytes: u32,
+        buffed_entries: BinaryHeap<std::cmp::Reverse<StreamEntry>>,
+    }
+
+    impl State {
+        pub fn new() -> Self {
+            Self {
+                next_seq: 0,
+                buffed_bytes: 0,
+                buffed_entries: Default::default(),
             }
-            Command::Eof(eof) => {
-                buffed_entries.push(std::cmp::Reverse(StreamEntry::eof(eof.seq)));
+        }
+
+        pub fn on_cmd(&mut self, cmd: Cmd) -> Vec<Action> {
+            match cmd {
+                Cmd::Data(data) => self.on_data(data),
+                Cmd::Eof(eof) => self.on_eof(eof),
+                Cmd::Wrote(len) => self.on_wrote(len),
+                Cmd::AllWrote => self.on_all_wrote(),
+            }
+        }
+
+        fn on_data(&mut self, data: msg::Data) -> Vec<Action> {
+            let len = data.data.as_ref().len() as u32;
+            self.buffed_bytes += len;
+
+            self.buffed_entries
+                .push(std::cmp::Reverse(StreamEntry::data(data.seq, data.data)));
+
+            self.try_get_ordered_data()
+        }
+
+        fn on_eof(&mut self, eof: msg::Eof) -> Vec<Action> {
+            self.buffed_entries
+                .push(std::cmp::Reverse(StreamEntry::eof(eof.seq)));
+
+            self.try_get_ordered_data()
+        }
+
+        fn on_wrote(&mut self, len: u32) -> Vec<Action> {
+            self.buffed_bytes -= len;
+            Vec::from([Action::Ack(msg::Ack { bytes: len })])
+        }
+
+        fn on_all_wrote(&mut self) -> Vec<Action> {
+            assert_eq!(0, self.buffed_bytes);
+            assert_eq!(0, self.buffed_entries.len());
+            Vec::from([Action::Done])
+        }
+
+        fn try_get_ordered_data(&mut self) -> Vec<Action> {
+            let mut result: Vec<Action> = Default::default();
+
+            while self
+                .buffed_entries
+                .peek()
+                .map(|e| e.0.0 == self.next_seq)
+                .unwrap_or(false)
+            {
+                self.next_seq += 1;
+                let entry = self.buffed_entries.pop().unwrap();
+                let seq = entry.0.0;
+
+                match entry.0.1 {
+                    StreamEntryValue::Data(buf) => {
+                        result.push(msg::Data { seq, data: buf }.into());
+                    }
+                    StreamEntryValue::Eof => {
+                        assert_eq!(0, self.buffed_entries.len());
+
+                        result.push(Action::Eof);
+                    }
+                };
+            }
+
+            result
+        }
+    }
+}
+
+#[derive(From)]
+enum EntryToWrite {
+    Data(#[from] msg::Buf),
+    Eof,
+}
+
+enum WroteEvt {
+    Wrote(u32),
+    AllWrote,
+}
+
+async fn create_writing_task(
+    mut stream_to_write: impl AsyncWrite + Unpin + Send + 'static,
+    mut entries_rx: impl Stream<Item = EntryToWrite> + Unpin + Send + 'static,
+    mut wrote_tx: impl Sink<WroteEvt> + Unpin + Send + Clone + 'static,
+) -> std::io::Result<()> {
+    use WroteEvt::*;
+
+    while let Some(entry) = entries_rx.next().await {
+        match entry {
+            EntryToWrite::Data(buf) => {
+                let len = buf.as_ref().len() as u32;
+
+                stream_to_write
+                    .write_all(buf.as_ref())
+                    .await
+                    .inspect_err(|err| tracing::error!(?err, "stream write error"))?;
+
+                ok_or!(wrote_tx.send(Wrote(len)).await, return Ok(()));
+            }
+            EntryToWrite::Eof => {
+                ok_or!(wrote_tx.send(AllWrote).await, return Ok(()));
+                return Ok(());
             }
         };
-
-        while buffed_entries
-            .peek()
-            .map(|e| e.0.0 == next_seq)
-            .unwrap_or(false)
-        {
-            let stream_entry = buffed_entries.pop().unwrap();
-            let seq = stream_entry.0.0;
-
-            match stream_entry.0.1 {
-                StreamEntryValue::Data(data) => {
-                    let len = data.as_ref().len();
-
-                    stream_to_write
-                        .write_all(data.as_ref())
-                        .instrument(tracing::trace_span!("write to stream", seq, ?len))
-                        .await
-                        .inspect_err(|err| tracing::error!(?err, "stream write error"))?;
-
-                    buffed_bytes -= len as u32;
-                    let _ = ack_tx.send(len as u32).await;
-                }
-                StreamEntryValue::Eof => {
-                    assert_eq!(0, buffed_bytes);
-                    assert_eq!(0, buffed_entries.len());
-                    drop(ack_tx);
-
-                    let evt = msg::EofAck.into();
-                    ok_or!(evt_tx.send(evt).await, return Ok(()));
-
-                    return Ok(());
-                }
-            };
-            next_seq += 1;
-        }
     }
 
     Ok(())
 }
 
-async fn ack_loop(
-    mut ack_rx: mpsc::UnboundedReceiver<u32>,
-    mut evt_tx: impl Sink<Event> + Unpin + Send + 'static,
-) -> std::io::Result<()> {
-    const MAX_DELAY: std::time::Duration = std::time::Duration::from_millis(4);
-
-    loop {
-        let mut acc: u32 = 0;
-
-        let ack = some_or!(ack_rx.next().await, return Ok(()));
-        acc += ack;
-
-        let mut timer = std::pin::pin!(tokio::time::sleep(MAX_DELAY));
-
-        loop {
-            tokio::select! {
-                ack_opt = ack_rx.next() => {
-                    match ack_opt {
-                        Some(ack) => {
-                            acc += ack;
-                            continue;
-                        },
-                        None => {
-                            let evt = msg::Ack {
-                                bytes: acc,
-                            }.into();
-
-                            ok_or!(evt_tx.send(evt).await, return Ok(()));
-                            return Ok(());
-                        },
-                    }
-                },
-
-                _ = &mut timer => {
-                    let evt = msg::Ack {
-                        bytes: acc,
-                    }.into();
-
-                    ok_or!(evt_tx.send(evt).await, return Ok(()));
-                    break;
-                }
-            };
-        }
-    }
-}
-
 pub async fn run(
     cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
-    evt_tx: impl Sink<Event> + Unpin + Send + Clone + 'static,
+    mut evt_tx: impl Sink<Event> + Unpin + Send + Clone + 'static,
     stream_to_write: impl AsyncWrite + Unpin + Send + 'static,
 ) -> Result<(), std::io::Error> {
-    let (ack_tx, ack_rx) = mpsc::unbounded();
-    let ack_fut = ack_loop(ack_rx, evt_tx.clone());
+    let (mut entries_tx, entries_rx) = futures::channel::mpsc::unbounded();
+    let (wrote_tx, wrote_rx) = futures::channel::mpsc::unbounded();
 
-    let cmd_fut = cmd_loop(cmd_rx, stream_to_write, ack_tx, evt_tx);
+    let io_task = create_writing_task(stream_to_write, entries_rx, wrote_tx);
 
-    tokio::try_join! {
-        ack_fut,
-        cmd_fut,
+    let mut state_cmd_stream = futures::stream::select(
+        wrote_rx.then(|evt| {
+            std::future::ready(match evt {
+                WroteEvt::Wrote(n) => state::Cmd::Wrote(n),
+                WroteEvt::AllWrote => state::Cmd::AllWrote,
+            })
+        }),
+        cmd_rx.then(|cmd| {
+            std::future::ready(match cmd {
+                Command::Data(data) => state::Cmd::Data(data),
+                Command::Eof(eof) => state::Cmd::Eof(eof),
+            })
+        }),
+    );
+
+    let state_task = async move {
+        let mut state = state::State::new();
+        while let Some(cmd) = state_cmd_stream.next().await {
+            let actions = state.on_cmd(cmd);
+            for action in actions {
+                match action {
+                    state::Action::Data(data) => {
+                        ok_or!(entries_tx.send(data.data.into()).await, return);
+                    }
+                    state::Action::Eof => {
+                        ok_or!(entries_tx.send(EntryToWrite::Eof).await, return);
+                    }
+                    state::Action::Ack(ack) => {
+                        ok_or!(evt_tx.send(ack.into()).await, return);
+                    }
+                    state::Action::Done => return,
+                };
+            }
+        }
+    };
+
+    match future::select(Box::pin(io_task), Box::pin(state_task)).await {
+        future::Either::Left((io_result, state_task)) => {
+            io_result?;
+            state_task.await;
+            Ok(())
+        }
+        future::Either::Right(_) => Ok(()),
     }
-    .map(|_| ())
-}
-
-#[cfg(test)]
-mod tests {
-    // use std::assert_matches::assert_matches;
-    //
-    // use bytes::BytesMut;
-    // use tokio::io::AsyncReadExt;
-    //
-    // use super::*;
-    //
-    // fn create_task(
-    //     max_packet_ahead: u16,
-    //     stream_to_write: impl AsyncWrite + Unpin + Send + 'static,
-    // ) -> (
-    //     impl futures::Sink<Command, Error = impl std::fmt::Debug> + Unpin,
-    //     impl futures::Stream<Item = Event> + Send + Unpin,
-    //     impl std::future::Future<Output = Result<(), std::io::Error>> + Send + 'static,
-    // ) {
-    //     let (cmd_tx, cmd_rx) = futures::channel::mpsc::channel(1);
-    //     let (event_tx, event_rx) = futures::channel::mpsc::channel(1);
-    //
-    //     let config = Config { max_packet_ahead };
-    //
-    //     let task = run(cmd_rx, event_tx, stream_to_write, config);
-    //     (cmd_tx, event_rx, task)
-    // }
-    //
-    // #[test_log::test]
-    // fn happy_path() {
-    //     let (mut cmd_tx, mut event_rx, task) =
-    //         create_task(1, tokio_test::io::Builder::new().write(&[1, 2, 3]).build());
-    //
-    //     let mut task = tokio_test::task::spawn(task);
-    //
-    //     for i in 0..=2 {
-    //         tokio_test::assert_pending!(task.poll());
-    //
-    //         tokio_test::assert_ready!(
-    //             tokio_test::task::spawn(cmd_tx.send(Command::Data(msg::Data {
-    //                 seq: i.try_into().unwrap(),
-    //                 data: BytesMut::from([(i + 1).try_into().unwrap()].as_ref()),
-    //             })))
-    //             .poll()
-    //         )
-    //         .unwrap();
-    //
-    //         tokio_test::assert_pending!(task.poll());
-    //         tokio_test::assert_pending!(task.poll());
-    //         tokio_test::assert_pending!(task.poll());
-    //
-    //         let evt =
-    //             tokio_test::assert_ready!(tokio_test::task::spawn(event_rx.next()).poll()).unwrap();
-    //
-    //         match evt {
-    //             super::Event::Ack(msg::Ack { bytes }) => {
-    //                 assert_eq!(bytes, 1);
-    //             }
-    //         };
-    //     }
-    //
-    //     tokio_test::assert_ready!(
-    //         tokio_test::task::spawn(cmd_tx.send(Command::Eof(msg::Eof { seq: 3 }))).poll()
-    //     )
-    //     .unwrap();
-    //
-    //     tokio_test::block_on(task).unwrap();
-    //
-    //     let evt =
-    //         tokio_test::assert_ready!(tokio_test::task::spawn(event_rx.next()).poll()).unwrap();
-    //
-    //     match evt {
-    //         super::Event::Ack(msg::Ack { bytes }) => {
-    //             assert_eq!(bytes, 1);
-    //         }
-    //     };
-    // }
-    //
-    // #[tokio::test]
-    // async fn quit_on_broken_cmd_stream() {
-    //     let (cmd_tx, mut _event_rx, main_task) = create_task(3, tokio::io::duplex(0).0);
-    //     drop(cmd_tx);
-    //
-    //     let result = main_task.await;
-    //     assert_matches!(result, Ok(()));
-    // }
-    //
-    // // it's slightly concerning that
-    // // event channel's broken state is not checked
-    // // until next packet is written to the stream
-    // #[test_log::test(tokio::test)]
-    // async fn quit_on_broken_evt_stream() {
-    //     let (mut cmd_tx, evt_rx, main_task) =
-    //         create_task(3, tokio_test::io::Builder::new().write(&[1]).build());
-    //     drop(evt_rx);
-    //
-    //     let main_task = tokio::spawn(main_task);
-    //
-    //     cmd_tx
-    //         .send(Command::Data(msg::Data {
-    //             seq: 0.try_into().unwrap(),
-    //             data: BytesMut::from([1].as_ref()),
-    //         }))
-    //         .await
-    //         .unwrap();
-    //
-    //     let result = main_task.await.unwrap();
-    //     assert_matches!(result, Ok(()));
-    // }
-    //
-    // #[tokio::test]
-    // async fn io_error() {
-    //     let (mut cmd_tx, mut _event_rx, main_task) = create_task(
-    //         1,
-    //         tokio_test::io::Builder::new()
-    //             .write_error(std::io::Error::new(
-    //                 std::io::ErrorKind::BrokenPipe,
-    //                 "broken pipe",
-    //             ))
-    //             .build(),
-    //     );
-    //
-    //     cmd_tx
-    //         .send(Command::Data(msg::Data {
-    //             seq: 0.try_into().unwrap(),
-    //             data: BytesMut::from([1].as_ref()),
-    //         }))
-    //         .await
-    //         .unwrap();
-    //
-    //     let result = main_task.await;
-    //
-    //     assert_matches!(result, Err(std::io::Error { .. }));
-    //     let e = result.unwrap_err();
-    //     assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe);
-    // }
-    //
-    // #[tokio::test]
-    // async fn panic_on_exceed_max_packet_ahead() {
-    //     let (mut cmd_tx, mut _event_rx, main_task) = create_task(3, tokio::io::duplex(0).0);
-    //     let send_cmds = async move {
-    //         for i in 1..=4 {
-    //             cmd_tx
-    //                 .send(Command::Data(msg::Data {
-    //                     seq: i.try_into().unwrap(),
-    //                     data: BytesMut::from([i.try_into().unwrap()].as_ref()),
-    //                 }))
-    //                 .await
-    //                 .unwrap();
-    //         }
-    //     };
-    //
-    //     let send_cmds = tokio::spawn(send_cmds);
-    //     let main_task = tokio::spawn(main_task);
-    //
-    //     let (send_cmds_result, main_task_result) = tokio::join!(send_cmds, main_task);
-    //
-    //     send_cmds_result.unwrap();
-    //
-    //     assert!(main_task_result.is_err());
-    //     assert!(main_task_result.unwrap_err().is_panic());
-    // }
-    //
-    // #[test]
-    // fn dont_block_on_stream() {
-    //     let (stream_write, mut stream_read) = tokio::io::duplex(1);
-    //
-    //     let (mut cmd_tx, mut event_rx, main_task) = create_task(10, stream_write);
-    //
-    //     let mut main_task = tokio_test::task::spawn(main_task);
-    //
-    //     for i in 0..10 {
-    //         let mut cmd_sending = tokio_test::task::spawn(cmd_tx.send(Command::Data(msg::Data {
-    //             seq: i.try_into().unwrap(),
-    //             data: BytesMut::from([i.try_into().unwrap()].as_ref()),
-    //         })));
-    //         tokio_test::assert_ready!(cmd_sending.poll()).unwrap();
-    //         tokio_test::assert_pending!(main_task.poll());
-    //     }
-    //
-    //     let mut buf = BytesMut::with_capacity(9);
-    //
-    //     for _i in 0..10 {
-    //         // forward event
-    //         tokio_test::assert_pending!(main_task.poll());
-    //         let e =
-    //             tokio_test::assert_ready!(tokio_test::task::spawn(event_rx.next()).poll()).unwrap();
-    //
-    //         match e {
-    //             super::Event::Ack(msg::Ack { bytes }) => {
-    //                 assert_eq!(bytes, 1);
-    //             }
-    //         };
-    //
-    //         let n = tokio_test::assert_ready!(
-    //             tokio_test::task::spawn(stream_read.read_buf(&mut buf)).poll()
-    //         )
-    //         .unwrap();
-    //         assert_eq!(n, 1);
-    //
-    //         tokio_test::assert_pending!(main_task.poll());
-    //     }
-    //
-    //     assert_eq!(buf.as_ref(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].as_ref());
-    // }
 }
