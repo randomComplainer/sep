@@ -100,12 +100,12 @@ where
     // Or build timeout into the underling stream?
     fn recv_msg(
         &mut self,
-    ) -> impl Future<Output = Result<Option<Self::Message>, DecodeError>> + Send;
+    ) -> impl Future<Output = Result<Option<Self::Message>, std::io::Error>> + Send;
 
     fn recv_msg_with_timeout(
         &mut self,
         time_limit: Duration,
-    ) -> impl Future<Output = Result<Option<Self::Message>, DecodeError>> + Send;
+    ) -> impl Future<Output = Result<Option<Self::Message>, std::io::Error>> + Send;
 }
 
 

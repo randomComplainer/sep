@@ -37,8 +37,7 @@ where
             .and_then(|msg_opt| match msg_opt {
                 Some(msg) => Ok(msg),
                 None => Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into()),
-            })
-            .map_err(|e| e.into_io_err())?;
+            })?;
 
         let buf = msg::encode_method_selection(msg::MethodSelection { ver: 5, method: 0 });
 
@@ -51,8 +50,7 @@ where
             .and_then(|msg_opt| match msg_opt {
                 Some(msg) => Ok(msg),
                 None => Err(std::io::Error::other("unexpected eof").into()),
-            })
-            .map_err(|e| e.into_io_err())?;
+            })?;
 
         Ok((
             req_msg.addr,

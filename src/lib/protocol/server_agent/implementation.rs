@@ -69,13 +69,13 @@ where
         let stream_read = EncryptedRead::new(stream_read, cipher);
         let mut stream_read = crate::decode::BufDecoder::new(stream_read);
 
-        let client_timestamp = stream_read
-            .read_next(decode::u64_peeker())
-            .await
-            .map_err(InitError::from_decode_error)
-            .and_then(|opt| {
-                opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
-            })?;
+        let client_timestamp =
+            stream_read
+                .read_next(decode::u64_peeker())
+                .await
+                .and_then(|opt| {
+                    opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
+                })?;
 
         async move {
             if u64::abs_diff(client_timestamp, server_timestamp) > 30 {
@@ -107,7 +107,6 @@ where
             let _rand_bytes = stream_read
                 .read_next(slice_peeker_fixed_len(rand_byte_len.try_into().unwrap()))
                 .await
-                .map_err(InitError::from_decode_error)
                 .and_then(|opt| {
                     opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
                 })?;
@@ -115,7 +114,6 @@ where
             let client_id: Box<[u8; 16]> = stream_read
                 .read_next(slice_peeker_fixed_len(16))
                 .await
-                .map_err(InitError::from_decode_error)
                 .and_then(|opt| {
                     opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
                 })?
@@ -126,7 +124,6 @@ where
             let conn_id = stream_read
                 .read_next(decode::u64_peeker())
                 .await
-                .map_err(InitError::from_decode_error)
                 .and_then(|opt| {
                     opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
                 })?;
@@ -345,7 +342,7 @@ where
 
     async fn recv_msg(
         &mut self,
-    ) -> Result<Option<msg::conn::ConnMsg<msg::ClientMsg>>, DecodeError> {
+    ) -> Result<Option<msg::conn::ConnMsg<msg::ClientMsg>>, std::io::Error> {
         let msg = self
             .stream_read
             .read_next(msg::conn::conn_msg_peeker(msg::client_msg_peeker()))
@@ -357,7 +354,7 @@ where
     async fn recv_msg_with_timeout(
         &mut self,
         time_limit: Duration,
-    ) -> Result<Option<Self::Message>, DecodeError> {
+    ) -> Result<Option<Self::Message>, std::io::Error> {
         let msg = self
             .stream_read
             .read_next_with_timeout(

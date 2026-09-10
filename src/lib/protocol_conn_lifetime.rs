@@ -139,10 +139,7 @@ where
                         tracing::error!("unexpected end of stream");
                         return Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "unexpected end of stream"));
                     },
-                    Err(err) => match err {
-                        DecodeError::Io(err) => return Err(err),
-                        DecodeError::InvalidStream(err) => panic!("invalid stream: {:?}", err),
-                    }
+                    Err(err) => return Err(err)
                 };
 
                 tracing::debug!(?msg, "msg from stream");

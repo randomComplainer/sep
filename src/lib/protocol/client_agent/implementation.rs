@@ -127,7 +127,7 @@ where
 {
     type Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>;
 
-    async fn recv_msg(&mut self) -> Result<Option<Self::Message>, decode::DecodeError> {
+    async fn recv_msg(&mut self) -> Result<Option<Self::Message>, std::io::Error> {
         let msg = self
             .stream_read
             .read_next(msg::conn::conn_msg_peeker(msg::server_msg_peeker()))
@@ -139,7 +139,7 @@ where
     async fn recv_msg_with_timeout(
         &mut self,
         time_limit: Duration,
-    ) -> Result<Option<Self::Message>, DecodeError> {
+    ) -> Result<Option<Self::Message>, std::io::Error> {
         let msg = self
             .stream_read
             .read_next_with_timeout(
