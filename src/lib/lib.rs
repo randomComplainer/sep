@@ -20,6 +20,7 @@ pub mod task_scope;
 #[macro_use]
 pub mod decode;
 pub mod encrypt;
+pub mod encode;
 
 pub mod protocol;
 mod sequence;
@@ -63,6 +64,7 @@ pub mod prelude {
     pub use crate::sink_ext::SinkExt as _;
     pub use crate::task_scope;
     pub use crate::{decode, protocol};
+    pub use crate::encode::Encode;
     pub use crate::{ok_or, some_or};
     pub use protocol::{ClientId, ConnId, Key, Nonce, SessionId};
 }
@@ -71,7 +73,6 @@ pub mod cli_parameters {
     use clap::Parser;
     use clap::ValueEnum;
     use tracing::Subscriber;
-    use tracing_subscriber::fmt::format::FmtSpan;
     use tracing_subscriber::prelude::*;
 
     #[derive(Parser, Debug)]

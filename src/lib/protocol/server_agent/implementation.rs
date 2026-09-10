@@ -1,7 +1,7 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
 use chacha20::ChaCha20;
 use chacha20::cipher::KeyIvInit;
 use tokio::io::AsyncReadExt;
@@ -190,6 +190,7 @@ where
     Cipher: StaticCipher,
 {
     pub stream_write: WriteEncrypted<Stream, Cipher>,
+    main_buf: BytesMut,
 }
 
 impl<Stream, Cipher> GreetedWrite<Stream, Cipher>
@@ -198,7 +199,10 @@ where
     Cipher: StaticCipher,
 {
     pub fn new(stream_write: WriteEncrypted<Stream, Cipher>) -> Self {
-        Self { stream_write }
+        Self {
+            stream_write,
+            main_buf: BytesMut::with_capacity(64),
+        }
     }
 }
 
@@ -210,101 +214,17 @@ where
     type Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>;
 
     async fn send_msg(&mut self, msg: Self::Message) -> Result<(), std::io::Error> {
-        // TODO: Do I need calculated size?
-        let mut buf = BytesMut::with_capacity(64);
+        self.main_buf.clear();
+        let mut side_bufs = Vec::new();
 
-        match msg {
-            msg::conn::ConnMsg::Protocol(msg) => {
-                buf.put_u8(0u8);
-                match msg {
-                    msg::ServerMsg::SessionMsg(session_id, server_msg) => {
-                        buf.put_u8(0u8);
-                        buf.put_u64(session_id);
-                        match server_msg {
-                            msg::session::ServerMsg::Reply(reply) => {
-                                buf.put_u8(0u8);
-                                match &reply.bound_addr {
-                                    std::net::SocketAddr::V4(addr) => {
-                                        buf.put_u8(0x01);
-                                        buf.put_u32(addr.ip().to_bits());
-                                    }
-                                    std::net::SocketAddr::V6(addr) => {
-                                        buf.put_u8(0x04);
-                                        buf.put_slice(&addr.ip().octets());
-                                    }
-                                };
-                                buf.put_u16(reply.bound_addr.port());
-                                self.stream_write.write_all(&mut buf).await?;
-                            }
-                            msg::session::ServerMsg::ReplyError(err) => {
-                                buf.put_u8(1u8);
-                                use msg::session::ConnectionError::*;
-                                buf.put_u8(match err {
-                                    General => 0,
-                                    NetworkUnreachable => 1,
-                                    HostUnreachable => 2,
-                                    ConnectionRefused => 3,
-                                    TtlExpired => 4,
-                                });
-                                self.stream_write.write_all(&mut buf).await?;
-                            }
-                            msg::session::ServerMsg::Data(mut data) => {
-                                buf.put_u8(2u8);
-                                buf.put_u16(data.seq);
-                                buf.put_u16(data.data.as_ref().len().try_into().unwrap());
-                                self.stream_write.write_all(&mut buf).await?;
-                                self.stream_write.write_all(data.data.as_mut()).await?;
-                            }
-                            msg::session::ServerMsg::Ack(ack) => {
-                                buf.put_u8(3u8);
-                                buf.put_u32(ack.bytes);
-                                self.stream_write.write_all(&mut buf).await?;
-                            }
-                            msg::session::ServerMsg::Eof(eof) => {
-                                buf.put_u8(4u8);
-                                buf.put_u16(eof.seq);
-                                self.stream_write.write_all(&mut buf).await?;
-                            }
-                            msg::session::ServerMsg::EofAck(_) => {
-                                buf.put_u8(5u8);
-                                self.stream_write.write_all(&mut buf).await?;
-                            }
-                        };
-                    }
-                    msg::ServerMsg::GlobalCmd(cmd) => {
-                        buf.put_u8(1u8);
-                        match cmd {
-                            msg::AtLeastOnce::Ack(ack) => {
-                                buf.put_u8(0u8);
-                                buf.put_u32(ack);
-                            }
-                            msg::AtLeastOnce::Msg(seq, msg) => {
-                                buf.put_u8(1u8);
-                                buf.put_u32(seq);
-                                match msg {
-                                    msg::global_cmd::ServerCmd::KillSession(session_id) => {
-                                        buf.put_u8(0u8);
-                                        buf.put_u64(session_id);
-                                    }
-                                    msg::global_cmd::ServerCmd::ConnectMore { expected } => {
-                                        buf.put_u8(1u8);
-                                        buf.put_u8(expected);
-                                    }
-                                };
-                            }
-                        };
-                        self.stream_write.write_all(&mut buf).await?;
-                    }
-                }
-            }
-            msg::conn::ConnMsg::Ping => {
-                buf.put_u8(1u8);
-                self.stream_write.write_all(&mut buf).await?;
-            }
-            msg::conn::ConnMsg::EndOfStream => {
-                buf.put_u8(2u8);
-                self.stream_write.write_all(&mut buf).await?;
-            }
+        msg.encode(&mut self.main_buf, &mut side_bufs);
+
+        assert!(side_bufs.len() <= 1);
+
+        self.stream_write.write_all(&mut self.main_buf).await?;
+
+        for mut buf in side_bufs.into_iter() {
+            self.stream_write.write_all(buf.as_mut()).await?;
         }
 
         Ok(())

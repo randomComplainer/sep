@@ -48,7 +48,7 @@ struct State<SessionEvtTx> {
     config: Config,
     session_handle: session_host::Handle<SessionEvtTx>,
     conn_handle: conn_host::Handle,
-    global_cmd_handle: global_cmd_manager::Handle<protocol::msg::global_cmd::ClientCmd>,
+    global_cmd_handle: global_cmd_manager::Handle<protocol::msg::group::ClientCmd>,
     assignment: assignment::State<protocol::msg::ClientMsg, proxyee_io::Cmd>,
     buf_pool: buffer_pool::BufferPool,
 }
@@ -61,7 +61,7 @@ where
         config: Config,
         session_handle: session_host::Handle<SessionEvtTx>,
         conn_handle: conn_host::Handle,
-        global_cmd_handle: global_cmd_manager::Handle<protocol::msg::global_cmd::ClientCmd>,
+        global_cmd_handle: global_cmd_manager::Handle<protocol::msg::group::ClientCmd>,
         buf_pool: buffer_pool::BufferPool,
     ) -> Self {
         Self {
@@ -146,12 +146,12 @@ where
                                 self.handle_assignment_actions(actions).await;
 
                                 match msg {
-                                    protocol::msg::global_cmd::ServerCmd::KillSession(
+                                    protocol::msg::group::ServerCmd::KillSession(
                                         session_id,
                                     ) => {
                                         self.assignment.on_session_ended(&session_id);
                                     }
-                                    protocol::msg::global_cmd::ServerCmd::ConnectMore {
+                                    protocol::msg::group::ServerCmd::ConnectMore {
                                         expected,
                                     } => {
                                         self.match_expected_conn_count(expected.into()).await;
@@ -167,7 +167,7 @@ where
 
     pub fn handle_global_cmd_event(
         &mut self,
-        evt: global_cmd_manager::Event<protocol::msg::global_cmd::ClientCmd>,
+        evt: global_cmd_manager::Event<protocol::msg::group::ClientCmd>,
     ) {
         match evt {
             global_cmd_manager::Event::Send(at_least_once) => {
@@ -185,7 +185,7 @@ where
             match action {
                 assignment::Action::KillSession(session_id) => {
                     self.global_cmd_handle
-                        .queue(protocol::msg::global_cmd::ClientCmd::KillSession(
+                        .queue(protocol::msg::group::ClientCmd::KillSession(
                             session_id,
                         ))
                         .await;

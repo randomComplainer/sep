@@ -1,3 +1,4 @@
+use bytes::BufMut;
 use bytes::BytesMut;
 use derive_more::From;
 
@@ -5,10 +6,18 @@ use crate::buffer_pool::Recycle;
 use crate::decode::*;
 use crate::prelude::*;
 
-#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(PartialEq, Eq, Clone))]
+#[derive(Debug)]
 pub struct Request {
     pub addr: decode::RequestAddr,
     pub port: u16,
+}
+
+impl Encode for Request {
+    fn encode(self, main_buf: &mut BytesMut, side_bufs: &mut Vec<Buf>) {
+        main_buf.put_u16(self.port);
+        self.addr.encode(main_buf, side_bufs);
+    }
 }
 
 pub struct RequestReader {
@@ -20,8 +29,8 @@ impl Reader for RequestReader {
     type Value = Request;
     fn read(&self, buf: &mut BytesMut) -> Request {
         Request {
-            addr: self.addr.read(buf),
             port: self.port.read(buf),
+            addr: self.addr.read(buf),
         }
     }
 }
@@ -29,15 +38,33 @@ impl Reader for RequestReader {
 pub fn request_peeker() -> impl Peeker<Request, Reader = RequestReader> {
     peek::wrap(|cursor| {
         Ok(Some(RequestReader {
-            addr: crate::peek!(request_addr_peeker().peek(cursor)),
             port: crate::peek!(u16_peeker().peek(cursor)),
+            addr: crate::peek!(request_addr_peeker().peek(cursor)),
         }))
     })
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(PartialEq, Eq, Clone))]
+#[derive(Debug)]
 pub struct Reply {
     pub bound_addr: std::net::SocketAddr,
+}
+
+impl Encode for Reply {
+    fn encode(self, main_buf: &mut BytesMut, _side_bufs: &mut Vec<Buf>) {
+        match self.bound_addr {
+            std::net::SocketAddr::V4(addr) => {
+                main_buf.put_u8(0x01);
+                main_buf.put_u32(addr.ip().to_bits());
+                main_buf.put_u16(addr.port());
+            }
+            std::net::SocketAddr::V6(addr) => {
+                main_buf.put_u8(0x04);
+                main_buf.put_slice(&addr.ip().octets());
+                main_buf.put_u16(addr.port());
+            }
+        };
+    }
 }
 
 pub struct ReplyReader {
@@ -61,16 +88,18 @@ pub fn reply_peeker() -> impl Peeker<Reply, Reader = ReplyReader> {
 }
 
 #[derive(From)]
-#[cfg_attr(test, derive(PartialEq, Eq, Clone))]
+#[cfg_attr(test, derive(Clone))]
 pub enum Buf {
-    Raw(#[from] BytesMut),
+    Bytes(#[from] BytesMut),
+    Vec(#[from] Vec<u8>),
     Recyle(#[from] Recycle<BytesMut>),
 }
 
 impl std::fmt::Debug for Buf {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Raw(buf) => f.debug_tuple("Raw").field(&buf.len()).finish(),
+            Self::Bytes(buf) => f.debug_tuple("Bytes").field(&buf.len()).finish(),
+            Self::Vec(vec) => f.debug_tuple("Vec").field(&vec.len()).finish(),
             Self::Recyle(recyle) => f
                 .debug_tuple("Recyle")
                 .field(&recyle.ref_inner().len())
@@ -79,10 +108,23 @@ impl std::fmt::Debug for Buf {
     }
 }
 
+#[cfg(test)]
+impl PartialEq for Buf {
+    fn eq(&self, other: &Self) -> bool {
+        let l = self.as_ref();
+        let r = other.as_ref();
+        l.as_ref().eq(r.as_ref())
+    }
+}
+
+#[cfg(test)]
+impl Eq for Buf {}
+
 impl AsRef<[u8]> for Buf {
     fn as_ref(&self) -> &[u8] {
         match self {
-            Buf::Raw(inner) => inner.as_ref(),
+            Buf::Bytes(inner) => inner.as_ref(),
+            Buf::Vec(inner) => inner.as_slice(),
             Buf::Recyle(recyle) => recyle.as_ref(),
         }
     }
@@ -91,16 +133,25 @@ impl AsRef<[u8]> for Buf {
 impl AsMut<[u8]> for Buf {
     fn as_mut(&mut self) -> &mut [u8] {
         match self {
-            Buf::Raw(inner) => inner.as_mut(),
+            Buf::Bytes(inner) => inner.as_mut(),
+            Buf::Vec(inner) => inner.as_mut_slice(),
             Buf::Recyle(recyle) => recyle.as_mut(),
         }
     }
 }
 
-#[cfg_attr(test, derive(PartialEq, Eq))]
+#[cfg_attr(test, derive(PartialEq, Eq, Clone))]
 pub struct Data {
     pub seq: u16,
     pub data: Buf,
+}
+
+impl Encode for Data {
+    fn encode(self, main_buf: &mut BytesMut, side_bufs: &mut Vec<Buf>) {
+        main_buf.put_u16(self.seq);
+        main_buf.put_u16(self.data.as_ref().len().try_into().unwrap());
+        side_bufs.push(self.data);
+    }
 }
 
 pub struct DataReader {
@@ -113,7 +164,7 @@ impl Reader for DataReader {
     fn read(&self, buf: &mut BytesMut) -> Data {
         Data {
             seq: self.seq.read(buf),
-            data: Buf::Raw(self.data.read(buf)),
+            data: Buf::Bytes(self.data.read(buf)),
         }
     }
 }
@@ -136,10 +187,16 @@ impl std::fmt::Debug for Data {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq, Eq, Clone))]
 pub struct Ack {
-    // pub seq: u16,
     pub bytes: u32,
+}
+
+impl Encode for Ack {
+    fn encode(self, main_buf: &mut BytesMut, _side_bufs: &mut Vec<Buf>) {
+        main_buf.put_u32(self.bytes);
+    }
 }
 
 pub struct AckReader {
@@ -163,9 +220,16 @@ pub fn ack_peeker() -> impl Peeker<Ack, Reader = AckReader> {
     })
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq, Eq, Clone))]
 pub struct Eof {
     pub seq: u16,
+}
+
+impl Encode for Eof {
+    fn encode(self, main_buf: &mut BytesMut, _side_bufs: &mut Vec<Buf>) {
+        main_buf.put_u16(self.seq);
+    }
 }
 
 pub struct EofReader {
@@ -189,7 +253,8 @@ pub fn eof_peeker() -> impl Peeker<Eof, Reader = EofReader> {
     })
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq, Eq, Clone))]
 pub struct EofAck;
 
 pub struct EOFAckReader;
@@ -205,7 +270,8 @@ pub fn eof_ack_peeker() -> impl Peeker<EofAck, Reader = EOFAckReader> {
     peek::wrap(|_cursor| Ok(Some(EOFAckReader)))
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq, Eq, Clone))]
 pub struct IoError;
 pub struct IoErrorReader;
 
@@ -221,13 +287,39 @@ pub fn error_peeker() -> impl Peeker<IoError, Reader = IoErrorReader> {
 }
 
 #[derive(Debug, From)]
-#[cfg_attr(test, derive(PartialEq, Eq))]
+#[cfg_attr(test, derive(PartialEq, Eq, Clone))]
 pub enum ClientMsg {
     Request(#[from] Request),
     Data(#[from] Data),
     Ack(#[from] Ack),
     Eof(#[from] Eof),
     EofAck(#[from] EofAck),
+}
+
+impl Encode for ClientMsg {
+    fn encode(self, main_buf: &mut BytesMut, side_bufs: &mut Vec<Buf>) {
+        match self {
+            ClientMsg::Request(request) => {
+                main_buf.put_u8(0);
+                request.encode(main_buf, side_bufs);
+            }
+            ClientMsg::Data(data) => {
+                main_buf.put_u8(1);
+                data.encode(main_buf, side_bufs);
+            }
+            ClientMsg::Ack(ack) => {
+                main_buf.put_u8(2);
+                ack.encode(main_buf, side_bufs);
+            }
+            ClientMsg::Eof(eof) => {
+                main_buf.put_u8(3);
+                eof.encode(main_buf, side_bufs);
+            }
+            ClientMsg::EofAck(_eof_ack) => {
+                main_buf.put_u8(4);
+            }
+        }
+    }
 }
 
 pub enum ClientMsgReader {
@@ -267,13 +359,36 @@ pub fn client_msg_peeker() -> impl Peeker<ClientMsg, Reader = ClientMsgReader> {
     })
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, From)]
+#[cfg_attr(test, derive(PartialEq, Eq, Clone))]
 pub enum ConnectionError {
     General,
     NetworkUnreachable,
     HostUnreachable,
     ConnectionRefused,
     TtlExpired,
+}
+
+impl Encode for ConnectionError {
+    fn encode(self, main_buf: &mut BytesMut, _side_bufs: &mut Vec<Buf>) {
+        match self {
+            ConnectionError::General => {
+                main_buf.put_u8(0);
+            }
+            ConnectionError::NetworkUnreachable => {
+                main_buf.put_u8(1);
+            }
+            ConnectionError::HostUnreachable => {
+                main_buf.put_u8(2);
+            }
+            ConnectionError::ConnectionRefused => {
+                main_buf.put_u8(3);
+            }
+            ConnectionError::TtlExpired => {
+                main_buf.put_u8(4);
+            }
+        }
+    }
 }
 
 impl From<std::io::Error> for ConnectionError {
@@ -328,7 +443,7 @@ pub fn connection_error_peeker() -> impl Peeker<ConnectionError, Reader = Connec
 }
 
 #[derive(Debug, From)]
-#[cfg_attr(test, derive(PartialEq, Eq))]
+#[cfg_attr(test, derive(PartialEq, Eq, Clone))]
 pub enum ServerMsg {
     Reply(#[from] Reply),
     ReplyError(#[from] ConnectionError),
@@ -336,6 +451,36 @@ pub enum ServerMsg {
     Ack(#[from] Ack),
     Eof(#[from] Eof),
     EofAck(#[from] EofAck),
+}
+
+impl Encode for ServerMsg {
+    fn encode(self, main_buf: &mut BytesMut, side_bufs: &mut Vec<Buf>) {
+        match self {
+            ServerMsg::Reply(reply) => {
+                main_buf.put_u8(0);
+                reply.encode(main_buf, side_bufs);
+            }
+            ServerMsg::ReplyError(connection_error) => {
+                main_buf.put_u8(1);
+                connection_error.encode(main_buf, side_bufs);
+            }
+            ServerMsg::Data(data) => {
+                main_buf.put_u8(2);
+                data.encode(main_buf, side_bufs);
+            }
+            ServerMsg::Ack(ack) => {
+                main_buf.put_u8(3);
+                ack.encode(main_buf, side_bufs);
+            }
+            ServerMsg::Eof(eof) => {
+                main_buf.put_u8(4);
+                eof.encode(main_buf, side_bufs);
+            }
+            ServerMsg::EofAck(_eof_ack) => {
+                main_buf.put_u8(5);
+            }
+        }
+    }
 }
 
 pub enum ServerMsgReader {
@@ -376,4 +521,74 @@ pub fn server_msg_peeker() -> impl Peeker<ServerMsg, Reader = ServerMsgReader> {
             }
         }))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{net::Ipv4Addr, str::FromStr};
+
+    use super::*;
+
+    #[test]
+    fn request_msg() {
+        let req = Request {
+            addr: RequestAddr::Domain("www.test.com".to_string()),
+            port: 2008,
+        };
+
+        decode::test_codec(req, request_peeker());
+    }
+
+    #[test]
+    fn client_msg_request() {
+        let req: ClientMsg = Request {
+            addr: RequestAddr::Domain("www.test.com".to_string()),
+            port: 2008,
+        }
+        .into();
+
+        decode::test_codec(req, client_msg_peeker());
+    }
+
+    #[test]
+    fn reply_msg() {
+        let rep = Reply {
+            bound_addr: std::net::SocketAddr::new(
+                std::net::IpAddr::V4(Ipv4Addr::from_str("192.168.0.1").unwrap()),
+                6090,
+            ),
+        };
+
+        decode::test_codec(rep, reply_peeker());
+    }
+
+    #[test]
+    fn data_msg() {
+        let data = Data {
+            seq: 1345,
+            data: vec![0u8, 4u8, 3u8, 2u8].into(),
+        };
+
+        decode::test_codec(data, data_peeker());
+    }
+
+    #[test]
+    fn client_msg_data() {
+        let msg: ClientMsg = Data {
+            seq: 1345,
+            data: vec![0u8, 4u8, 3u8, 2u8].into(),
+        }
+        .into();
+
+        decode::test_codec(msg, client_msg_peeker());
+    }
+
+    #[test]
+    fn client_msg_eof() {
+        let msg: ClientMsg = Eof {
+            seq: 1543
+        }.into();
+
+        decode::test_codec(msg, client_msg_peeker());
+    }
 }

@@ -38,6 +38,7 @@ mod state {
         Data(#[from] msg::Data),
         Ack(#[from] msg::Ack),
         Eof,
+        EofAck,
         Done,
     }
 
@@ -90,7 +91,7 @@ mod state {
         fn on_all_wrote(&mut self) -> Vec<Action> {
             assert_eq!(0, self.buffed_bytes);
             assert_eq!(0, self.buffed_entries.len());
-            Vec::from([Action::Done])
+            Vec::from([Action::EofAck, Action::Done])
         }
 
         fn try_get_ordered_data(&mut self) -> Vec<Action> {
@@ -205,6 +206,9 @@ pub async fn run(
                     }
                     state::Action::Ack(ack) => {
                         ok_or!(evt_tx.send(ack.into()).await, return);
+                    }
+                    state::Action::EofAck => {
+                        ok_or!(evt_tx.send(msg::EofAck.into()).await, return);
                     }
                     state::Action::Done => {
                         tracing::debug!("done");

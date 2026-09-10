@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 pub use peek::Peeker;
@@ -307,7 +307,8 @@ pub const fn ipv6_peeker() -> impl Peeker<std::net::Ipv6Addr, Reader = Ipv6AddrR
     })
 }
 
-#[derive(PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(PartialEq, Eq, Clone))]
+#[derive(Hash)]
 pub enum RequestAddr {
     Ipv4(std::net::Ipv4Addr),
     Ipv6(std::net::Ipv6Addr),
@@ -320,6 +321,30 @@ impl std::fmt::Debug for RequestAddr {
             Self::Ipv4(addr) => write!(f, "{}", addr),
             Self::Ipv6(addr) => write!(f, "{}", addr),
             Self::Domain(domain) => write!(f, "{}", &domain),
+        }
+    }
+}
+
+impl crate::encode::Encode for RequestAddr {
+    fn encode(
+        self,
+        main_buf: &mut BytesMut,
+        side_bufs: &mut Vec<crate::protocol::msg::session::Buf>,
+    ) {
+        match self {
+            RequestAddr::Ipv4(addr) => {
+                main_buf.put_u8(0);
+                main_buf.put_slice(&addr.octets());
+            }
+            RequestAddr::Ipv6(addr) => {
+                main_buf.put_u8(0x04);
+                main_buf.put_slice(&addr.octets());
+            }
+            RequestAddr::Domain(domain) => {
+                main_buf.put_u8(0x03);
+                main_buf.put_u8(domain.as_bytes().len() as u8);
+                side_bufs.push(domain.into_bytes().into());
+            }
         }
     }
 }
@@ -397,11 +422,99 @@ pub fn socket_addr_peeker() -> impl Peeker<SocketAddr, Reader = SockerAddrReader
     })
 }
 
+pub struct BufDecoder<Stream>
+where
+    Stream: AsyncRead + 'static + Unpin,
+{
+    inner: Stream,
+    buf: BytesMut,
+}
+
+impl<Stream> BufDecoder<Stream>
+where
+    Stream: tokio::io::AsyncRead + Unpin,
+{
+    // TODO: test different buffer size
+    const BUF_SIZE: usize = 1024 * 4;
+
+    pub fn new(inner: Stream) -> Self {
+        Self {
+            inner,
+            buf: BytesMut::with_capacity(Self::BUF_SIZE),
+        }
+    }
+
+    pub async fn read_next<T, P: Peeker<T>>(
+        &mut self,
+        peeker: P,
+    ) -> Result<Option<T>, std::io::Error> {
+        loop {
+            let mut cursor = Cursor::new(self.buf.as_ref());
+            match peeker.peek(&mut cursor) {
+                Ok(Some(reader)) => return Ok(Some(reader.read(&mut self.buf))),
+                Ok(None) => {}
+                Err(err) => return Err(err),
+            };
+
+            self.buf.reserve(1);
+            let n = self.inner.read_buf(&mut self.buf).await?;
+
+            if n == 0 {
+                return Ok(None);
+            }
+        }
+    }
+
+    pub async fn read_next_with_timeout<T, P: Peeker<T>>(
+        &mut self,
+        peeker: P,
+        time_limit: Duration,
+    ) -> Result<Option<T>, std::io::Error> {
+        loop {
+            let mut cursor = Cursor::new(self.buf.as_ref());
+            match peeker.peek(&mut cursor) {
+                Ok(Some(reader)) => return Ok(Some(reader.read(&mut self.buf))),
+                Ok(None) => {}
+                Err(err) => return Err(err),
+            };
+
+            self.buf.reserve(1);
+
+            let n = tokio::select! {
+                n = self.inner.read_buf(&mut self.buf) => n?,
+                _ = tokio::time::sleep(time_limit) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "timeout reading stream",
+                    ).into());
+                }
+            };
+
+            if n == 0 {
+                return Ok(None);
+            }
+        }
+    }
+
+    pub fn from_parts(buf: BytesMut, inner: Stream) -> Self {
+        Self { buf, inner }
+    }
+
+    pub fn into_parts(self) -> (BytesMut, Stream) {
+        (self.buf, self.inner)
+    }
+}
+
+#[cfg(test)]
+pub use tests::test_codec;
+
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{fmt::Debug, io::Cursor};
 
     use bytes::BufMut as _;
+
+    use crate::encode::Encode;
 
     use super::*;
 
@@ -522,87 +635,32 @@ mod tests {
 
         assert!(resolved.is_err());
     }
-}
 
-pub struct BufDecoder<Stream>
-where
-    Stream: AsyncRead + 'static + Unpin,
-{
-    inner: Stream,
-    buf: BytesMut,
-}
+    pub fn test_codec<T>(msg: T, peeker: impl Peeker<T>)
+    where
+        T: Encode + Eq + Debug + Clone,
+    {
+        let mut buf = BytesMut::new();
+        let mut side_bufs = Vec::new();
+        msg.clone().encode(&mut buf, &mut side_bufs);
 
-impl<Stream> BufDecoder<Stream>
-where
-    Stream: tokio::io::AsyncRead + Unpin,
-{
-    // TODO: test different buffer size
-    const BUF_SIZE: usize = 1024 * 4;
-
-    pub fn new(inner: Stream) -> Self {
-        Self {
-            inner,
-            buf: BytesMut::with_capacity(Self::BUF_SIZE),
+        assert!(side_bufs.len() <= 1);
+        if let Some(side_buf) = side_bufs.pop() {
+            buf.extend_from_slice(side_buf.as_ref());
         }
+
+        let mut cursor = Cursor::new(buf.as_ref());
+        let reader = peeker.peek(&mut cursor).unwrap().unwrap();
+        let read = reader.read(&mut buf);
+
+        assert_eq!(msg, read);
+        assert_eq!(0, buf.len());
     }
 
-    pub async fn read_next<T, P: Peeker<T>>(
-        &mut self,
-        peeker: P,
-    ) -> Result<Option<T>, std::io::Error> {
-        loop {
-            let mut cursor = Cursor::new(self.buf.as_ref());
-            match peeker.peek(&mut cursor) {
-                Ok(Some(reader)) => return Ok(Some(reader.read(&mut self.buf))),
-                Ok(None) => {}
-                Err(err) => return Err(err),
-            };
+    #[test]
+    fn reqest_addr_domain() {
+        let addr = RequestAddr::Domain("www.test.com".to_string());
 
-            self.buf.reserve(1);
-            let n = self.inner.read_buf(&mut self.buf).await?;
-
-            if n == 0 {
-                return Ok(None);
-            }
-        }
-    }
-
-    pub async fn read_next_with_timeout<T, P: Peeker<T>>(
-        &mut self,
-        peeker: P,
-        time_limit: Duration,
-    ) -> Result<Option<T>, std::io::Error> {
-        loop {
-            let mut cursor = Cursor::new(self.buf.as_ref());
-            match peeker.peek(&mut cursor) {
-                Ok(Some(reader)) => return Ok(Some(reader.read(&mut self.buf))),
-                Ok(None) => {}
-                Err(err) => return Err(err),
-            };
-
-            self.buf.reserve(1);
-
-            let n = tokio::select! {
-                n = self.inner.read_buf(&mut self.buf) => n?,
-                _ = tokio::time::sleep(time_limit) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "timeout reading stream",
-                    ).into());
-                }
-            };
-
-            if n == 0 {
-                return Ok(None);
-            }
-        }
-    }
-
-    pub fn from_parts(buf: BytesMut, inner: Stream) -> Self {
-        Self { buf, inner }
-    }
-
-    pub fn into_parts(self) -> (BytesMut, Stream) {
-        (self.buf, self.inner)
+        test_codec(addr, request_addr_peeker());
     }
 }

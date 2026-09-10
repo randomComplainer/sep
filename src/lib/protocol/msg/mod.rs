@@ -1,3 +1,4 @@
+use bytes::BufMut;
 use bytes::BytesMut;
 use derive_more::From;
 
@@ -5,21 +6,40 @@ use crate::decode::*;
 use crate::prelude::*;
 use crate::protocol::SessionId;
 
+pub mod group;
 pub mod session;
 
 // connection level messages
 pub mod conn {
+    use bytes::BufMut;
     use bytes::BytesMut;
     use derive_more::From;
 
     use crate::decode::*;
     use crate::prelude::*;
 
-    #[derive(Debug, From, PartialEq, Eq)]
+    #[cfg_attr(test, derive(PartialEq, Eq))]
+    #[derive(Debug, From)]
     pub enum ConnMsg<TMessage> {
-        Protocol(TMessage),
+        Protocol(#[from] TMessage),
         Ping,
         EndOfStream,
+    }
+
+    impl<TMessage> Encode for ConnMsg<TMessage>
+    where
+        TMessage: Encode,
+    {
+        fn encode(self, main_buf: &mut BytesMut, side_bufs: &mut Vec<super::session::Buf>) {
+            match self {
+                ConnMsg::Protocol(msg) => {
+                    main_buf.put_u8(0);
+                    msg.encode(main_buf, side_bufs);
+                }
+                ConnMsg::Ping => main_buf.put_u8(1),
+                ConnMsg::EndOfStream => main_buf.put_u8(2),
+            }
+        }
     }
 
     pub enum ConnMsgReader<TMessage> {
@@ -81,10 +101,35 @@ pub fn session_id_peeker() -> impl Peeker<SessionId, Reader = SessionIdReader> {
 
 #[derive(Debug, From)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
-pub enum ServerMsg {
-    SessionMsg(SessionId, session::ServerMsg),
-    GlobalCmd(AtLeastOnce<global_cmd::ServerCmd>),
+pub enum ProtocolMsg<Session, Global>
+where
+    Global: Clone + PartialEq + Eq,
+{
+    SessionMsg(SessionId, Session),
+    GlobalCmd(#[from] AtLeastOnce<Global>),
 }
+
+impl<Session, Global> Encode for ProtocolMsg<Session, Global>
+where
+    Session: Encode,
+    Global: Encode + Clone + PartialEq + Eq,
+{
+    fn encode(self, main_buf: &mut BytesMut, side_bufs: &mut Vec<session::Buf>) {
+        match self {
+            ProtocolMsg::SessionMsg(session_id, msg) => {
+                main_buf.put_u8(0);
+                main_buf.put_u64(session_id);
+                msg.encode(main_buf, side_bufs);
+            }
+            ProtocolMsg::GlobalCmd(cmd) => {
+                main_buf.put_u8(1);
+                cmd.encode(main_buf, side_bufs);
+            }
+        }
+    }
+}
+
+pub type ServerMsg = ProtocolMsg<session::ServerMsg, group::ServerCmd>;
 
 impl session::ServerMsg {
     pub fn with_session_id(self, session_id: SessionId) -> ServerMsg {
@@ -94,7 +139,7 @@ impl session::ServerMsg {
 
 pub enum ServerMsgReader {
     SessionMsg(SessionIdReader, session::ServerMsgReader),
-    GlobalCmd(AtLeastOnceReader<global_cmd::ServerCmd, global_cmd::ServerCmdReader>),
+    GlobalCmd(AtLeastOnceReader<group::ServerCmd, group::ServerCmdReader>),
 }
 
 impl Reader for ServerMsgReader {
@@ -119,7 +164,7 @@ pub fn server_msg_peeker() -> impl Peeker<ServerMsg, Reader = ServerMsgReader> {
                 crate::peek!(session::server_msg_peeker().peek(cursor)),
             ),
             1 => ServerMsgReader::GlobalCmd(crate::peek!(
-                at_least_once_peeker(global_cmd::server_cmd_peeker()).peek(cursor)
+                at_least_once_peeker(group::server_cmd_peeker()).peek(cursor)
             )),
             x => {
                 return Err(decode::unknown_enum_code("server message", x).into());
@@ -128,12 +173,7 @@ pub fn server_msg_peeker() -> impl Peeker<ServerMsg, Reader = ServerMsgReader> {
     })
 }
 
-#[derive(Debug, From)]
-#[cfg_attr(test, derive(PartialEq, Eq))]
-pub enum ClientMsg {
-    SessionMsg(SessionId, session::ClientMsg),
-    GlobalCmd(AtLeastOnce<global_cmd::ClientCmd>),
-}
+pub type ClientMsg = ProtocolMsg<session::ClientMsg, group::ClientCmd>;
 
 impl session::ClientMsg {
     pub fn with_session_id(self, session_id: SessionId) -> ClientMsg {
@@ -143,7 +183,7 @@ impl session::ClientMsg {
 
 pub enum ClientMsgReader {
     SessionMsg(SessionIdReader, session::ClientMsgReader),
-    GlobalCmd(AtLeastOnceReader<global_cmd::ClientCmd, global_cmd::ClientCmdReader>),
+    GlobalCmd(AtLeastOnceReader<group::ClientCmd, group::ClientCmdReader>),
 }
 
 impl Reader for ClientMsgReader {
@@ -168,7 +208,7 @@ pub fn client_msg_peeker() -> impl Peeker<ClientMsg, Reader = ClientMsgReader> {
                 crate::peek!(session::client_msg_peeker().peek(cursor)),
             ),
             1 => ClientMsgReader::GlobalCmd(crate::peek!(
-                at_least_once_peeker(global_cmd::client_cmd_peeker()).peek(cursor)
+                at_least_once_peeker(group::client_cmd_peeker()).peek(cursor)
             )),
             x => {
                 return Err(decode::unknown_enum_code("client message", x).into());
@@ -184,6 +224,25 @@ where
 {
     Ack(u32),
     Msg(u32, T),
+}
+
+impl<T> Encode for AtLeastOnce<T>
+where
+    T: Encode + Clone + PartialEq + Eq,
+{
+    fn encode(self, main_buf: &mut BytesMut, side_bufs: &mut Vec<session::Buf>) {
+        match self {
+            AtLeastOnce::Ack(seq) => {
+                main_buf.put_u8(0);
+                main_buf.put_u32(seq)
+            }
+            AtLeastOnce::Msg(seq, msg) => {
+                main_buf.put_u8(1);
+                main_buf.put_u32(seq);
+                msg.encode(main_buf, side_bufs);
+            }
+        }
+    }
 }
 
 pub enum AtLeastOnceReader<T, TReader>
@@ -227,110 +286,6 @@ where
             ),
             x => {
                 return Err(decode::unknown_enum_code("at least one message", x).into());
-            }
-        }))
-    })
-}
-pub mod global_cmd {
-    use super::*;
-
-    #[derive(Debug, PartialEq, Eq, Clone)]
-    pub enum ClientCmd {
-        KillSession(SessionId),
-    }
-
-    pub enum ClientCmdReader {
-        KillSession(SessionIdReader),
-    }
-
-    impl Reader for ClientCmdReader {
-        type Value = ClientCmd;
-
-        fn read(&self, buf: &mut BytesMut) -> Self::Value {
-            buf.split_to(1)[0];
-            match self {
-                Self::KillSession(session_id) => ClientCmd::KillSession(session_id.read(buf)),
-            }
-        }
-    }
-
-    pub fn client_cmd_peeker() -> impl Peeker<ClientCmd, Reader = ClientCmdReader> {
-        peek::peek_enum(|cursor, enum_code| {
-            Ok(Some(match enum_code {
-                0 => ClientCmdReader::KillSession(crate::peek!(session_id_peeker().peek(cursor))),
-                x => {
-                    return Err(decode::unknown_enum_code("client command", x).into());
-                }
-            }))
-        })
-    }
-
-    #[derive(Debug, PartialEq, Eq, Clone)]
-    pub enum ServerCmd {
-        KillSession(SessionId),
-        ConnectMore { expected: u8 },
-    }
-
-    pub enum ServerCmdReader {
-        KillSession(SessionIdReader),
-        ConnectMore { expected: U8Reader },
-    }
-
-    impl Reader for ServerCmdReader {
-        type Value = ServerCmd;
-
-        fn read(&self, buf: &mut BytesMut) -> Self::Value {
-            buf.split_to(1)[0];
-            match self {
-                Self::KillSession(session_id) => ServerCmd::KillSession(session_id.read(buf)),
-                Self::ConnectMore { expected } => ServerCmd::ConnectMore {
-                    expected: expected.read(buf),
-                },
-            }
-        }
-    }
-
-    pub fn server_cmd_peeker() -> impl Peeker<ServerCmd, Reader = ServerCmdReader> {
-        peek::peek_enum(|cursor, enum_code| {
-            Ok(Some(match enum_code {
-                0 => ServerCmdReader::KillSession(crate::peek!(session_id_peeker().peek(cursor))),
-                1 => ServerCmdReader::ConnectMore {
-                    expected: crate::peek!(u8_peeker().peek(cursor)),
-                },
-                x => {
-                    return Err(decode::unknown_enum_code("server command", x).into());
-                }
-            }))
-        })
-    }
-}
-
-#[derive(Debug, From, PartialEq, Eq, Clone)]
-pub enum GlobalCmd {
-    KillSession(SessionId),
-}
-
-pub enum GlobalCmdReader {
-    KillSession(SessionIdReader),
-}
-
-impl Reader for GlobalCmdReader {
-    type Value = GlobalCmd;
-
-    fn read(&self, buf: &mut BytesMut) -> Self::Value {
-        buf.split_to(1)[0];
-        match self {
-            Self::KillSession(session_id) => GlobalCmd::KillSession(session_id.read(buf)),
-        }
-    }
-}
-
-pub fn global_cmd_peeker() -> impl Peeker<GlobalCmd, Reader = GlobalCmdReader> {
-    peek::peek_enum(|cursor, enum_code| {
-        Ok(Some(match enum_code {
-            0 => GlobalCmdReader::KillSession(crate::peek!(session_id_peeker().peek(cursor))),
-            x => {
-                return Err(decode::unknown_enum_code("global command", x).into());
             }
         }))
     })

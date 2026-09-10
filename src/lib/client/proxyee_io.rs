@@ -201,10 +201,14 @@ pub async fn run(
         tokio::try_join!(server_to_proxyee, proxyee_to_server).map(|_| ())
     };
 
-    tokio::select! {
+    let result = tokio::select! {
         r = streaming => r,
         _ = server_msg_handling => Ok(())
-    }
+    };
+
+    tracing::debug!("session ends");
+
+    result
 }
 
 #[cfg(test)]

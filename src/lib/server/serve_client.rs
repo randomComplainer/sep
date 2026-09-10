@@ -41,7 +41,7 @@ struct State<TConnectTarget, SessionEvtTx, ConnEvtTx> {
     config: Config<TConnectTarget>,
     session_handle: session_host::Handle<SessionEvtTx, TConnectTarget>,
     conn_handle: conn_host::Handle<ConnEvtTx>,
-    global_cmd_handle: global_cmd_manager::Handle<protocol::msg::global_cmd::ServerCmd>,
+    global_cmd_handle: global_cmd_manager::Handle<protocol::msg::group::ServerCmd>,
     assignment: assignment::State<protocol::msg::ServerMsg, target_io::Cmd>,
 }
 
@@ -57,7 +57,7 @@ where
         config: Config<TConnectTarget>,
         session_handle: session_host::Handle<SessionEvtTx, TConnectTarget>,
         conn_handle: conn_host::Handle<ConnEvtTx>,
-        global_cmd_handle: global_cmd_manager::Handle<protocol::msg::global_cmd::ServerCmd>,
+        global_cmd_handle: global_cmd_manager::Handle<protocol::msg::group::ServerCmd>,
     ) -> Self {
         Self {
             config: config.clone(),
@@ -149,7 +149,7 @@ where
                                 self.handle_assignment_actions(actions).await;
 
                                 match msg {
-                                    protocol::msg::global_cmd::ClientCmd::KillSession(
+                                    protocol::msg::group::ClientCmd::KillSession(
                                         session_id,
                                     ) => {
                                         self.assignment.on_session_ended(&session_id);
@@ -165,7 +165,7 @@ where
 
     pub fn handle_global_cmd_event(
         &mut self,
-        evt: global_cmd_manager::Event<protocol::msg::global_cmd::ServerCmd>,
+        evt: global_cmd_manager::Event<protocol::msg::group::ServerCmd>,
     ) {
         match evt {
             global_cmd_manager::Event::Send(at_least_once) => {
@@ -183,14 +183,14 @@ where
             match action {
                 assignment::Action::KillSession(session_id) => {
                     self.global_cmd_handle
-                        .queue(protocol::msg::global_cmd::ServerCmd::KillSession(
+                        .queue(protocol::msg::group::ServerCmd::KillSession(
                             session_id,
                         ))
                         .await;
                 }
                 assignment::Action::ConnectMore { expected } => {
                     self.global_cmd_handle
-                        .queue(protocol::msg::global_cmd::ServerCmd::ConnectMore {
+                        .queue(protocol::msg::group::ServerCmd::ConnectMore {
                             expected: expected.try_into().unwrap(),
                         })
                         .await

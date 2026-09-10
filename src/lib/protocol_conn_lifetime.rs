@@ -5,7 +5,6 @@ use tokio::sync::oneshot;
 use tracing::Instrument as _;
 
 use crate::ok_or;
-use crate::prelude::*;
 use crate::protocol::MessageReader;
 use crate::protocol::MessageWriter;
 use crate::protocol::msg::conn::ConnMsg;

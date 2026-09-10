@@ -144,10 +144,14 @@ where
 
     let streaming = async move { tokio::try_join!(target_to_client, client_to_target).map(|_| ()) };
 
-    tokio::select! {
+    let result = tokio::select! {
         r = streaming => r,
         _ = client_msg_handling => Ok(())
-    }
+    };
+
+    tracing::debug!("session ends");
+
+    result
 }
 
 #[cfg(test)]
