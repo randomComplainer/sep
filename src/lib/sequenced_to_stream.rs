@@ -6,6 +6,7 @@ use crate::sequence::{StreamEntry, StreamEntryValue};
 
 use crate::ok_or;
 use crate::protocol::msg::session as msg;
+use crate::sink_ext::SinkExt as _;
 
 #[derive(Debug, From)]
 pub enum Command {
@@ -164,11 +165,12 @@ async fn create_writing_task(
 
 pub async fn run(
     cmd_rx: impl Stream<Item = Command> + Unpin + Send + 'static,
-    mut evt_tx: impl Sink<Event> + Unpin + Send + Clone + 'static,
+    evt_tx: impl Sink<Event> + Unpin + Send + Clone + 'static,
     stream_to_write: impl AsyncWrite + Unpin + Send + 'static,
 ) -> Result<(), std::io::Error> {
     let (mut entries_tx, entries_rx) = futures::channel::mpsc::unbounded();
     let (wrote_tx, wrote_rx) = futures::channel::mpsc::unbounded();
+    let mut evt_tx = evt_tx.inspect(|evt| tracing::debug!(evt=?evt, "event"));
 
     let io_task = create_writing_task(stream_to_write, entries_rx, wrote_tx);
 
@@ -190,6 +192,8 @@ pub async fn run(
     let state_task = async move {
         let mut state = state::State::new();
         while let Some(cmd) = state_cmd_stream.next().await {
+            tracing::debug!(cmd = ?cmd, "command");
+
             let actions = state.on_cmd(cmd);
             for action in actions {
                 match action {
@@ -202,7 +206,10 @@ pub async fn run(
                     state::Action::Ack(ack) => {
                         ok_or!(evt_tx.send(ack.into()).await, return);
                     }
-                    state::Action::Done => return,
+                    state::Action::Done => {
+                        tracing::debug!("done");
+                        return;
+                    }
                 };
             }
         }

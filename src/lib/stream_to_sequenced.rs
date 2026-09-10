@@ -172,7 +172,9 @@ async fn create_package_stream(
     first_pack: Option<BytesMut>,
     next_pkg_signal: Arc<tokio::sync::Notify>,
 ) -> std::io::Result<()> {
-    if let Some(buf) = first_pack {
+    if let Some(buf) = first_pack
+        && buf.len() > 0
+    {
         next_pkg_signal.notified().await;
         ok_or!(package_tx.send(Some(buf.into())).await, return Ok(()));
     }
@@ -240,15 +242,19 @@ pub async fn run(
 
         while let Some(cmd) = state_cmd_stream.next().await {
             tracing::debug!(cmd = ?cmd, "command");
+
             let actions = state.on_cmd(cmd);
             for action in actions {
                 match action {
                     state::Action::Data(data) => {
-                        ok_or!(evt_tx.send(data.into()).await, return);
                         next_pkg_signal.notify_one();
+                        ok_or!(evt_tx.send(data.into()).await, return);
                     }
                     state::Action::Eof(eof) => ok_or!(evt_tx.send(eof.into()).await, return),
-                    state::Action::Done => return,
+                    state::Action::Done => {
+                        tracing::debug!("done");
+                        return;
+                    }
                 };
             }
         }

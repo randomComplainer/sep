@@ -13,6 +13,7 @@ mod protocol_conn_lifetime;
 pub mod proxy_interface;
 mod sequenced_to_stream;
 pub mod sink_ext;
+mod slot_id;
 mod stream_to_sequenced;
 pub mod task_scope;
 
@@ -28,12 +29,6 @@ pub mod server;
 
 #[macro_export]
 macro_rules! ok_or {
-    ($value:expr, $err:ident => $on_err:expr) => {
-        match $value {
-            Ok(x) => x,
-            Err($err) => $on_err,
-        }
-    };
     ($value:expr, $err:ident => $on_err:expr) => {
         match $value {
             Ok(x) => x,
@@ -91,7 +86,7 @@ pub mod cli_parameters {
         pub fn setup_subscriber(&self) {
             let layer = tracing_subscriber::fmt::layer()
                 // .with_writer(std::io::stderr)
-                .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+                // .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
                 .with_ansi(false)
                 .with_format(self.format);
 
