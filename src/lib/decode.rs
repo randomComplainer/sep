@@ -235,6 +235,38 @@ pub const fn slice_peeker_fixed_len(len: u16) -> impl Peeker<BytesMut> {
     })
 }
 
+pub struct StringReader(SliceReader);
+impl Reader for StringReader {
+    type Value = String;
+    fn read(&self, buf: &mut BytesMut) -> String {
+        let _ = buf.split_to(self.0.head_len as usize);
+        let str_buf = buf.split_to(self.0.body_len as usize);
+        // SAFTY: validation happened in peeking
+        unsafe { String::from_utf8_unchecked(str_buf.to_vec()) }
+    }
+}
+
+pub const fn string_peeker() -> impl Peeker<String, Reader = StringReader> {
+    peek::wrap(move |cursor| {
+        if cursor.remaining() < 1 {
+            return Ok(None);
+        }
+        let len = cursor.get_u8();
+        if cursor.remaining() < len as usize {
+            return Ok(None);
+        }
+
+        let pos = cursor.position() as usize;
+        let slice = &cursor.get_ref()[pos..pos + len as usize];
+        str::from_utf8(slice).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid UTF-8 string")
+        })?;
+
+        cursor.advance(len as usize);
+        Ok(Some(StringReader(SliceReader::new(1, len as u16))))
+    })
+}
+
 pub struct Ipv4AddrReader;
 impl Reader for Ipv4AddrReader {
     type Value = Ipv4Addr;
@@ -276,54 +308,47 @@ pub const fn ipv6_peeker() -> impl Peeker<std::net::Ipv6Addr, Reader = Ipv6AddrR
 }
 
 #[derive(PartialEq, Eq, Hash)]
-pub enum ReadRequestAddr {
+pub enum RequestAddr {
     Ipv4(std::net::Ipv4Addr),
     Ipv6(std::net::Ipv6Addr),
-    Domain(BytesMut),
+    Domain(String),
 }
 
-impl std::fmt::Debug for ReadRequestAddr {
+impl std::fmt::Debug for RequestAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Ipv4(addr) => write!(f, "{}", addr),
             Self::Ipv6(addr) => write!(f, "{}", addr),
-            Self::Domain(bytes) => write!(
-                f,
-                "{}",
-                match std::str::from_utf8(bytes.as_ref()) {
-                    Ok(s) => s,
-                    Err(_) => "invalid utf8",
-                }
-            ),
+            Self::Domain(domain) => write!(f, "{}", &domain),
         }
     }
 }
 
-pub enum ReadRequestAddrReader {
+pub enum RequestAddrReader {
     IpV4(Ipv4AddrReader),
     IpV6(Ipv6AddrReader),
-    Domain(SliceReader),
+    Domain(StringReader),
 }
 
-impl Reader for ReadRequestAddrReader {
-    type Value = ReadRequestAddr;
-    fn read(&self, buf: &mut BytesMut) -> ReadRequestAddr {
+impl Reader for RequestAddrReader {
+    type Value = RequestAddr;
+    fn read(&self, buf: &mut BytesMut) -> RequestAddr {
         buf.split_to(1)[0];
         match self {
-            Self::IpV4(reader) => ReadRequestAddr::Ipv4(reader.read(buf)),
-            Self::IpV6(reader) => ReadRequestAddr::Ipv6(reader.read(buf)),
-            Self::Domain(reader) => ReadRequestAddr::Domain(reader.read(buf)),
+            Self::IpV4(reader) => RequestAddr::Ipv4(reader.read(buf)),
+            Self::IpV6(reader) => RequestAddr::Ipv6(reader.read(buf)),
+            Self::Domain(reader) => RequestAddr::Domain(reader.read(buf)),
         }
     }
 }
 
-pub fn request_addr_peeker() -> impl Peeker<ReadRequestAddr, Reader = ReadRequestAddrReader> {
+pub fn request_addr_peeker() -> impl Peeker<RequestAddr, Reader = RequestAddrReader> {
     peek::peek_enum(|cursor, enum_code| {
         Ok(Some(match enum_code {
-            1 => ReadRequestAddrReader::IpV4(crate::peek!(ipv4_peeker().peek(cursor))),
+            1 => RequestAddrReader::IpV4(crate::peek!(ipv4_peeker().peek(cursor))),
 
-            4 => ReadRequestAddrReader::IpV6(crate::peek!(ipv6_peeker().peek(cursor))),
-            3 => ReadRequestAddrReader::Domain(crate::peek!(slice_peeker_u8_len().peek(cursor))),
+            4 => RequestAddrReader::IpV6(crate::peek!(ipv6_peeker().peek(cursor))),
+            3 => RequestAddrReader::Domain(crate::peek!(string_peeker().peek(cursor))),
             x => {
                 return Err(unknown_enum_code("reuqest addr", x));
             }

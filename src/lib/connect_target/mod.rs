@@ -1,13 +1,13 @@
 use std::{future::Future, net::SocketAddr, sync::Arc};
 
-use crate::decode::ReadRequestAddr;
+use crate::decode::RequestAddr;
 
 pub mod cache;
 
 pub trait ConnectTarget: Send + 'static + Clone {
     fn connect(
         &self,
-        addr: ReadRequestAddr,
+        addr: RequestAddr,
         port: u16,
     ) -> impl Future<
         Output = Result<
@@ -26,7 +26,7 @@ pub struct ConnectTargetDirect;
 impl ConnectTarget for ConnectTargetDirect {
     async fn connect(
         &self,
-        addr: ReadRequestAddr,
+        addr: RequestAddr,
         port: u16,
     ) -> Result<
         (
@@ -36,9 +36,9 @@ impl ConnectTarget for ConnectTargetDirect {
         std::io::Error,
     > {
         let addrs = match addr {
-            ReadRequestAddr::Ipv4(addr) => Arc::new(vec![SocketAddr::new(addr.into(), port)]),
-            ReadRequestAddr::Ipv6(addr) => Arc::new(vec![SocketAddr::new(addr.into(), port)]),
-            ReadRequestAddr::Domain(addr) => {
+            RequestAddr::Ipv4(addr) => Arc::new(vec![SocketAddr::new(addr.into(), port)]),
+            RequestAddr::Ipv6(addr) => Arc::new(vec![SocketAddr::new(addr.into(), port)]),
+            RequestAddr::Domain(addr) => {
                 let domain = String::from_utf8(addr.into()).unwrap();
                 tracing::trace!(?domain, ?port, "resolve domain");
                 tokio::net::lookup_host((domain, port))
@@ -77,13 +77,13 @@ pub struct ConnectTargetWithDnsCache(pub cache::Cache);
 impl ConnectTargetWithDnsCache {
     async fn resolve_addrs(
         &self,
-        addr: ReadRequestAddr,
+        addr: RequestAddr,
         port: u16,
     ) -> Result<Arc<Vec<SocketAddr>>, ()> {
         let addrs = match addr {
-            ReadRequestAddr::Ipv4(addr) => Arc::new(vec![SocketAddr::new(addr.into(), port)]),
-            ReadRequestAddr::Ipv6(addr) => Arc::new(vec![SocketAddr::new(addr.into(), port)]),
-            ReadRequestAddr::Domain(addr) => {
+            RequestAddr::Ipv4(addr) => Arc::new(vec![SocketAddr::new(addr.into(), port)]),
+            RequestAddr::Ipv6(addr) => Arc::new(vec![SocketAddr::new(addr.into(), port)]),
+            RequestAddr::Domain(addr) => {
                 let domain = String::from_utf8(addr.into()).unwrap();
                 self.0
                     .query(domain, port, tokio::time::Instant::now())
@@ -98,7 +98,7 @@ impl ConnectTargetWithDnsCache {
 impl ConnectTarget for ConnectTargetWithDnsCache {
     fn connect(
         &self,
-        addr: ReadRequestAddr,
+        addr: RequestAddr,
         port: u16,
     ) -> impl Future<
         Output = Result<
@@ -148,7 +148,7 @@ impl ConnectTarget for ConnectTargetWithDnsCache {
 pub fn make_mock<TStream>(
     entries: impl IntoIterator<
         Item = (
-            (ReadRequestAddr, u16),
+            (RequestAddr, u16),
             Result<(TStream, SocketAddr), std::io::Error>,
         ),
     >,
@@ -168,7 +168,7 @@ mod mock {
     use std::{collections::HashMap, sync::Arc};
 
     pub(super) struct MockConnectTarget<TStream>(
-        Arc<Mutex<HashMap<(ReadRequestAddr, u16), Result<(TStream, SocketAddr), std::io::Error>>>>,
+        Arc<Mutex<HashMap<(RequestAddr, u16), Result<(TStream, SocketAddr), std::io::Error>>>>,
     );
 
     impl<TStream> Clone for MockConnectTarget<TStream> {
@@ -181,7 +181,7 @@ mod mock {
         pub fn new(
             entries: impl IntoIterator<
                 Item = (
-                    (ReadRequestAddr, u16),
+                    (RequestAddr, u16),
                     Result<(TStream, SocketAddr), std::io::Error>,
                 ),
             >,
@@ -196,7 +196,7 @@ mod mock {
     {
         fn connect(
             &self,
-            addr: ReadRequestAddr,
+            addr: RequestAddr,
             port: u16,
         ) -> impl Future<
             Output = Result<

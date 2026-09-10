@@ -29,7 +29,7 @@ where
 
     pub async fn receive_request(
         mut self,
-    ) -> Result<(crate::prelude::ReadRequestAddr, u16, Requested<Stream>), std::io::Error> {
+    ) -> Result<(crate::prelude::RequestAddr, u16, Requested<Stream>), std::io::Error> {
         let _greeting_msg = self
             .stream_read
             .read_next(msg::client_greeting_peeker())

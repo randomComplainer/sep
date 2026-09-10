@@ -53,7 +53,7 @@ pub struct ClientRequest {
     pub ver: u8,
     pub cmd: u8,
     pub rsv: u8,
-    pub addr: ReadRequestAddr,
+    pub addr: RequestAddr,
     pub port: u16,
 }
 
@@ -61,7 +61,7 @@ pub struct ClientRequestReader {
     pub ver: U8Reader,
     pub cmd: U8Reader,
     pub rsv: U8Reader,
-    pub addr: ReadRequestAddrReader,
+    pub addr: RequestAddrReader,
     pub port: U16Reader,
 }
 

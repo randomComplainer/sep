@@ -7,12 +7,12 @@ use crate::prelude::*;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Request {
-    pub addr: decode::ReadRequestAddr,
+    pub addr: decode::RequestAddr,
     pub port: u16,
 }
 
 pub struct RequestReader {
-    pub addr: ReadRequestAddrReader,
+    pub addr: RequestAddrReader,
     pub port: U16Reader,
 }
 

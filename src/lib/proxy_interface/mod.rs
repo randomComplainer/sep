@@ -5,7 +5,7 @@ use tokio::{
     net::TcpStream,
 };
 
-use crate::decode::{BufDecoder, ReadRequestAddr};
+use crate::decode::{BufDecoder, RequestAddr};
 
 pub mod socks5;
 
@@ -22,7 +22,7 @@ where
 {
     pub async fn receive_request(
         self,
-    ) -> Result<(ReadRequestAddr, u16, Requested<Stream>), std::io::Error> {
+    ) -> Result<(RequestAddr, u16, Requested<Stream>), std::io::Error> {
         Ok(match self {
             Init::Socks5(init) => {
                 let (req_addr, port, requested) = init.receive_request().await?;

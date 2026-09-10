@@ -21,7 +21,7 @@ async fn client_req_v4() {
             .send_msg(
                 msg::session::ClientMsg::Request(
                     msg::session::Request {
-                        addr: decode::ReadRequestAddr::Ipv4(req_ip),
+                        addr: decode::RequestAddr::Ipv4(req_ip),
                         port: req_port,
                     }
                     .into(),
@@ -40,7 +40,7 @@ async fn client_req_v4() {
             protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
                 msg::session::ClientMsg::Request(msg::session::Request {
-                    addr: decode::ReadRequestAddr::Ipv4(addr),
+                    addr: decode::RequestAddr::Ipv4(addr),
                     port,
                 }),
             )) => {
@@ -70,7 +70,7 @@ async fn client_req_v6() {
             .send_msg(
                 msg::session::ClientMsg::Request(
                     msg::session::Request {
-                        addr: decode::ReadRequestAddr::Ipv6(req_ip),
+                        addr: decode::RequestAddr::Ipv6(req_ip),
                         port: req_port,
                     }
                     .into(),
@@ -89,7 +89,7 @@ async fn client_req_v6() {
             protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
                 msg::session::ClientMsg::Request(msg::session::Request {
-                    addr: decode::ReadRequestAddr::Ipv6(addr),
+                    addr: decode::RequestAddr::Ipv6(addr),
                     port,
                 }),
             )) => {
@@ -118,7 +118,7 @@ async fn client_req_domain() {
         client_write
             .send_msg(
                 msg::session::ClientMsg::Request(msg::session::Request {
-                    addr: decode::ReadRequestAddr::Domain(req_domain.into()),
+                    addr: decode::RequestAddr::Domain(req_domain.into()),
                     port: req_port,
                 })
                 .with_session_id(0)
@@ -135,7 +135,7 @@ async fn client_req_domain() {
             protocol::msg::conn::ConnMsg::Protocol(protocol::msg::ClientMsg::SessionMsg(
                 proxyee_id,
                 msg::session::ClientMsg::Request(msg::session::Request {
-                    addr: decode::ReadRequestAddr::Domain(addr),
+                    addr: decode::RequestAddr::Domain(addr),
                     port,
                 }),
             )) => {

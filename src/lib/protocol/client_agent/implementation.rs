@@ -188,15 +188,15 @@ where
                             msg::session::ClientMsg::Request(req) => {
                                 buf.put_u8(0u8);
                                 match &req.addr {
-                                    decode::ReadRequestAddr::Ipv4(addr) => {
+                                    decode::RequestAddr::Ipv4(addr) => {
                                         buf.put_u8(0x01);
                                         buf.put_slice(&addr.octets());
                                     }
-                                    decode::ReadRequestAddr::Ipv6(addr) => {
+                                    decode::RequestAddr::Ipv6(addr) => {
                                         buf.put_u8(0x04);
                                         buf.put_slice(&addr.octets());
                                     }
-                                    decode::ReadRequestAddr::Domain(domain) => {
+                                    decode::RequestAddr::Domain(domain) => {
                                         buf.put_u8(0x03);
                                         buf.put_u8(domain.len() as u8);
                                         // TODO: no copy?
