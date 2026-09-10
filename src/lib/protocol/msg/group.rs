@@ -1,8 +1,7 @@
 use bytes::BufMut as _;
 use bytes::BytesMut;
 
-use crate::decode::*;
-use crate::prelude::*;
+use crate::codec::*;
 use crate::protocol::SessionId;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -43,7 +42,7 @@ pub fn client_cmd_peeker() -> impl Peeker<ClientCmd, Reader = ClientCmdReader> {
                 ClientCmdReader::KillSession(crate::peek!(super::session_id_peeker().peek(cursor)))
             }
             x => {
-                return Err(decode::unknown_enum_code("client command", x).into());
+                return Err(unknown_enum_code("client command", x).into());
             }
         }))
     })
@@ -99,7 +98,7 @@ pub fn server_cmd_peeker() -> impl Peeker<ServerCmd, Reader = ServerCmdReader> {
                 expected: crate::peek!(u8_peeker().peek(cursor)),
             },
             x => {
-                return Err(decode::unknown_enum_code("server command", x).into());
+                return Err(unknown_enum_code("server command", x).into());
             }
         }))
     })

@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, ReadHalf, WriteHalf};
 
-use crate::decode::BufDecoder;
+use crate::codec::{BufDecoder, RequestAddr};
 
 mod msg;
 
@@ -29,7 +29,7 @@ where
 
     pub async fn receive_request(
         mut self,
-    ) -> Result<(crate::prelude::RequestAddr, u16, Requested<Stream>), std::io::Error> {
+    ) -> Result<(RequestAddr, u16, Requested<Stream>), std::io::Error> {
         let _greeting_msg = self
             .stream_read
             .read_next(msg::client_greeting_peeker())

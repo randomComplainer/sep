@@ -1,6 +1,6 @@
 use std::{future::Future, net::SocketAddr, sync::Arc};
 
-use crate::decode::RequestAddr;
+use crate::codec::RequestAddr;
 
 pub mod cache;
 

@@ -18,9 +18,8 @@ mod stream_to_sequenced;
 pub mod task_scope;
 
 #[macro_use]
-pub mod decode;
+pub mod codec;
 pub mod encrypt;
-pub mod encode;
 
 pub mod protocol;
 mod sequence;
@@ -55,16 +54,16 @@ macro_rules! some_or {
 }
 
 pub mod prelude {
+    pub use crate::codec;
+    pub use crate::codec::Encode;
     pub use crate::connect_target::ConnectTarget;
-    pub use crate::decode::*;
     pub use crate::encrypt::{EncryptedRead, EncryptedWrite};
     pub use crate::future_ext::FutureExt as _;
     pub use crate::never::{Never, UnwrapNever as _};
+    pub use crate::protocol;
     pub use crate::proxy_interface;
     pub use crate::sink_ext::SinkExt as _;
     pub use crate::task_scope;
-    pub use crate::{decode, protocol};
-    pub use crate::encode::Encode;
     pub use crate::{ok_or, some_or};
     pub use protocol::{ClientId, ConnId, Key, Nonce, SessionId};
 }

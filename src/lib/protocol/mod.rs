@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 
-use crate::decode::BufDecoder;
+use crate::codec::BufDecoder;
 use crate::prelude::*;
 
 pub mod client_agent;
@@ -108,8 +108,7 @@ where
     ) -> impl Future<Output = Result<Option<Self::Message>, std::io::Error>> + Send;
 }
 
-
-pub type SessionId = u64; 
+pub type SessionId = u64;
 pub type ConnId = u64;
 
 type ReadEncrypted<S, C> = EncryptedRead<ReadHalf<S>, C>;

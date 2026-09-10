@@ -9,7 +9,7 @@ use tracing::Instrument as _;
 use tracing::*;
 
 use super::*;
-use crate::decode::*;
+use crate::codec::*;
 
 pub struct Init<Stream>
 where
@@ -67,11 +67,11 @@ where
 
         let (stream_read, stream_write) = tokio::io::split(self.stream);
         let stream_read = EncryptedRead::new(stream_read, cipher);
-        let mut stream_read = crate::decode::BufDecoder::new(stream_read);
+        let mut stream_read = BufDecoder::new(stream_read);
 
         let client_timestamp =
             stream_read
-                .read_next(decode::u64_peeker())
+                .read_next(codec::u64_peeker())
                 .await
                 .and_then(|opt| {
                     opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
@@ -122,7 +122,7 @@ where
                 .unwrap();
 
             let conn_id = stream_read
-                .read_next(decode::u64_peeker())
+                .read_next(codec::u64_peeker())
                 .await
                 .and_then(|opt| {
                     opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())

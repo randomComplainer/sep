@@ -4,11 +4,24 @@ use std::{
     time::Duration,
 };
 
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf as _, BufMut, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt};
+
+use crate::protocol::msg::session::Buf;
 
 pub use peek::Peeker;
 pub use read::Reader;
+
+pub trait Encode
+where
+    Self: Sized,
+{
+    fn encode(self, main_buf: &mut BytesMut, side_bufs: &mut Vec<Buf>);
+}
+
+pub trait Encoder<T> {
+    fn encode(&self, item: T, main_buf: &mut BytesMut, side_bufs: &mut Vec<Buf>);
+}
 
 pub fn unknown_enum_code(enum_name: &'static str, code: u8) -> std::io::Error {
     std::io::Error::new(
@@ -325,7 +338,7 @@ impl std::fmt::Debug for RequestAddr {
     }
 }
 
-impl crate::encode::Encode for RequestAddr {
+impl Encode for RequestAddr {
     fn encode(
         self,
         main_buf: &mut BytesMut,
@@ -435,7 +448,7 @@ where
     Stream: tokio::io::AsyncRead + Unpin,
 {
     // TODO: test different buffer size
-    const BUF_SIZE: usize = 1024 * 4;
+    const BUF_SIZE: usize = 1024 * 32;
 
     pub fn new(inner: Stream) -> Self {
         Self {
@@ -456,7 +469,7 @@ where
                 Err(err) => return Err(err),
             };
 
-            self.buf.reserve(1);
+            self.buf.reserve(Self::BUF_SIZE);
             let n = self.inner.read_buf(&mut self.buf).await?;
 
             if n == 0 {
@@ -513,8 +526,6 @@ mod tests {
     use std::{fmt::Debug, io::Cursor};
 
     use bytes::BufMut as _;
-
-    use crate::encode::Encode;
 
     use super::*;
 

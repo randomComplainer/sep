@@ -3,13 +3,12 @@ use bytes::BytesMut;
 use derive_more::From;
 
 use crate::buffer_pool::Recycle;
-use crate::decode::*;
-use crate::prelude::*;
+use crate::codec::*;
 
 #[cfg_attr(test, derive(PartialEq, Eq, Clone))]
 #[derive(Debug)]
 pub struct Request {
-    pub addr: decode::RequestAddr,
+    pub addr: RequestAddr,
     pub port: u16,
 }
 
@@ -353,7 +352,7 @@ pub fn client_msg_peeker() -> impl Peeker<ClientMsg, Reader = ClientMsgReader> {
             3 => ClientMsgReader::Eof(crate::peek!(eof_peeker().peek(cursor))),
             4 => ClientMsgReader::EofAck(crate::peek!(eof_ack_peeker().peek(cursor))),
             x => {
-                return Err(decode::unknown_enum_code("client session message", x).into());
+                return Err(unknown_enum_code("client session message", x).into());
             }
         }))
     })
@@ -436,7 +435,7 @@ pub fn connection_error_peeker() -> impl Peeker<ConnectionError, Reader = Connec
             3 => ConnectionErrorReader::ConnectionRefused,
             4 => ConnectionErrorReader::TtlExpired,
             x => {
-                return Err(decode::unknown_enum_code("connection error", x).into());
+                return Err(unknown_enum_code("connection error", x).into());
             }
         }))
     })
@@ -517,7 +516,7 @@ pub fn server_msg_peeker() -> impl Peeker<ServerMsg, Reader = ServerMsgReader> {
             4 => ServerMsgReader::Eof(crate::peek!(eof_peeker().peek(cursor))),
             5 => ServerMsgReader::EofAck(crate::peek!(eof_ack_peeker().peek(cursor))),
             x => {
-                return Err(decode::unknown_enum_code("server session message", x).into());
+                return Err(unknown_enum_code("server session message", x).into());
             }
         }))
     })
@@ -536,7 +535,7 @@ mod tests {
             port: 2008,
         };
 
-        decode::test_codec(req, request_peeker());
+        test_codec(req, request_peeker());
     }
 
     #[test]
@@ -547,7 +546,7 @@ mod tests {
         }
         .into();
 
-        decode::test_codec(req, client_msg_peeker());
+        test_codec(req, client_msg_peeker());
     }
 
     #[test]
@@ -559,7 +558,7 @@ mod tests {
             ),
         };
 
-        decode::test_codec(rep, reply_peeker());
+        test_codec(rep, reply_peeker());
     }
 
     #[test]
@@ -569,7 +568,7 @@ mod tests {
             data: vec![0u8, 4u8, 3u8, 2u8].into(),
         };
 
-        decode::test_codec(data, data_peeker());
+        test_codec(data, data_peeker());
     }
 
     #[test]
@@ -580,7 +579,7 @@ mod tests {
         }
         .into();
 
-        decode::test_codec(msg, client_msg_peeker());
+        test_codec(msg, client_msg_peeker());
     }
 
     #[test]
@@ -589,6 +588,6 @@ mod tests {
             seq: 1543
         }.into();
 
-        decode::test_codec(msg, client_msg_peeker());
+        test_codec(msg, client_msg_peeker());
     }
 }

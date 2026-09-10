@@ -5,7 +5,7 @@ use tokio::{
     net::TcpStream,
 };
 
-use crate::decode::{BufDecoder, RequestAddr};
+use crate::codec::{BufDecoder, RequestAddr};
 
 pub mod socks5;
 

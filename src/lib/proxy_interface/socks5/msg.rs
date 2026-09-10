@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use bytes::{BufMut as _, BytesMut};
 
-use crate::decode::*;
+use crate::codec::*;
 
 #[allow(unused)]
 #[derive(Debug)]
