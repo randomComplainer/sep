@@ -5,8 +5,9 @@ use futures::prelude::*;
 use tracing::*;
 
 use super::serve_client;
+use crate::codec::{MsgReader, MsgWriter};
 use crate::prelude::*;
-use crate::protocol::ConnId;
+use crate::protocol::{ConnId, msg};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
@@ -56,10 +57,8 @@ pub async fn run<GreetedRead, GreetedWrite>(
     config: Config,
 ) -> Result<(), std::io::Error>
 where
-    GreetedRead:
-        protocol::MessageReader<Message = protocol::msg::conn::ConnMsg<protocol::msg::ClientMsg>>,
-    GreetedWrite:
-        protocol::MessageWriter<Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>>,
+    GreetedRead: MsgReader<msg::conn::ConnMsg<msg::ClientMsg>>,
+    GreetedWrite: MsgWriter,
 {
     let mut client_entries = HashMap::<
         Box<ClientId>,

@@ -135,8 +135,8 @@ mod conn_creation {
     ) -> impl futures::Stream<
         Item = (
             ConnId,
-            ServerConnector::GreetedRead,
-            ServerConnector::GreetedWrite,
+            ServerConnector::Reader,
+            ServerConnector::Writer,
         ),
     >
     + 'static

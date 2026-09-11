@@ -5,8 +5,9 @@ use rand::Rng as _;
 use tokio::sync::oneshot;
 use tracing::Instrument;
 
+use crate::codec::{MsgReader, MsgWriter};
 use crate::prelude::*;
-use crate::protocol::ConnId;
+use crate::protocol::{ConnId, msg};
 
 pub enum Event {
     // NewConnection(ConnId),
@@ -43,12 +44,8 @@ where
         client_read: ClientRead,
         client_write: ClientWrite,
     ) where
-        ClientRead: protocol::MessageReader<
-                Message = protocol::msg::conn::ConnMsg<protocol::msg::ClientMsg>,
-            >,
-        ClientWrite: protocol::MessageWriter<
-                Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>,
-            >,
+        ClientRead: MsgReader<msg::conn::ConnMsg<msg::ClientMsg>>,
+        ClientWrite: MsgWriter,
     {
         let mut evt_tx = self.evt_tx.clone();
 

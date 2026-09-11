@@ -32,7 +32,10 @@ where
     ) -> Result<(RequestAddr, u16, Requested<Stream>), std::io::Error> {
         let _greeting_msg = self
             .stream_read
-            .read_next(msg::client_greeting_peeker())
+            .read_next(
+                &msg::client_greeting_peeker(),
+                std::time::Duration::from_secs(10),
+            )
             .await
             .and_then(|msg_opt| match msg_opt {
                 Some(msg) => Ok(msg),
@@ -45,7 +48,10 @@ where
 
         let req_msg = self
             .stream_read
-            .read_next(msg::client_request_peeker())
+            .read_next(
+                &msg::client_request_peeker(),
+                std::time::Duration::from_secs(10),
+            )
             .await
             .and_then(|msg_opt| match msg_opt {
                 Some(msg) => Ok(msg),

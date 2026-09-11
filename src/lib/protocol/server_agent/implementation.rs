@@ -1,7 +1,6 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use bytes::BytesMut;
 use chacha20::ChaCha20;
 use chacha20::cipher::KeyIvInit;
 use tokio::io::AsyncReadExt;
@@ -34,8 +33,8 @@ where
         (
             Box<protocol::ClientId>,
             protocol::ConnId,
-            GreetedRead<Stream, ChaCha20>,
-            GreetedWrite<Stream, ChaCha20>,
+            impl MsgReader<msg::conn::ConnMsg<msg::ClientMsg>>,
+            impl MsgWriter,
         ),
         InitError<Stream>,
     > {
@@ -54,8 +53,8 @@ where
         (
             Box<protocol::ClientId>,
             protocol::ConnId,
-            GreetedRead<Stream, ChaCha20>,
-            GreetedWrite<Stream, ChaCha20>,
+            impl MsgReader<protocol::msg::conn::ConnMsg<msg::ClientMsg>>,
+            impl MsgWriter,
         ),
         InitError<Stream>,
     > {
@@ -69,13 +68,12 @@ where
         let stream_read = EncryptedRead::new(stream_read, cipher);
         let mut stream_read = BufDecoder::new(stream_read);
 
-        let client_timestamp =
-            stream_read
-                .read_next(codec::u64_peeker())
-                .await
-                .and_then(|opt| {
-                    opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
-                })?;
+        let client_timestamp = stream_read
+            .read_next(&codec::u64_peeker(), std::time::Duration::from_secs(10))
+            .await
+            .and_then(|opt| {
+                opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
+            })?;
 
         async move {
             if u64::abs_diff(client_timestamp, server_timestamp) > 30 {
@@ -105,14 +103,20 @@ where
             }
 
             let _rand_bytes = stream_read
-                .read_next(slice_peeker_fixed_len(rand_byte_len.try_into().unwrap()))
+                .read_next(
+                    &slice_peeker_fixed_len(rand_byte_len.try_into().unwrap()),
+                    std::time::Duration::from_secs(10),
+                )
                 .await
                 .and_then(|opt| {
                     opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
                 })?;
 
             let client_id: Box<[u8; 16]> = stream_read
-                .read_next(slice_peeker_fixed_len(16))
+                .read_next(
+                    &slice_peeker_fixed_len(16),
+                    std::time::Duration::from_secs(10),
+                )
                 .await
                 .and_then(|opt| {
                     opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
@@ -122,21 +126,26 @@ where
                 .unwrap();
 
             let conn_id = stream_read
-                .read_next(codec::u64_peeker())
+                .read_next(&codec::u64_peeker(), std::time::Duration::from_secs(10))
                 .await
                 .and_then(|opt| {
                     opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
                 })?;
 
-            Ok((
-                client_id,
-                conn_id,
-                GreetedRead::new(stream_read),
-                GreetedWrite::new(EncryptedWrite::new(
+            let reader = (
+                stream_read,
+                msg::conn::conn_msg_peeker(msg::client_msg_peeker()),
+            );
+
+            let writer = EncryptedMsgWrite::new(
+                EncryptedWrite::new(
                     stream_write,
                     ChaCha20::new(self.key.as_slice().into(), nonce.as_slice().into()),
-                )),
-            ))
+                ),
+                64,
+            );
+
+            Ok((client_id, conn_id, reader, writer))
         }
         .instrument(debug_span!("accept greeting"))
         .await
@@ -148,14 +157,19 @@ where
     Stream: StaticStream,
 {
     type Stream = Stream;
-    type GreetedRead = GreetedRead<Stream, ChaCha20>;
-    type GreetedWrite = GreetedWrite<Stream, ChaCha20>;
 
     async fn recv_greeting(
         self,
         server_timestamp: u64,
-    ) -> Result<(Box<ClientId>, ConnId, Self::GreetedRead, Self::GreetedWrite), InitError<Stream>>
-    {
+    ) -> Result<
+        (
+            Box<ClientId>,
+            ConnId,
+            impl MsgReader<protocol::msg::conn::ConnMsg<msg::ClientMsg>>,
+            impl MsgWriter,
+        ),
+        InitError<Stream>,
+    > {
         self.recv_greeting(server_timestamp).await
     }
 }
@@ -181,108 +195,5 @@ impl TcpListener {
     pub async fn accept(&self) -> Result<Init<tokio::net::TcpStream>, std::io::Error> {
         let (stream, _client_addr) = self.inner.accept().await?;
         Ok(Init::new(self.key.clone(), stream))
-    }
-}
-
-pub struct GreetedWrite<Stream, Cipher>
-where
-    Stream: StaticStream,
-    Cipher: StaticCipher,
-{
-    pub stream_write: WriteEncrypted<Stream, Cipher>,
-    main_buf: BytesMut,
-}
-
-impl<Stream, Cipher> GreetedWrite<Stream, Cipher>
-where
-    Stream: StaticStream,
-    Cipher: StaticCipher,
-{
-    pub fn new(stream_write: WriteEncrypted<Stream, Cipher>) -> Self {
-        Self {
-            stream_write,
-            main_buf: BytesMut::with_capacity(64),
-        }
-    }
-}
-
-impl<Stream, Cipher> protocol::MessageWriter for GreetedWrite<Stream, Cipher>
-where
-    Stream: StaticStream,
-    Cipher: StaticCipher,
-{
-    type Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>;
-
-    async fn send_msg(&mut self, msg: Self::Message) -> Result<(), std::io::Error> {
-        self.main_buf.clear();
-        let mut side_bufs = Vec::new();
-
-        msg.encode(&mut self.main_buf, &mut side_bufs);
-
-        assert!(side_bufs.len() <= 1);
-
-        self.stream_write.write_all(&mut self.main_buf).await?;
-
-        for mut buf in side_bufs.into_iter() {
-            self.stream_write.write_all(buf.as_mut()).await?;
-        }
-
-        Ok(())
-    }
-
-    fn shutdown(self) -> impl Future<Output = Result<(), std::io::Error>> + Send {
-        self.stream_write.close()
-    }
-}
-
-pub struct GreetedRead<Stream, Cipher>
-where
-    Stream: StaticStream,
-    Cipher: StaticCipher,
-{
-    stream_read: FramedRead<Stream, Cipher>,
-}
-
-impl<Stream, Cipher> GreetedRead<Stream, Cipher>
-where
-    Stream: StaticStream,
-    Cipher: StaticCipher,
-{
-    pub fn new(stream_read: FramedRead<Stream, Cipher>) -> Self {
-        Self { stream_read }
-    }
-}
-
-impl<Stream, Cipher> protocol::MessageReader for GreetedRead<Stream, Cipher>
-where
-    Stream: StaticStream,
-    Cipher: StaticCipher,
-{
-    type Message = protocol::msg::conn::ConnMsg<protocol::msg::ClientMsg>;
-
-    async fn recv_msg(
-        &mut self,
-    ) -> Result<Option<msg::conn::ConnMsg<msg::ClientMsg>>, std::io::Error> {
-        let msg = self
-            .stream_read
-            .read_next(msg::conn::conn_msg_peeker(msg::client_msg_peeker()))
-            .await?;
-
-        Ok(msg)
-    }
-
-    async fn recv_msg_with_timeout(
-        &mut self,
-        time_limit: Duration,
-    ) -> Result<Option<Self::Message>, std::io::Error> {
-        let msg = self
-            .stream_read
-            .read_next_with_timeout(
-                msg::conn::conn_msg_peeker(msg::client_msg_peeker()),
-                time_limit,
-            )
-            .await?;
-
-        Ok(msg)
     }
 }

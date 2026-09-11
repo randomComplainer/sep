@@ -4,9 +4,8 @@ use futures::prelude::*;
 use tokio::sync::oneshot;
 use tracing::Instrument as _;
 
+use crate::codec::{Encode, MsgReader, MsgWriter};
 use crate::ok_or;
-use crate::protocol::MessageReader;
-use crate::protocol::MessageWriter;
 use crate::protocol::msg::conn::ConnMsg;
 
 #[derive(Clone)]
@@ -26,25 +25,26 @@ impl Default for Config {
     }
 }
 
-async fn write_loop<MessageToWrite>(
+fn write_loop<MessageToWrite>(
     config: Config,
-    mut stream_write: impl MessageWriter<Message = ConnMsg<MessageToWrite>> + Send,
-    mut msg_sender_tx: impl Sink<oneshot::Sender<MessageToWrite>> + Unpin,
+    mut stream_write: impl MsgWriter + Send,
+    mut msg_sender_tx: impl Sink<oneshot::Sender<MessageToWrite>> + Send + Unpin,
     close_rx: gentle_close::Receiver,
-) -> std::io::Result<()>
+) -> impl Future<Output = std::io::Result<()>> + Send
 where
-    MessageToWrite: Send + Debug + Unpin + 'static,
+    MessageToWrite: Send + Debug + Unpin + Encode + 'static,
 {
-    let mut ping_timer = Box::pin(tokio::time::sleep(config.ping_interval));
-    let mut ping_counter = 0;
-    let (send_one_tx, send_one_rx) = oneshot::channel();
-    let mut send_one_rx = Box::pin(send_one_rx);
+    async move {
+        let mut ping_timer = Box::pin(tokio::time::sleep(config.ping_interval));
+        let mut ping_counter = 0;
+        let (send_one_tx, send_one_rx) = oneshot::channel();
+        let mut send_one_rx = Box::pin(send_one_rx);
 
-    macro_rules! write_msg {
+        macro_rules! write_msg {
         ($msg:expr) => {
             let msg:ConnMsg<MessageToWrite> = $msg;
             let span = tracing::trace_span!("write msg", msg=?msg);
-            tokio::time::timeout(config.io_write_timeout, stream_write.send_msg(msg)).map(
+            tokio::time::timeout(config.io_write_timeout, stream_write.write_one(msg)).map(
                 |timeout_result| match timeout_result {
                     Ok(x) => x,
                     Err(_) => {
@@ -62,57 +62,57 @@ where
         };
     }
 
-    macro_rules! shutdown {
-        () => {
-            drop(send_one_rx);
-            write_msg!(ConnMsg::EndOfStream);
-            stream_write.shutdown().await?;
-            drop(ping_timer);
-            return Ok(());
-        };
-    }
+        macro_rules! shutdown {
+            () => {
+                drop(send_one_rx);
+                write_msg!(ConnMsg::EndOfStream);
+                drop(ping_timer);
+                return Ok(());
+            };
+        }
 
-    ok_or!(msg_sender_tx.send(send_one_tx).await, return Ok(()));
+        ok_or!(msg_sender_tx.send(send_one_tx).await, return Ok(()));
 
-    loop {
-        tokio::select! {
-            msg_opt = send_one_rx.as_mut() => {
-                let msg = match msg_opt  {
-                    Ok(x) => x,
-                    Err(_) => {
-                        let (send_one_tx, new_send_one_rx) = tokio::sync::oneshot::channel();
-                        send_one_rx = Box::pin(new_send_one_rx);
-                        ok_or!(msg_sender_tx.send(send_one_tx).await, return Ok(()));
-                        continue;
-                    }
-                };
+        loop {
+            tokio::select! {
+                msg_opt = send_one_rx.as_mut() => {
+                    let msg = match msg_opt  {
+                        Ok(x) => x,
+                        Err(_) => {
+                            let (send_one_tx, new_send_one_rx) = tokio::sync::oneshot::channel();
+                            send_one_rx = Box::pin(new_send_one_rx);
+                            ok_or!(msg_sender_tx.send(send_one_tx).await, return Ok(()));
+                            continue;
+                        }
+                    };
 
-                write_msg!(msg.into());
-
-                let (new_wirte_one_tx, new_write_one_rx) = tokio::sync::oneshot::channel();
-
-                ok_or!(msg_sender_tx.send(new_wirte_one_tx).await, return Ok(()));
-
-                send_one_rx = Box::pin(new_write_one_rx);
-            },
-            _ = ping_timer.as_mut() => {
-                tracing::trace!(count = ping_counter, "ping");
-                write_msg!(ConnMsg::Ping);
-                ping_counter += 1;
-            },
-            close_signal = close_rx.receive() => {
-                ok_or!(close_signal, return Ok(()));
-
-                tracing::debug!("close signal received");
-                // in case of both close_single and a message is sent
-                // and tokio::select happens to pick this branch.
-                // we shall make sure no message is left unsent
-                send_one_rx.close();
-                if let Ok(msg) = send_one_rx.try_recv() {
                     write_msg!(msg.into());
-                    drop(ping_timer);
+
+                    let (new_wirte_one_tx, new_write_one_rx) = tokio::sync::oneshot::channel();
+
+                    ok_or!(msg_sender_tx.send(new_wirte_one_tx).await, return Ok(()));
+
+                    send_one_rx = Box::pin(new_write_one_rx);
+                },
+                _ = ping_timer.as_mut() => {
+                    tracing::trace!(count = ping_counter, "ping");
+                    write_msg!(ConnMsg::Ping);
+                    ping_counter += 1;
+                },
+                close_signal = close_rx.receive() => {
+                    ok_or!(close_signal, return Ok(()));
+
+                    tracing::debug!("close signal received");
+                    // in case of both close_single and a message is sent
+                    // and tokio::select happens to pick this branch.
+                    // we shall make sure no message is left unsent
+                    send_one_rx.close();
+                    if let Ok(msg) = send_one_rx.try_recv() {
+                        write_msg!(msg.into());
+                        drop(ping_timer);
+                    }
+                    shutdown!();
                 }
-                shutdown!();
             }
         }
     }
@@ -120,7 +120,7 @@ where
 
 async fn read_loop<MessageToRead>(
     config: Config,
-    mut stream_read: impl MessageReader<Message = ConnMsg<MessageToRead>> + Send,
+    mut stream_read: impl MsgReader<ConnMsg<MessageToRead>> + Send,
     mut msg_tx: impl Sink<MessageToRead, Error = impl std::fmt::Debug + Send> + Unpin + Send,
     close_tx: gentle_close::Sender,
 ) -> std::io::Result<()>
@@ -131,7 +131,7 @@ where
 
     loop {
         tokio::select! {
-            msg = stream_read.recv_msg_with_timeout(config.aliveness_timeout) => {
+            msg = stream_read.read_next(config.aliveness_timeout) => {
                 let msg = match msg {
                     Ok(Some(msg)) => msg,
                     Ok(None) => {
@@ -168,8 +168,8 @@ where
 
 pub fn run<MessageToSend, MessageToRecv>(
     config: Config,
-    stream_read: impl MessageReader<Message = ConnMsg<MessageToRecv>> + Send,
-    stream_write: impl MessageWriter<Message = ConnMsg<MessageToSend>> + Send,
+    stream_read: impl MsgReader<ConnMsg<MessageToRecv>>,
+    stream_write: impl MsgWriter,
     msg_to_recv_tx: impl Sink<MessageToRecv, Error = impl std::fmt::Debug + Send>
     + Unpin
     + Send
@@ -185,7 +185,7 @@ pub fn run<MessageToSend, MessageToRecv>(
     gentle_close::Sender,
 )
 where
-    MessageToSend: Send + Debug + Unpin + 'static,
+    MessageToSend: Send + Debug + Unpin + Encode + 'static,
     MessageToRecv: Send + Debug + Unpin + 'static,
 {
     let (close_tx, close_rx) = gentle_close::channel();

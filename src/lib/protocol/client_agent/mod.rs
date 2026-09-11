@@ -1,6 +1,9 @@
 use std::future::Future;
 
-use crate::protocol::*;
+use crate::{
+    codec::{MsgReader, MsgWriter},
+    protocol::*,
+};
 
 pub mod implementation;
 
@@ -12,8 +15,8 @@ pub trait Init {
     ) -> impl Future<
         Output = Result<
             (
-                impl MessageReader<Message = protocol::msg::conn::ConnMsg<msg::ServerMsg>>,
-                impl MessageWriter<Message = protocol::msg::conn::ConnMsg<msg::ClientMsg>>,
+                impl MsgReader<msg::conn::ConnMsg<msg::ServerMsg>>,
+                impl MsgWriter,
             ),
             std::io::Error,
         >,

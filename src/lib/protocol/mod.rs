@@ -1,10 +1,10 @@
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use chacha20::cipher::StreamCipher;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::codec::BufDecoder;
 use crate::prelude::*;
@@ -75,45 +75,8 @@ fn cal_rand_byte_len(key: &[u8; 32], nonce: &[u8; 12], timestamp: u64) -> usize 
     len
 }
 
-pub trait MessageWriter
-where
-    Self: Unpin + Send + 'static,
-{
-    type Message: Send;
-
-    fn send_msg(
-        &mut self,
-        msg: Self::Message,
-    ) -> impl Future<Output = Result<(), std::io::Error>> + Send;
-
-    fn shutdown(self) -> impl Future<Output = Result<(), std::io::Error>> + Send;
-}
-
-pub trait MessageReader
-where
-    Self: Unpin + Send + 'static,
-{
-    type Message: Send;
-
-    // TODO: duplication
-    // merge these two functions?
-    // Or build timeout into the underling stream?
-    fn recv_msg(
-        &mut self,
-    ) -> impl Future<Output = Result<Option<Self::Message>, std::io::Error>> + Send;
-
-    fn recv_msg_with_timeout(
-        &mut self,
-        time_limit: Duration,
-    ) -> impl Future<Output = Result<Option<Self::Message>, std::io::Error>> + Send;
-}
-
 pub type SessionId = u64;
 pub type ConnId = u64;
-
-type ReadEncrypted<S, C> = EncryptedRead<ReadHalf<S>, C>;
-type WriteEncrypted<S, C> = EncryptedWrite<WriteHalf<S>, C>;
-type FramedRead<S, C> = BufDecoder<ReadEncrypted<S, C>>;
 
 pub trait StaticStream: AsyncRead + AsyncWrite + Send + Unpin + 'static {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> StaticStream for T {}
@@ -124,11 +87,13 @@ impl<T: StreamCipher + Unpin + Send + 'static> StaticCipher for T {}
 pub mod test_utils {
     use std::sync::Arc;
 
-    use chacha20::ChaCha20;
     use tokio::io::{DuplexStream, duplex};
 
-    use crate::prelude::*;
-    use protocol::{client_agent, server_agent};
+    use crate::{
+        codec::{MsgReader, MsgWriter},
+        prelude::*,
+        protocol::msg,
+    };
 
     pub fn create_init_pair() -> (
         protocol::client_agent::implementation::Init<DuplexStream>,
@@ -153,13 +118,13 @@ pub mod test_utils {
 
     pub async fn create_greeted_pair() -> (
         (
-            client_agent::implementation::GreetedRead<DuplexStream, ChaCha20>,
-            client_agent::implementation::GreetedWrite<DuplexStream, ChaCha20>,
+            impl MsgReader<msg::conn::ConnMsg<msg::ServerMsg>>,
+            impl MsgWriter,
         ),
         (
             Box<protocol::ClientId>,
-            server_agent::implementation::GreetedRead<DuplexStream, ChaCha20>,
-            server_agent::implementation::GreetedWrite<DuplexStream, ChaCha20>,
+            impl MsgReader<msg::conn::ConnMsg<msg::ClientMsg>>,
+            impl MsgWriter,
         ),
     ) {
         let (client_agent, server_agent) = create_init_pair();

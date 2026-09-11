@@ -5,9 +5,10 @@ use tracing::Instrument as _;
 use super::target_io;
 use super::{conn_host, session_host};
 use crate::buffer_pool;
+use crate::codec::{MsgReader, MsgWriter};
 use crate::prelude::*;
-use crate::protocol::msg::AtLeastOnce;
 use crate::protocol::msg::ClientMsg;
+use crate::protocol::msg::{self, AtLeastOnce};
 use crate::{assignment, global_cmd_manager};
 
 #[derive(Debug, Clone, Copy)]
@@ -74,12 +75,8 @@ where
         client_read: ClientRead,
         client_write: ClientWrite,
     ) where
-        ClientRead: protocol::MessageReader<
-                Message = protocol::msg::conn::ConnMsg<protocol::msg::ClientMsg>,
-            >,
-        ClientWrite: protocol::MessageWriter<
-                Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>,
-            >,
+        ClientRead: MsgReader<msg::conn::ConnMsg<msg::ClientMsg>>,
+        ClientWrite: MsgWriter,
     {
         self.conn_handle
             .new_conn(conn_id, client_read, client_write)
@@ -149,9 +146,7 @@ where
                                 self.handle_assignment_actions(actions).await;
 
                                 match msg {
-                                    protocol::msg::group::ClientCmd::KillSession(
-                                        session_id,
-                                    ) => {
+                                    protocol::msg::group::ClientCmd::KillSession(session_id) => {
                                         self.assignment.on_session_ended(&session_id);
                                     }
                                 };
@@ -183,9 +178,7 @@ where
             match action {
                 assignment::Action::KillSession(session_id) => {
                     self.global_cmd_handle
-                        .queue(protocol::msg::group::ServerCmd::KillSession(
-                            session_id,
-                        ))
+                        .queue(protocol::msg::group::ServerCmd::KillSession(session_id))
                         .await;
                 }
                 assignment::Action::ConnectMore { expected } => {
@@ -205,10 +198,8 @@ pub async fn run<GreetedRead, GreetedWrite, TConnectTarget>(
     config: Config<TConnectTarget>,
 ) -> Result<(), std::io::Error>
 where
-    GreetedRead:
-        protocol::MessageReader<Message = protocol::msg::conn::ConnMsg<protocol::msg::ClientMsg>>,
-    GreetedWrite:
-        protocol::MessageWriter<Message = protocol::msg::conn::ConnMsg<protocol::msg::ServerMsg>>,
+    GreetedRead: MsgReader<msg::conn::ConnMsg<msg::ClientMsg>>,
+    GreetedWrite: MsgWriter,
     TConnectTarget: ConnectTarget,
 {
     let (buffer_pool_fut, buffer_pool) = buffer_pool::BufferPool::create(buffer_pool::Config {

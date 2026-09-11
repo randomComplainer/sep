@@ -1,6 +1,9 @@
 use thiserror::Error;
 
-use crate::prelude::*;
+use crate::{
+    codec::{MsgReader, MsgWriter},
+    prelude::*,
+};
 use protocol::*;
 
 pub mod implementation;
@@ -15,15 +18,20 @@ pub enum InitError<Stream> {
 
 pub trait Init {
     type Stream;
-    type GreetedRead;
-    type GreetedWrite;
+    // type GreetedRead;
+    // type GreetedWrite;
 
     fn recv_greeting(
         self,
         server_timestamp: u64,
     ) -> impl Future<
         Output = Result<
-            (Box<ClientId>, ConnId, Self::GreetedRead, Self::GreetedWrite),
+            (
+                Box<ClientId>,
+                ConnId,
+                impl MsgReader<protocol::msg::conn::ConnMsg<msg::ClientMsg>>,
+                impl MsgWriter,
+            ),
             InitError<Self::Stream>,
         >,
     > + Send;

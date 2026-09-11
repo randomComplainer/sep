@@ -448,7 +448,7 @@ where
     Stream: tokio::io::AsyncRead + Unpin,
 {
     // TODO: test different buffer size
-    const BUF_SIZE: usize = 1024 * 32;
+    const BUF_SIZE: usize = 1024 * 32 + 64;
 
     pub fn new(inner: Stream) -> Self {
         Self {
@@ -459,28 +459,7 @@ where
 
     pub async fn read_next<T, P: Peeker<T>>(
         &mut self,
-        peeker: P,
-    ) -> Result<Option<T>, std::io::Error> {
-        loop {
-            let mut cursor = Cursor::new(self.buf.as_ref());
-            match peeker.peek(&mut cursor) {
-                Ok(Some(reader)) => return Ok(Some(reader.read(&mut self.buf))),
-                Ok(None) => {}
-                Err(err) => return Err(err),
-            };
-
-            self.buf.reserve(Self::BUF_SIZE);
-            let n = self.inner.read_buf(&mut self.buf).await?;
-
-            if n == 0 {
-                return Ok(None);
-            }
-        }
-    }
-
-    pub async fn read_next_with_timeout<T, P: Peeker<T>>(
-        &mut self,
-        peeker: P,
+        peeker: &P,
         time_limit: Duration,
     ) -> Result<Option<T>, std::io::Error> {
         loop {
@@ -491,7 +470,7 @@ where
                 Err(err) => return Err(err),
             };
 
-            self.buf.reserve(1);
+            self.buf.reserve(Self::BUF_SIZE);
 
             let n = tokio::select! {
                 n = self.inner.read_buf(&mut self.buf) => n?,
@@ -515,6 +494,85 @@ where
 
     pub fn into_parts(self) -> (BytesMut, Stream) {
         (self.buf, self.inner)
+    }
+}
+
+pub trait MsgReader<TMsg>
+where
+    Self: Send + 'static,
+{
+    fn read_next(
+        &mut self,
+        time_limit: Duration,
+    ) -> impl Future<Output = Result<Option<TMsg>, std::io::Error>> + Send;
+}
+
+impl<TMsg, TStream, TPeeker> MsgReader<TMsg> for (BufDecoder<TStream>, TPeeker)
+where
+    TStream: tokio::io::AsyncRead + Unpin + Send + 'static,
+    TPeeker: Peeker<TMsg> + Send + Sync + 'static,
+{
+    fn read_next(
+        &mut self,
+        time_limit: Duration,
+    ) -> impl Future<Output = Result<Option<TMsg>, std::io::Error>> + Send {
+        let (decoder, peeker) = self;
+        decoder.read_next(peeker, time_limit)
+    }
+}
+
+pub trait MsgWriter
+where
+    Self: Send + 'static,
+{
+    fn write_one<TMsg>(
+        &mut self,
+        msg: TMsg,
+    ) -> impl Future<Output = Result<(), std::io::Error>> + Send
+    where
+        TMsg: Encode + Send;
+}
+
+pub struct EncryptedMsgWrite<TStream, TCipher> {
+    stream_write: crate::encrypt::EncryptedWrite<TStream, TCipher>,
+    main_buf: BytesMut,
+}
+
+impl<TStream, TCipher> EncryptedMsgWrite<TStream, TCipher> {
+    pub fn new(
+        stream_write: crate::encrypt::EncryptedWrite<TStream, TCipher>,
+        main_buf_cap: usize,
+    ) -> Self {
+        Self {
+            stream_write,
+            main_buf: BytesMut::with_capacity(main_buf_cap),
+        }
+    }
+}
+
+impl<TStream, TCipher> MsgWriter for EncryptedMsgWrite<TStream, TCipher>
+where
+    TStream: tokio::io::AsyncWrite + Send + Unpin + 'static,
+    TCipher: crate::protocol::StaticCipher + Send,
+{
+    async fn write_one<TMsg>(&mut self, msg: TMsg) -> Result<(), std::io::Error>
+    where
+        TMsg: Encode + Send,
+    {
+        self.main_buf.clear();
+        let mut side_bufs = Vec::new();
+
+        msg.encode(&mut self.main_buf, &mut side_bufs);
+
+        assert!(side_bufs.len() <= 1);
+
+        self.stream_write.write_all(&mut self.main_buf).await?;
+
+        for mut buf in side_bufs.into_iter() {
+            self.stream_write.write_all(buf.as_mut()).await?;
+        }
+
+        Ok(())
     }
 }
 
