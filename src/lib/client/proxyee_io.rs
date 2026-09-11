@@ -2,8 +2,8 @@ use derive_more::From;
 use futures::prelude::*;
 use tracing::Instrument as _;
 
+use crate::msg::session as msg;
 use crate::{prelude::*, stream_to_sequenced};
-use protocol::msg::session as msg;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
@@ -78,7 +78,7 @@ pub async fn run(
                             break (msg, early_target_packages);
                         }
                         msg::ServerMsg::ReplyError(err) => {
-                            use protocol::msg::session::ConnectionError::*;
+                            use msg::ConnectionError::*;
                             let _ = proxyee
                                 .reply_error(match err {
                                     General => 1,

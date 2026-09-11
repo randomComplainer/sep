@@ -3,6 +3,7 @@ use tracing::Instrument as _;
 
 use super::proxyee_io;
 use crate::prelude::*;
+use crate::msg;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
@@ -21,7 +22,7 @@ impl Into<proxyee_io::Config> for Config {
 
 pub enum Event {
     SessionEnded(SessionId),
-    ClientMsg(SessionId, protocol::msg::session::ClientMsg),
+    ClientMsg(SessionId, msg::session::ClientMsg),
 }
 
 pub fn create<EvtTx>(
@@ -69,7 +70,7 @@ where
             session_server_msg_rx,
             evt_tx
                 .clone()
-                .with_sync(move |msg: protocol::msg::session::ClientMsg| {
+                .with_sync(move |msg: msg::session::ClientMsg| {
                     Event::ClientMsg(session_id, msg)
                 }),
             buf_pool,

@@ -2,8 +2,7 @@ use std::fmt::Debug;
 
 use futures::{channel::mpsc, prelude::*};
 
-use crate::prelude::*;
-use protocol::msg::AtLeastOnce;
+use crate::msg::protocol::AtLeastOnce;
 
 pub enum Event<Msg>
 where

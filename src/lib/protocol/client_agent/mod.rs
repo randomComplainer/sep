@@ -2,6 +2,7 @@ use std::future::Future;
 
 use crate::{
     codec::{MsgReader, MsgWriter},
+    msg,
     protocol::*,
 };
 
@@ -13,12 +14,6 @@ pub trait Init {
         conn_id: ConnId,
         timestamp: u64,
     ) -> impl Future<
-        Output = Result<
-            (
-                impl MsgReader<msg::conn::ConnMsg<msg::ServerMsg>>,
-                impl MsgWriter,
-            ),
-            std::io::Error,
-        >,
+        Output = Result<(impl MsgReader<msg::ServerMsg>, impl MsgWriter), std::io::Error>,
     > + Send;
 }

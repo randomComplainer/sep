@@ -2,6 +2,7 @@ use thiserror::Error;
 
 use crate::{
     codec::{MsgReader, MsgWriter},
+    msg,
     prelude::*,
 };
 use protocol::*;
@@ -29,7 +30,7 @@ pub trait Init {
             (
                 Box<ClientId>,
                 ConnId,
-                impl MsgReader<protocol::msg::conn::ConnMsg<msg::ClientMsg>>,
+                impl MsgReader<msg::ClientMsg>,
                 impl MsgWriter,
             ),
             InitError<Self::Stream>,

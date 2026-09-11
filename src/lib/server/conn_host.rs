@@ -6,15 +6,16 @@ use tokio::sync::oneshot;
 use tracing::Instrument;
 
 use crate::codec::{MsgReader, MsgWriter};
+use crate::msg;
 use crate::prelude::*;
-use crate::protocol::{ConnId, msg};
+use crate::protocol::ConnId;
 
 pub enum Event {
     // NewConnection(ConnId),
     ConnectionErrored(ConnId),
     ConnectionEnded(ConnId),
-    ClientMsg(ConnId, protocol::msg::ClientMsg),
-    ServerMsgSenderReady(ConnId, oneshot::Sender<protocol::msg::ServerMsg>),
+    ClientMsg(ConnId, msg::protocol::ClientMsg),
+    ServerMsgSenderReady(ConnId, oneshot::Sender<msg::protocol::ServerMsg>),
 }
 
 pub fn create<EvtTx>(evt_tx: EvtTx) -> (impl Future<Output = Result<(), Never>>, Handle<EvtTx>) {
@@ -44,7 +45,7 @@ where
         client_read: ClientRead,
         client_write: ClientWrite,
     ) where
-        ClientRead: MsgReader<msg::conn::ConnMsg<msg::ClientMsg>>,
+        ClientRead: MsgReader<msg::ClientMsg>,
         ClientWrite: MsgWriter,
     {
         let mut evt_tx = self.evt_tx.clone();

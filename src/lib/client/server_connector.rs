@@ -1,13 +1,13 @@
 use crate::{
     codec::{MsgReader, MsgWriter},
-    protocol::msg,
+    msg,
 };
 
 pub trait ServerConnector
 where
     Self: Clone + Sync + Send + Unpin + 'static,
 {
-    type Reader: MsgReader<msg::conn::ConnMsg<msg::ServerMsg>>;
+    type Reader: MsgReader<msg::ServerMsg>;
     type Writer: MsgWriter;
 
     type Fut: std::future::Future<Output = Result<(Self::Reader, Self::Writer), std::io::Error>>
@@ -22,7 +22,7 @@ where
 impl<TFn, TGreetedRead, TGreetedWrite, TFuture> ServerConnector for TFn
 where
     TFn: (Fn(u64) -> TFuture) + Clone + Sync + Send + Unpin + 'static,
-    TGreetedRead: MsgReader<msg::conn::ConnMsg<msg::ServerMsg>>,
+    TGreetedRead: MsgReader<msg::ServerMsg>,
     TGreetedWrite: MsgWriter,
     TFuture: std::future::Future<Output = Result<(TGreetedRead, TGreetedWrite), std::io::Error>>
         + Send

@@ -6,7 +6,7 @@ use tracing::Instrument as _;
 
 use crate::codec::{Encode, MsgReader, MsgWriter};
 use crate::ok_or;
-use crate::protocol::msg::conn::ConnMsg;
+use crate::msg::conn::ConnMsg;
 
 #[derive(Clone)]
 pub struct Config {

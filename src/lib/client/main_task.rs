@@ -5,9 +5,8 @@ use tracing::Instrument as _;
 
 use super::{conn_host, proxyee_io, session_host};
 use crate::buffer_pool;
+use crate::msg::{self, group, protocol::AtLeastOnce};
 use crate::prelude::*;
-use crate::protocol::msg::AtLeastOnce;
-use crate::protocol::msg::ServerMsg;
 use crate::some_or;
 use crate::{assignment, global_cmd_manager};
 
@@ -48,8 +47,8 @@ struct State<SessionEvtTx> {
     config: Config,
     session_handle: session_host::Handle<SessionEvtTx>,
     conn_handle: conn_host::Handle,
-    global_cmd_handle: global_cmd_manager::Handle<protocol::msg::group::ClientCmd>,
-    assignment: assignment::State<protocol::msg::ClientMsg, proxyee_io::Cmd>,
+    global_cmd_handle: global_cmd_manager::Handle<group::ClientCmd>,
+    assignment: assignment::State<msg::protocol::ClientMsg, proxyee_io::Cmd>,
     buf_pool: buffer_pool::BufferPool,
 }
 
@@ -61,7 +60,7 @@ where
         config: Config,
         session_handle: session_host::Handle<SessionEvtTx>,
         conn_handle: conn_host::Handle,
-        global_cmd_handle: global_cmd_manager::Handle<protocol::msg::group::ClientCmd>,
+        global_cmd_handle: global_cmd_manager::Handle<group::ClientCmd>,
         buf_pool: buffer_pool::BufferPool,
     ) -> Self {
         Self {
@@ -96,7 +95,7 @@ where
             session_host::Event::ClientMsg(session_id, client_session_msg) => {
                 let actions = self.assignment.new_outgoing_session_msg(
                     &session_id,
-                    protocol::msg::ClientMsg::SessionMsg(session_id, client_session_msg),
+                    msg::protocol::ClientMsg::SessionMsg(session_id, client_session_msg),
                 );
 
                 self.handle_assignment_actions(actions).await;
@@ -123,7 +122,7 @@ where
             }
             conn_host::Event::ServerMsg(conn_id, server_msg) => {
                 match server_msg {
-                    ServerMsg::SessionMsg(session_id, server_msg) => {
+                    msg::protocol::ServerMsg::SessionMsg(session_id, server_msg) => {
                         let actions = self
                             .assignment
                             .on_remote_msg_to_session(&conn_id, &session_id, server_msg.into())
@@ -131,29 +130,23 @@ where
 
                         self.handle_assignment_actions(actions).await;
                     }
-                    ServerMsg::GlobalCmd(at_least_once) => {
+                    msg::protocol::ServerMsg::GlobalCmd(at_least_once) => {
                         match at_least_once {
                             AtLeastOnce::Ack(seq) => {
                                 self.global_cmd_handle.ack(seq).await;
                             }
                             AtLeastOnce::Msg(seq, msg) => {
                                 let actions = self.assignment.new_outgoing_global_msg(
-                                    protocol::msg::ClientMsg::GlobalCmd(
-                                        protocol::msg::AtLeastOnce::Ack(seq),
-                                    ),
+                                    msg::protocol::ClientMsg::GlobalCmd(AtLeastOnce::Ack(seq)),
                                 );
 
                                 self.handle_assignment_actions(actions).await;
 
                                 match msg {
-                                    protocol::msg::group::ServerCmd::KillSession(
-                                        session_id,
-                                    ) => {
+                                    msg::group::ServerCmd::KillSession(session_id) => {
                                         self.assignment.on_session_ended(&session_id);
                                     }
-                                    protocol::msg::group::ServerCmd::ConnectMore {
-                                        expected,
-                                    } => {
+                                    msg::group::ServerCmd::ConnectMore { expected } => {
                                         self.match_expected_conn_count(expected.into()).await;
                                     }
                                 };
@@ -167,7 +160,7 @@ where
 
     pub fn handle_global_cmd_event(
         &mut self,
-        evt: global_cmd_manager::Event<protocol::msg::group::ClientCmd>,
+        evt: global_cmd_manager::Event<msg::group::ClientCmd>,
     ) {
         match evt {
             global_cmd_manager::Event::Send(at_least_once) => {
@@ -185,9 +178,7 @@ where
             match action {
                 assignment::Action::KillSession(session_id) => {
                     self.global_cmd_handle
-                        .queue(protocol::msg::group::ClientCmd::KillSession(
-                            session_id,
-                        ))
+                        .queue(msg::group::ClientCmd::KillSession(session_id))
                         .await;
                 }
                 assignment::Action::ConnectMore { expected } => {

@@ -37,13 +37,7 @@ where
         self,
         conn_id: ConnId,
         timestamp: u64,
-    ) -> Result<
-        (
-            impl MsgReader<protocol::msg::conn::ConnMsg<msg::ServerMsg>>,
-            impl MsgWriter,
-        ),
-        std::io::Error,
-    > {
+    ) -> Result<(impl MsgReader<msg::ServerMsg>, impl MsgWriter), std::io::Error> {
         let cipher = ChaCha20::new(self.key.as_slice().into(), self.nonce.as_slice().into());
 
         let (stream_read, mut stream_write) = tokio::io::split(self.stream);
@@ -76,7 +70,7 @@ where
                 stream_read,
                 ChaCha20::new(self.key.as_slice().into(), self.nonce.as_slice().into()),
             )),
-            msg::conn::conn_msg_peeker(msg::server_msg_peeker()),
+            msg::server_msg_peeker(),
         );
 
         let writer = EncryptedMsgWrite::new(stream_write, 64);
@@ -93,13 +87,7 @@ where
         self,
         conn_id: ConnId,
         timestamp: u64,
-    ) -> Result<
-        (
-            impl MsgReader<protocol::msg::conn::ConnMsg<msg::ServerMsg>>,
-            impl MsgWriter,
-        ),
-        std::io::Error,
-    > {
+    ) -> Result<(impl MsgReader<msg::ServerMsg>, impl MsgWriter), std::io::Error> {
         self.send_greeting(conn_id, timestamp).await
     }
 }

@@ -9,6 +9,7 @@ use tracing::*;
 
 use super::*;
 use crate::codec::*;
+use crate::msg;
 
 pub struct Init<Stream>
 where
@@ -33,7 +34,7 @@ where
         (
             Box<protocol::ClientId>,
             protocol::ConnId,
-            impl MsgReader<msg::conn::ConnMsg<msg::ClientMsg>>,
+            impl MsgReader<msg::ClientMsg>,
             impl MsgWriter,
         ),
         InitError<Stream>,
@@ -53,7 +54,7 @@ where
         (
             Box<protocol::ClientId>,
             protocol::ConnId,
-            impl MsgReader<protocol::msg::conn::ConnMsg<msg::ClientMsg>>,
+            impl MsgReader<msg::ClientMsg>,
             impl MsgWriter,
         ),
         InitError<Stream>,
@@ -132,10 +133,7 @@ where
                     opt.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "").into())
                 })?;
 
-            let reader = (
-                stream_read,
-                msg::conn::conn_msg_peeker(msg::client_msg_peeker()),
-            );
+            let reader = (stream_read, msg::client_msg_peeker());
 
             let writer = EncryptedMsgWrite::new(
                 EncryptedWrite::new(
@@ -165,7 +163,7 @@ where
         (
             Box<ClientId>,
             ConnId,
-            impl MsgReader<protocol::msg::conn::ConnMsg<msg::ClientMsg>>,
+            impl MsgReader<msg::ClientMsg>,
             impl MsgWriter,
         ),
         InitError<Stream>,

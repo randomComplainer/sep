@@ -5,7 +5,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt as _};
 use crate::sequence::{StreamEntry, StreamEntryValue};
 
 use crate::ok_or;
-use crate::protocol::msg::session as msg;
+use crate::msg::session as msg;
 use crate::sink_ext::SinkExt as _;
 
 #[derive(Debug, From)]

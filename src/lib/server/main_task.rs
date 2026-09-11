@@ -6,8 +6,9 @@ use tracing::*;
 
 use super::serve_client;
 use crate::codec::{MsgReader, MsgWriter};
+use crate::msg;
 use crate::prelude::*;
-use crate::protocol::{ConnId, msg};
+use crate::protocol::ConnId;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
@@ -57,7 +58,7 @@ pub async fn run<GreetedRead, GreetedWrite>(
     config: Config,
 ) -> Result<(), std::io::Error>
 where
-    GreetedRead: MsgReader<msg::conn::ConnMsg<msg::ClientMsg>>,
+    GreetedRead: MsgReader<msg::ClientMsg>,
     GreetedWrite: MsgWriter,
 {
     let mut client_entries = HashMap::<

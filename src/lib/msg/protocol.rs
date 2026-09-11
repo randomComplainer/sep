@@ -5,27 +5,7 @@ use derive_more::From;
 use crate::codec::*;
 use crate::protocol::SessionId;
 
-pub mod group;
-pub mod session;
-
-// connection level messages
-pub mod conn;
-
-pub struct SessionIdReader(U64Reader);
-impl Reader for SessionIdReader {
-    type Value = SessionId;
-    fn read(&self, buf: &mut BytesMut) -> SessionId {
-        self.0.read(buf)
-    }
-}
-
-pub fn session_id_peeker() -> impl Peeker<SessionId, Reader = SessionIdReader> {
-    peek::wrap(|cursor| {
-        Ok(Some(SessionIdReader(crate::peek!(
-            u64_peeker().peek(cursor)
-        ))))
-    })
-}
+use super::{group, session};
 
 #[derive(Debug, From)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
@@ -66,7 +46,7 @@ impl session::ServerMsg {
 }
 
 pub enum ServerMsgReader {
-    SessionMsg(SessionIdReader, session::ServerMsgReader),
+    SessionMsg(super::SessionIdReader, session::ServerMsgReader),
     GlobalCmd(AtLeastOnceReader<group::ServerCmd, group::ServerCmdReader>),
 }
 
@@ -88,7 +68,7 @@ pub fn server_msg_peeker() -> impl Peeker<ServerMsg, Reader = ServerMsgReader> {
     peek::peek_enum(|cursor, enum_code| {
         Ok(Some(match enum_code {
             0 => ServerMsgReader::SessionMsg(
-                crate::peek!(session_id_peeker().peek(cursor)),
+                crate::peek!(super::session_id_peeker().peek(cursor)),
                 crate::peek!(session::server_msg_peeker().peek(cursor)),
             ),
             1 => ServerMsgReader::GlobalCmd(crate::peek!(
@@ -110,7 +90,7 @@ impl session::ClientMsg {
 }
 
 pub enum ClientMsgReader {
-    SessionMsg(SessionIdReader, session::ClientMsgReader),
+    SessionMsg(super::SessionIdReader, session::ClientMsgReader),
     GlobalCmd(AtLeastOnceReader<group::ClientCmd, group::ClientCmdReader>),
 }
 
@@ -132,7 +112,7 @@ pub fn client_msg_peeker() -> impl Peeker<ClientMsg, Reader = ClientMsgReader> {
     peek::peek_enum(|cursor, enum_code| {
         Ok(Some(match enum_code {
             0 => ClientMsgReader::SessionMsg(
-                crate::peek!(session_id_peeker().peek(cursor)),
+                crate::peek!(super::session_id_peeker().peek(cursor)),
                 crate::peek!(session::client_msg_peeker().peek(cursor)),
             ),
             1 => ClientMsgReader::GlobalCmd(crate::peek!(

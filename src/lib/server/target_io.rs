@@ -7,7 +7,7 @@ use crate::ok_or;
 use crate::prelude::*;
 use crate::some_or;
 use crate::stream_to_sequenced;
-use protocol::msg::session as msg;
+use crate::msg::session as msg;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config<TConnectTarget> {

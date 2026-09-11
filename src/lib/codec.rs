@@ -7,7 +7,7 @@ use std::{
 use bytes::{Buf as _, BufMut, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::protocol::msg::session::Buf;
+use crate::msg::session::Buf;
 
 pub use peek::Peeker;
 pub use read::Reader;
@@ -339,11 +339,7 @@ impl std::fmt::Debug for RequestAddr {
 }
 
 impl Encode for RequestAddr {
-    fn encode(
-        self,
-        main_buf: &mut BytesMut,
-        side_bufs: &mut Vec<crate::protocol::msg::session::Buf>,
-    ) {
+    fn encode(self, main_buf: &mut BytesMut, side_bufs: &mut Vec<crate::msg::session::Buf>) {
         match self {
             RequestAddr::Ipv4(addr) => {
                 main_buf.put_u8(0);

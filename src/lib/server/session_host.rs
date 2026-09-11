@@ -3,6 +3,7 @@ use tracing::Instrument as _;
 
 use super::target_io;
 use crate::prelude::*;
+use crate::msg;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config<TConnectTarget> {
@@ -23,7 +24,7 @@ impl<TConnectTarget> Into<target_io::Config<TConnectTarget>> for Config<TConnect
 
 pub enum Event {
     SessionEnded(SessionId),
-    ServerMsg(SessionId, protocol::msg::session::ServerMsg),
+    ServerMsg(SessionId, msg::session::ServerMsg),
 }
 
 pub fn create<EvtTx, TConnectTarget>(

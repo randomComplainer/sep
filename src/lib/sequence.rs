@@ -1,4 +1,4 @@
-use crate::protocol::msg::session::Buf;
+use crate::msg::session::Buf;
 
 pub enum StreamEntryValue {
     Data(Buf),

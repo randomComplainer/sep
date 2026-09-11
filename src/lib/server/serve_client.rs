@@ -6,9 +6,8 @@ use super::target_io;
 use super::{conn_host, session_host};
 use crate::buffer_pool;
 use crate::codec::{MsgReader, MsgWriter};
+use crate::msg::{self, protocol::AtLeastOnce};
 use crate::prelude::*;
-use crate::protocol::msg::ClientMsg;
-use crate::protocol::msg::{self, AtLeastOnce};
 use crate::{assignment, global_cmd_manager};
 
 #[derive(Debug, Clone, Copy)]
@@ -42,8 +41,8 @@ struct State<TConnectTarget, SessionEvtTx, ConnEvtTx> {
     config: Config<TConnectTarget>,
     session_handle: session_host::Handle<SessionEvtTx, TConnectTarget>,
     conn_handle: conn_host::Handle<ConnEvtTx>,
-    global_cmd_handle: global_cmd_manager::Handle<protocol::msg::group::ServerCmd>,
-    assignment: assignment::State<protocol::msg::ServerMsg, target_io::Cmd>,
+    global_cmd_handle: global_cmd_manager::Handle<msg::group::ServerCmd>,
+    assignment: assignment::State<msg::protocol::ServerMsg, target_io::Cmd>,
 }
 
 impl<TConnectTarget, SessionEvtTx, ConnEvtTx, ConnEvtTxErr>
@@ -58,7 +57,7 @@ where
         config: Config<TConnectTarget>,
         session_handle: session_host::Handle<SessionEvtTx, TConnectTarget>,
         conn_handle: conn_host::Handle<ConnEvtTx>,
-        global_cmd_handle: global_cmd_manager::Handle<protocol::msg::group::ServerCmd>,
+        global_cmd_handle: global_cmd_manager::Handle<msg::group::ServerCmd>,
     ) -> Self {
         Self {
             config: config.clone(),
@@ -75,7 +74,7 @@ where
         client_read: ClientRead,
         client_write: ClientWrite,
     ) where
-        ClientRead: MsgReader<msg::conn::ConnMsg<msg::ClientMsg>>,
+        ClientRead: MsgReader<msg::ClientMsg>,
         ClientWrite: MsgWriter,
     {
         self.conn_handle
@@ -92,7 +91,7 @@ where
             session_host::Event::ServerMsg(session_id, server_msg) => {
                 let actions = self.assignment.new_outgoing_session_msg(
                     &session_id,
-                    protocol::msg::ServerMsg::SessionMsg(session_id, server_msg),
+                    msg::protocol::ServerMsg::SessionMsg(session_id, server_msg),
                 );
 
                 self.handle_assignment_actions(actions).await;
@@ -116,8 +115,8 @@ where
             }
             conn_host::Event::ClientMsg(conn_id, client_msg) => {
                 match client_msg {
-                    ClientMsg::SessionMsg(session_id, client_msg) => {
-                        if let protocol::msg::session::ClientMsg::Request(_) = &client_msg {
+                    msg::protocol::ClientMsg::SessionMsg(session_id, client_msg) => {
+                        if let msg::session::ClientMsg::Request(_) = &client_msg {
                             let session_client_msg_rx =
                                 self.session_handle.new_session(session_id).await;
                             self.assignment
@@ -131,22 +130,20 @@ where
 
                         self.handle_assignment_actions(actions).await;
                     }
-                    ClientMsg::GlobalCmd(at_least_once) => {
+                    msg::protocol::ClientMsg::GlobalCmd(at_least_once) => {
                         match at_least_once {
                             AtLeastOnce::Ack(seq) => {
                                 self.global_cmd_handle.ack(seq).await;
                             }
                             AtLeastOnce::Msg(seq, msg) => {
                                 let actions = self.assignment.new_outgoing_global_msg(
-                                    protocol::msg::ServerMsg::GlobalCmd(
-                                        protocol::msg::AtLeastOnce::Ack(seq),
-                                    ),
+                                    msg::protocol::ServerMsg::GlobalCmd(AtLeastOnce::Ack(seq)),
                                 );
 
                                 self.handle_assignment_actions(actions).await;
 
                                 match msg {
-                                    protocol::msg::group::ClientCmd::KillSession(session_id) => {
+                                    msg::group::ClientCmd::KillSession(session_id) => {
                                         self.assignment.on_session_ended(&session_id);
                                     }
                                 };
@@ -160,7 +157,7 @@ where
 
     pub fn handle_global_cmd_event(
         &mut self,
-        evt: global_cmd_manager::Event<protocol::msg::group::ServerCmd>,
+        evt: global_cmd_manager::Event<msg::group::ServerCmd>,
     ) {
         match evt {
             global_cmd_manager::Event::Send(at_least_once) => {
@@ -178,12 +175,12 @@ where
             match action {
                 assignment::Action::KillSession(session_id) => {
                     self.global_cmd_handle
-                        .queue(protocol::msg::group::ServerCmd::KillSession(session_id))
+                        .queue(msg::group::ServerCmd::KillSession(session_id))
                         .await;
                 }
                 assignment::Action::ConnectMore { expected } => {
                     self.global_cmd_handle
-                        .queue(protocol::msg::group::ServerCmd::ConnectMore {
+                        .queue(msg::group::ServerCmd::ConnectMore {
                             expected: expected.try_into().unwrap(),
                         })
                         .await
@@ -198,7 +195,7 @@ pub async fn run<GreetedRead, GreetedWrite, TConnectTarget>(
     config: Config<TConnectTarget>,
 ) -> Result<(), std::io::Error>
 where
-    GreetedRead: MsgReader<msg::conn::ConnMsg<msg::ClientMsg>>,
+    GreetedRead: MsgReader<msg::ClientMsg>,
     GreetedWrite: MsgWriter,
     TConnectTarget: ConnectTarget,
 {

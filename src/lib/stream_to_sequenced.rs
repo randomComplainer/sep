@@ -8,7 +8,7 @@ use futures::prelude::*;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 
 use crate::ok_or;
-use crate::protocol::msg::session as msg;
+use crate::msg::session as msg;
 use crate::sink_ext::SinkExt;
 
 #[derive(Debug, From)]

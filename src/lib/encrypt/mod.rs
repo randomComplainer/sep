@@ -81,7 +81,7 @@ mod encrypted_write {
 mod tests {
     use chacha20::ChaCha20;
     use chacha20::cipher::KeyIvInit;
-    use tokio::io::{AsyncReadExt, DuplexStream, ReadHalf, WriteHalf};
+    use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
 
     use super::*;
 

@@ -1,6 +1,7 @@
 use futures::prelude::*;
 use tokio::sync::oneshot;
 
+use crate::msg;
 use crate::ok_or;
 use crate::prelude::*;
 use crate::protocol::ConnId;
@@ -10,8 +11,8 @@ pub enum Event {
     ServerConnected(ConnId),
     ConnectionErrored(ConnId),
     ConnectionEnded(ConnId),
-    ServerMsg(ConnId, protocol::msg::ServerMsg),
-    ClientMsgSenderReady(ConnId, oneshot::Sender<protocol::msg::ClientMsg>),
+    ServerMsg(ConnId, msg::protocol::ServerMsg),
+    ClientMsgSenderReady(ConnId, oneshot::Sender<msg::protocol::ClientMsg>),
 }
 
 pub fn create<EvtTx, EvtTxErr, ServerConnector>(
@@ -132,13 +133,7 @@ mod conn_creation {
     pub fn run<ServerConnector>(
         connector: ServerConnector,
         cmd_rx: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
-    ) -> impl futures::Stream<
-        Item = (
-            ConnId,
-            ServerConnector::Reader,
-            ServerConnector::Writer,
-        ),
-    >
+    ) -> impl futures::Stream<Item = (ConnId, ServerConnector::Reader, ServerConnector::Writer)>
     + 'static
     + Unpin
     where

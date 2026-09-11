@@ -10,7 +10,6 @@ use crate::codec::BufDecoder;
 use crate::prelude::*;
 
 pub mod client_agent;
-pub mod msg;
 pub mod server_agent;
 
 // Client -> Server: Greeting (nounce, timestamp, random bytes) Server dose not send anything back, close connection after random delay if Greeting is invalid Client -> Server: Request (addr, port)
@@ -91,8 +90,8 @@ pub mod test_utils {
 
     use crate::{
         codec::{MsgReader, MsgWriter},
+        msg,
         prelude::*,
-        protocol::msg,
     };
 
     pub fn create_init_pair() -> (
@@ -117,13 +116,10 @@ pub mod test_utils {
     }
 
     pub async fn create_greeted_pair() -> (
-        (
-            impl MsgReader<msg::conn::ConnMsg<msg::ServerMsg>>,
-            impl MsgWriter,
-        ),
+        (impl MsgReader<msg::ServerMsg>, impl MsgWriter),
         (
             Box<protocol::ClientId>,
-            impl MsgReader<msg::conn::ConnMsg<msg::ClientMsg>>,
+            impl MsgReader<msg::ClientMsg>,
             impl MsgWriter,
         ),
     ) {

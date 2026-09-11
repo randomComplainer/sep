@@ -8,6 +8,7 @@ mod buffer_pool;
 pub mod connect_target;
 pub mod future_ext;
 mod global_cmd_manager;
+mod msg;
 pub mod never;
 mod protocol_conn_lifetime;
 pub mod proxy_interface;
